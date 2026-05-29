@@ -88,6 +88,7 @@ class Settings:
         self.bundle_keywords: list[str] = [
             kw.lower() for kw in d.get("bundle_keywords", [])
         ]
+        self.allow_low_confidence: bool = bool(d.get("allow_low_confidence", False))
 
         # --- Market values (title substring → float EUR) ---
         self.market_values: dict[str, float] = {
