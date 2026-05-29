@@ -178,6 +178,13 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 inline=False,
             )
 
+        if updated:
+            embed.add_field(
+                name="🔁 Restart",
+                value="Bot will restart in a moment…",
+                inline=False,
+            )
+
         logger.info(
             "/update by %s: %s → %s (%d file(s) changed)",
             interaction.user,
@@ -186,6 +193,14 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             len(changed_files),
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Restart the bot process when an update was applied so the new code
+        # takes effect.  In a Docker environment (restart: unless-stopped) the
+        # container will automatically come back up.
+        if updated:
+            logger.info("Update applied – restarting bot process")
+            await asyncio.sleep(2)
+            await self.bot.close()
 
     # ------------------------------------------------------------------
     # /check-price

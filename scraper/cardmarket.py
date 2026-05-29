@@ -57,18 +57,36 @@ _COOKIE_SEL = (
     "button#cmVendorAcceptBtn,"
     "button[data-role='acceptAll'],"
     "button.btn-primary[class*='consent'],"
-    "#onetrust-accept-btn-handler"
+    "#onetrust-accept-btn-handler,"
+    "button[id*='accept'],"
+    "button[class*='accept']"
 )
 
 # Search-results page: any link pointing to a Pokemon product.
 _PRODUCT_LINK_SEL = "a[href*='/en/Pokemon/Products/']"
 
 # Price info container on product pages; we wait for this to be rendered.
-_PRICE_CONTAINER_SEL = ".info-list-container"
+# Multiple selectors are tried in order to handle HTML structure variations.
+_PRICE_CONTAINER_SELS = [
+    "dl.info-list-container",
+    ".info-list-container dl",
+    ".info-list-container",
+    ".col-price dl",
+    ".product-price-info dl",
+]
+_PRICE_CONTAINER_SEL = _PRICE_CONTAINER_SELS[0]  # Primary (for wait_for_selector)
 
 # Minimum path-segment depth for a product page URL (not a category/search page).
 # e.g. /en/Pokemon/Products/Singles/Base-Set/Charizard  → 6 segments
 _MIN_PRODUCT_PATH_DEPTH = 6
+
+# JavaScript snippet injected into every new page to hide automation signals.
+_STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+Object.defineProperty(navigator, 'languages', {get: () => ['nl-NL', 'nl', 'en-GB', 'en']});
+window.chrome = {runtime: {}};
+"""
 
 # ---------------------------------------------------------------------------
 # HTML parsing helpers  (AutoScrape / cardmarket_parser inspired)
@@ -96,6 +114,8 @@ def _parse_price_to_float(price_string: str) -> float:
         return 0.0
     try:
         cleaned = "".join(c for c in price_string if c.isdigit() or c in ",.").strip()
+        if not cleaned:
+            return 0.0
         if "," in cleaned and "." in cleaned:
             # European with thousands separator: "1.234,56" → "1234.56"
             cleaned = cleaned.replace(".", "").replace(",", ".")
@@ -107,82 +127,122 @@ def _parse_price_to_float(price_string: str) -> float:
         return 0.0
 
 
-def _parse_product_page(html_content: str) -> dict[str, float]:
-    """Extract price fields from a Cardmarket product page.
+def _find_price_dl(soup: BeautifulSoup) -> Any | None:
+    """Find the price info ``<dl>`` element using multiple selector strategies."""
+    for sel in _PRICE_CONTAINER_SELS:
+        el = soup.select_one(sel)
+        if el is None:
+            continue
+        # If the matched element is already a <dl>, use it directly.
+        if el.name == "dl":
+            return el
+        # Otherwise look for a <dl> child.
+        dl = el.select_one("dl")
+        if dl:
+            return dl
+    return None
+
+
+def _extract_price_from_dd(dd_el: Any) -> str:
+    """Extract the price text from a ``<dd>`` element.
+
+    Cardmarket wraps prices in one or more ``<span>`` elements.  We try the
+    innermost span first (to skip outer wrappers with icon elements), then
+    fall back to the full ``<dd>`` text.
+    """
+    # Collect all spans.
+    spans = dd_el.select("span")
+    # Return the last span that looks like a price (contains digit + currency sign).
+    for span in reversed(spans):
+        text = span.get_text(" ", strip=True)
+        # A price span has at least one digit.
+        if any(c.isdigit() for c in text):
+            return _clean_price_string(text)
+    # Fall back to the full dd text.
+    return _clean_price_string(dd_el.get_text(" ", strip=True))
+
+
+def _parse_product_page(html_content: str) -> dict[str, Any]:
+    """Extract price fields (and optional card metadata) from a Cardmarket product page.
 
     Tries two strategies in order:
     1. Parse the ``dl`` inside ``.info-list-container`` (rendered HTML).
     2. Search ``<script>`` tags for embedded JSON price data as a fallback.
 
     Returns a dict with keys: ``lowest_price``, ``price_trend``,
-    ``avg_30_days``, ``avg_7_days``, ``avg_1_day``.  Missing fields are
-    omitted from the dict.
+    ``avg_30_days``, ``avg_7_days``, ``avg_1_day``.  Additional metadata
+    keys ``set_name``, ``card_number``, ``card_name`` are included when
+    found.  Missing fields are omitted from the dict.
 
     A page is only considered successfully parsed when the returned dict is
     non-empty (i.e. at least one pricing metric was found).
     """
     soup = BeautifulSoup(html_content, "html.parser")
-    prices: dict[str, float] = {}
+    prices: dict[str, Any] = {}
 
     # ── Strategy 1: rendered info-list-container ──────────────────────────
-    container = soup.select_one(_PRICE_CONTAINER_SEL)
-    if container:
-        # The .info-list-container class may be on the <dl> itself, or the
-        # <dl> may be a child.  Handle both cases so the parser works with
-        # both the old and current Cardmarket HTML structure.
-        dl = container if container.name == "dl" else container.select_one("dl")
-        if dl:
-            dt_elements = dl.select("dt")
-            dd_elements = dl.select("dd")
+    dl = _find_price_dl(soup)
+    if dl:
+        dt_elements = dl.select("dt")
+        dd_elements = dl.select("dd")
 
-            price_data: dict[str, str] = {}
-            for i in range(min(len(dt_elements), len(dd_elements))):
-                key = dt_elements[i].get_text().strip()
-                v_el = dd_elements[i].select_one("span")
-                value = v_el.get_text().strip() if v_el else dd_elements[i].get_text().strip()
-                price_data[key] = _clean_price_string(value)
+        price_data: dict[str, str] = {}
+        for i in range(min(len(dt_elements), len(dd_elements))):
+            key = dt_elements[i].get_text(" ", strip=True)
+            value = _extract_price_from_dd(dd_elements[i])
+            price_data[key] = value
+            logger.debug("Cardmarket dt/dd: %r → %r", key, value)
 
-            # Lowest / From price  (labels: "From" / "De" / "Ab" / "Vanaf")
-            for key, value in price_data.items():
-                if key.lower() in ("from", "de", "ab", "vanaf"):
-                    v = _parse_price_to_float(value)
-                    if v > 0:
-                        prices["lowest_price"] = v
-                    break
+        # Lowest / From price  (labels: "From" / "De" / "Ab" / "Vanaf" / "Fra")
+        for key, value in price_data.items():
+            if key.lower() in ("from", "de", "ab", "vanaf", "fra", "od", "da", "vanuit"):
+                v = _parse_price_to_float(value)
+                if v > 0:
+                    prices["lowest_price"] = v
+                break
 
-            # Price trend  (labels containing "trend" / "tendance" / "prijstrend")
-            for key, value in price_data.items():
-                if any(t in key.lower() for t in ("trend", "tendance")):
-                    v = _parse_price_to_float(value)
-                    if v > 0:
-                        prices["price_trend"] = v
-                    break
+        # Price trend  (labels containing "trend" / "tendance" / "prijstrend")
+        for key, value in price_data.items():
+            if any(t in key.lower() for t in ("trend", "tendance")):
+                v = _parse_price_to_float(value)
+                if v > 0:
+                    prices["price_trend"] = v
+                break
 
-            # 30-day average
-            for key, value in price_data.items():
-                if "30" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
-                    v = _parse_price_to_float(value)
-                    if v > 0:
-                        prices["avg_30_days"] = v
-                    break
+        # 30-day average
+        for key, value in price_data.items():
+            if "30" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag", "dias", "giorni")):
+                v = _parse_price_to_float(value)
+                if v > 0:
+                    prices["avg_30_days"] = v
+                break
 
-            # 7-day average
-            for key, value in price_data.items():
-                if "7" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
-                    v = _parse_price_to_float(value)
-                    if v > 0:
-                        prices["avg_7_days"] = v
-                    break
+        # 7-day average
+        for key, value in price_data.items():
+            if "7" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag", "dias", "giorni")):
+                v = _parse_price_to_float(value)
+                if v > 0:
+                    prices["avg_7_days"] = v
+                break
 
-            # 1-day average
-            for key, value in price_data.items():
-                if "1" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
-                    v = _parse_price_to_float(value)
-                    if v > 0:
-                        prices["avg_1_day"] = v
-                    break
+        # 1-day average
+        for key, value in price_data.items():
+            k_lower = key.lower()
+            # Must have "1" as a standalone token (not part of "30" or "7") and a day word.
+            if (
+                re.search(r"\b1\b", key)
+                and any(t in k_lower for t in ("day", "jour", "tage", "dag", "dias", "giorni"))
+                and "30" not in key
+                and "7" not in key
+            ):
+                v = _parse_price_to_float(value)
+                if v > 0:
+                    prices["avg_1_day"] = v
+                break
 
     if prices:
+        # ── Also extract card metadata ────────────────────────────────────
+        _extract_card_metadata(soup, prices)
         return prices
 
     logger.debug("Cardmarket: .info-list-container empty or absent – trying JSON fallback")
@@ -191,17 +251,47 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
     prices = _extract_json_prices(soup)
     if not prices:
         logger.debug("Cardmarket: no pricing data found in page HTML or embedded JSON")
+    else:
+        _extract_card_metadata(soup, prices)
     return prices
 
 
-def _extract_json_prices(soup: BeautifulSoup) -> dict[str, float]:
+def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
+    """Extract card set name, card number and card name from the page and add
+    them to *prices* in-place.  Missing fields are silently skipped."""
+    # ── Card name from <h1> ───────────────────────────────────────────────
+    h1 = soup.select_one("h1")
+    if h1:
+        card_name = h1.get_text(" ", strip=True)
+        if card_name:
+            prices["card_name"] = card_name
+
+    # ── Set name from breadcrumb ──────────────────────────────────────────
+    # Cardmarket breadcrumbs use a list of <a> tags; the second-to-last is
+    # the set (e.g. "Scarlet & Violet"), the last is the card name.
+    breadcrumb_links = soup.select("ol.breadcrumb li a, .breadcrumb a")
+    if len(breadcrumb_links) >= 2:
+        set_link = breadcrumb_links[-2]
+        set_name = set_link.get_text(" ", strip=True)
+        if set_name and set_name.lower() not in ("pokemon", "pokémon", "singles", "products"):
+            prices["set_name"] = set_name
+
+    # ── Card number from page title or product details ────────────────────
+    # Pattern: "123/456" or "SV01 EN 086/198" style number in headings or title.
+    full_text = soup.get_text(" ", strip=True)
+    number_match = re.search(r"\b(\d{1,3}/\d{2,4})\b", full_text)
+    if number_match:
+        prices["card_number"] = number_match.group(1)
+
+
+def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
     """Attempt to extract price metrics from embedded ``<script>`` JSON blobs.
 
     Cardmarket (and other SPAs) sometimes embed product data as a JSON object
     assigned to a global variable (e.g. ``window.__cm_state`` or similar).
     We scan every ``<script>`` tag for recognisable price keys.
     """
-    prices: dict[str, float] = {}
+    prices: dict[str, Any] = {}
 
     # Key mappings: JSON field name patterns → our canonical keys.
     _JSON_KEY_MAP: list[tuple[tuple[str, ...], str]] = [
@@ -276,9 +366,8 @@ class CardmarketPriceScraper:
 
     def __init__(self, browser: Browser) -> None:
         self._browser = browser
-        self._cookie_accepted = False
 
-    async def lookup(self, query: str, sample_size: int = 5) -> dict[str, float] | None:
+    async def lookup(self, query: str, sample_size: int = 5) -> dict[str, Any] | None:
         """Return price data for *query* scraped from Cardmarket.
 
         *sample_size* is accepted for API compatibility but is unused; the
@@ -286,15 +375,16 @@ class CardmarketPriceScraper:
         (``price_trend``, ``avg_30_days``, ``avg_7_days``, ``avg_1_day``,
         ``lowest_price``).
 
-        Returns a non-empty ``dict[str, float]`` on success, ``None`` on
-        failure.  The page is not considered successfully parsed unless at
-        least one pricing metric is extracted.
+        Returns a non-empty ``dict`` on success, ``None`` on failure.  The
+        page is not considered successfully parsed unless at least one pricing
+        metric is extracted.
         """
         search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
         logger.info("Cardmarket: searching '%s'", query)
 
         context = await self._new_context()
         page = await context.new_page()
+        await page.add_init_script(_STEALTH_SCRIPT)
         try:
             # ── Step 1: search page ──────────────────────────────────────────
             await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
@@ -323,7 +413,7 @@ class CardmarketPriceScraper:
         finally:
             await context.close()
 
-    async def lookup_url(self, url: str) -> dict[str, float] | None:
+    async def lookup_url(self, url: str) -> dict[str, Any] | None:
         """Fetch price data directly from a Cardmarket product page URL.
 
         Returns the raw prices dict (``lowest_price``, ``price_trend``,
@@ -332,9 +422,11 @@ class CardmarketPriceScraper:
         logger.info("Cardmarket: fetching prices from URL %s", url)
         context = await self._new_context()
         page = await context.new_page()
+        await page.add_init_script(_STEALTH_SCRIPT)
         try:
-            await self._accept_cookies(page)
             prices_dict = await self._fetch_product_page(page, url)
+            # Accept cookies after the first page load (the banner is now visible).
+            await self._accept_cookies(page)
 
             if not prices_dict:
                 logger.debug("Cardmarket lookup_url: no prices parsed from %s", url)
@@ -351,7 +443,7 @@ class CardmarketPriceScraper:
 
     async def _fetch_product_page(
         self, page: Page, url: str
-    ) -> dict[str, float] | None:
+    ) -> dict[str, Any] | None:
         """Navigate to *url*, wait for dynamic content, and parse prices.
 
         Waits for ``.info-list-container`` to appear in the DOM so that
@@ -360,18 +452,23 @@ class CardmarketPriceScraper:
         never appears (some pages render differently).
         """
         await page.goto(url, wait_until="load", timeout=30_000)
+        await self._accept_cookies(page)
 
         # Wait for the price container to be rendered (dynamic content).
-        try:
-            await page.wait_for_selector(
-                _PRICE_CONTAINER_SEL, timeout=10_000, state="visible"
-            )
-        except Exception:  # noqa: BLE001
-            # Element did not appear within the timeout – take what we have.
+        found = False
+        for sel in _PRICE_CONTAINER_SELS:
+            try:
+                await page.wait_for_selector(sel, timeout=8_000, state="visible")
+                found = True
+                break
+            except Exception:  # noqa: BLE001
+                continue
+
+        if not found:
             logger.debug(
                 "Cardmarket: price container not visible within timeout for %s", url
             )
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await asyncio.sleep(random.uniform(2.0, 3.5))
 
         html = await page.content()
         prices_dict = _parse_product_page(html)
@@ -402,17 +499,14 @@ class CardmarketPriceScraper:
 
     async def _accept_cookies(self, page: Page) -> None:
         """Dismiss the Cardmarket cookie / consent banner if present."""
-        if self._cookie_accepted:
-            return
         try:
             btn = page.locator(_COOKIE_SEL)
             if await btn.count() > 0:
-                await btn.first.click()
+                await btn.first.click(timeout=3_000)
                 logger.debug("Cardmarket: cookie banner accepted")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.8)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Cardmarket: cookie accept skipped: %s", exc)
-        self._cookie_accepted = True
 
     async def _new_context(self) -> BrowserContext:
         widths = [1280, 1366, 1440, 1920]
@@ -422,7 +516,7 @@ class CardmarketPriceScraper:
         chrome_ver = random.choice(chrome_versions)
         return await self._browser.new_context(
             viewport={"width": w, "height": int(w * 0.5625)},
-            locale="en-GB",
+            locale="nl-NL",
             timezone_id="Europe/Amsterdam",
             user_agent=(
                 f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -431,6 +525,13 @@ class CardmarketPriceScraper:
             ),
             java_script_enabled=True,
             extra_http_headers={
-                "Accept-Language": "en-GB,en;q=0.9",
+                "Accept-Language": "nl-NL,nl;q=0.9,en-GB;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Dest": "document",
             },
         )

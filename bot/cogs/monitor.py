@@ -77,7 +77,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--disable-dev-shm-usage",
+                    ],
                 )
                 logger.info("Playwright browser launched for Cardmarket scraping")
             except Exception:
