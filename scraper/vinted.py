@@ -22,7 +22,7 @@ import json
 import random
 import re
 from typing import AsyncIterator
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from playwright.async_api import (
     Browser,
@@ -82,6 +82,31 @@ _COUNTRY_DOMAINS: dict[str, str] = {
     "DK": "https://www.vinted.dk",
     "NO": "https://www.vinted.no",
 }
+
+# Maps the registered domain (eTLD+1) to ISO 4217 currency code.
+_DOMAIN_CURRENCY: dict[str, str] = {
+    "vinted.co.uk": "GBP",
+    "vinted.pl": "PLN",
+    "vinted.cz": "CZK",
+    "vinted.se": "SEK",
+    "vinted.dk": "DKK",
+    "vinted.no": "NOK",
+    "vinted.hu": "HUF",
+    "vinted.ro": "RON",
+}
+
+
+def _currency_for_base_url(base_url: str) -> str:
+    """Return the ISO 4217 currency code that corresponds to a Vinted domain.
+
+    Parses the *hostname* of the URL properly so that a substring match
+    cannot be tricked by a crafted path component (e.g. ``/vinted.co.uk``).
+    """
+    hostname = urlparse(base_url).hostname or ""
+    # Strip leading "www." to normalise.
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return _DOMAIN_CURRENCY.get(hostname, "EUR")
 
 
 def _get_base_urls() -> list[str]:
@@ -277,14 +302,8 @@ class VintedScraper(BaseScraper):
             price_raw = (await price_el.inner_text()).strip() if price_el else "0"
             price = _parse_price(price_raw) or 0.0
 
-            # Currency – derive from domain
-            currency = "EUR"
-            if "vinted.co.uk" in base_url:
-                currency = "GBP"
-            elif "vinted.pl" in base_url:
-                currency = "PLN"
-            elif "vinted.cz" in base_url:
-                currency = "CZK"
+            # Currency – derive from the domain portion of the base URL only.
+            currency = _currency_for_base_url(base_url)
 
             # Images
             images: list[str] = []
