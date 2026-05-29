@@ -115,6 +115,10 @@ deal:
     - "bulk"
     - "set"
 
+  # When true, listings with no live market data (Low confidence) are still
+  # posted to Discord.  When false (default) they are silently discarded.
+  allow_low_confidence: false
+
 # ---------------------------------------------------------------------------
 # Discord
 # ---------------------------------------------------------------------------

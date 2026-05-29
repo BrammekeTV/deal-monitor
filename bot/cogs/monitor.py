@@ -27,6 +27,7 @@ from playwright.async_api import async_playwright
 from config.settings import settings
 from database.db import Database
 from scraper.vinted import VintedScraper
+from utils.card_analyzer import CardAnalyzer
 from utils.deal_scorer import DealScorer
 from utils.embed_builder import build_listing_embed
 from utils.logger import get_logger
@@ -47,6 +48,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self.db = db
         self.scraper = VintedScraper()
         self.scorer = DealScorer()
+        self.card_analyzer = CardAnalyzer()
 
         # Runtime statistics (exposed to the status slash command).
         self.listings_checked: int = 0
@@ -180,6 +182,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
             logger.debug("Already seen: %s", listing.listing_id)
             return
 
+        # Analyse whether this is a card listing / bulk lot and estimate
+        # card count + price per card before any pricing decisions are made.
+        self.card_analyzer.analyze(listing)
+
         # Fetch live market prices from eBay / Cardmarket.
         price_results = []
         if self._http:
@@ -187,15 +193,56 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         live_value = best_market_value(price_results) if price_results else None
 
-        # Score (uses live market value when available).
-        score = self.scorer.score(listing, live_market_value=live_value)
-        logger.debug(
-            "Listing %s '%s' £%.2f → score %d",
-            listing.listing_id,
-            listing.title,
-            listing.price,
-            score,
-        )
+        # Upgrade confidence to High when we have a live market price match.
+        if live_value is not None and listing.confidence == "Medium":
+            listing.confidence = "High"
+            listing.valuation_explanation = (
+                listing.valuation_explanation.replace(
+                    "Confidence will rise to High if a live market price is matched.",
+                    "Live market price matched – confidence upgraded to High.",
+                )
+            )
+
+        # ----------------------------------------------------------------
+        # Decide whether to post this listing.
+        # ----------------------------------------------------------------
+        should_post: bool
+
+        if listing.is_bulk_lot:
+            # Bulk lots bypass the score system; pass only at ≤ €0.01/card.
+            should_post = self.scorer.should_post_bulk(listing)
+            listing.score = 0  # score not meaningful for bulk lots
+            if should_post and not listing.valuation_explanation:
+                listing.valuation_explanation = (
+                    f"Bulk lot: {listing.estimated_card_count} cards at "
+                    f"€{listing.price_per_card:.4f}/card."
+                )
+        else:
+            # Individual card: score and check min_score threshold.
+            score = self.scorer.score(listing, live_market_value=live_value)
+            logger.debug(
+                "Listing %s '%s' %.2f %s → score %d",
+                listing.listing_id,
+                listing.title,
+                listing.price,
+                listing.currency,
+                score,
+            )
+            if score == 0 and not settings.allow_low_confidence:
+                # Unverified (no live market data and no static match).
+                should_post = False
+            else:
+                should_post = score >= settings.min_score
+
+            # Annotate explanation when market data was found.
+            if price_results and listing.estimated_market_value:
+                sources = ", ".join(r.platform for r in price_results)
+                urls = "  ".join(r.search_url for r in price_results)
+                listing.valuation_explanation = (
+                    f"Market price sourced from: {sources}. "
+                    f"Estimated value: €{listing.estimated_market_value:.2f}. "
+                    f"Sources: {urls}"
+                )
 
         # Always mark as seen so we don't re-evaluate it.
         await self.db.mark_seen(
@@ -205,13 +252,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
             price=listing.price,
             seller=listing.seller_name,
             currency=listing.currency,
-            score=score,
-            posted_to_discord=score >= settings.min_score,
+            score=listing.score,
+            posted_to_discord=should_post,
             terms=[term],
         )
 
-        # Post to Discord / webhook if score qualifies.
-        if score >= settings.min_score:
+        # Post to Discord / webhook if it qualifies.
+        if should_post:
             await self._post_listing(listing, channel, price_results=price_results)
 
     async def _post_listing(
@@ -228,9 +275,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 await channel.send(embed=embed)
                 self.listings_posted += 1
                 logger.info(
-                    "Posted deal: %s (%s) score=%d",
+                    "Posted deal: %s (%s) bulk=%s score=%d",
                     listing.title,
                     listing.url,
+                    listing.is_bulk_lot,
                     listing.score,
                 )
                 await self.db.mark_posted(listing.listing_id)

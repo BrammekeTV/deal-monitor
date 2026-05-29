@@ -35,6 +35,10 @@ def _deal_label(score: int) -> str:
     return "ℹ️ Listing"
 
 
+def _confidence_emoji(confidence: str) -> str:
+    return {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "⚪")
+
+
 def build_listing_embed(
     listing: Listing,
     price_results: list["PriceResult"] | None = None,
@@ -43,9 +47,17 @@ def build_listing_embed(
 
     Optional *price_results* from live eBay/Cardmarket lookups are shown
     as comparison fields so users can judge the deal at a glance.
+
+    For bulk lots the embed highlights estimated card count and price per
+    card rather than (or in addition to) the deal score.
     """
     colour = settings.embed_colour
-    label = _deal_label(listing.score)
+
+    if listing.is_bulk_lot:
+        label = "📦 Bulk Lot"
+    else:
+        label = _deal_label(listing.score)
+
     bar = _score_bar(listing.score)
 
     embed = discord.Embed(
@@ -62,8 +74,23 @@ def build_listing_embed(
         inline=True,
     )
 
-    # Estimated market value + discount
-    if listing.estimated_market_value:
+    # Bulk lot specifics: card count + price per card
+    if listing.is_bulk_lot:
+        if listing.estimated_card_count is not None:
+            embed.add_field(
+                name="🃏 Est. Card Count",
+                value=str(listing.estimated_card_count),
+                inline=True,
+            )
+        if listing.price_per_card is not None:
+            embed.add_field(
+                name="💳 Price / Card",
+                value=f"€{listing.price_per_card:.4f}",
+                inline=True,
+            )
+
+    # Estimated market value + discount (individual cards)
+    if not listing.is_bulk_lot and listing.estimated_market_value:
         emv = listing.estimated_market_value
         embed.add_field(
             name="📊 Est. Market Value",
@@ -100,12 +127,27 @@ def build_listing_embed(
                 inline=False,
             )
 
-    # Deal score
+    # Deal score (only meaningful for individual card listings)
+    if not listing.is_bulk_lot:
+        embed.add_field(
+            name="⭐ Deal Score",
+            value=f"{bar}  **{listing.score}/100**",
+            inline=False,
+        )
+
+    # Confidence level + explanation
+    conf_emoji = _confidence_emoji(listing.confidence)
     embed.add_field(
-        name="⭐ Deal Score",
-        value=f"{bar}  **{listing.score}/100**",
-        inline=False,
+        name=f"{conf_emoji} Confidence",
+        value=listing.confidence,
+        inline=True,
     )
+    if listing.valuation_explanation:
+        embed.add_field(
+            name="📝 Valuation Notes",
+            value=listing.valuation_explanation[:1024],
+            inline=False,
+        )
 
     # Seller info
     seller_text = listing.seller_name or "Unknown"

@@ -33,6 +33,14 @@ class Listing:
     score: int = 0
     estimated_market_value: float | None = None
 
+    # Populated after card analysis
+    is_bulk_lot: bool = False
+    estimated_card_count: int | None = None
+    price_per_card: float | None = None
+    # "High" | "Medium" | "Low"
+    confidence: str = "Low"
+    valuation_explanation: str = ""
+
     @property
     def discount_pct(self) -> float | None:
         """Return percentage below estimated market value (positive = cheaper)."""

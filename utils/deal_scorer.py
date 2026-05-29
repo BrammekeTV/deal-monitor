@@ -13,6 +13,14 @@ Scoring breakdown (approximate):
   - 0–10  : Bundle bonus
   - 0–10  : Seller rating bonus
   - -100  : Blacklist keyword → score becomes 0, listing discarded
+
+Bulk lot listings bypass score-based evaluation and are only posted when
+the estimated price per card is ≤ €0.01 (see :meth:`should_post_bulk`).
+
+Per the card-price-validation requirements, no hardcoded default market
+values are used.  The ``default`` key in ``market_values`` config is
+intentionally ignored.  A live market price (from eBay or Cardmarket) is
+required for a non-bulk individual-card listing to score above zero.
 """
 
 from __future__ import annotations
@@ -23,6 +31,9 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Maximum price per card (EUR) for a bulk lot to qualify for posting.
+BULK_MAX_PRICE_PER_CARD: float = 0.01
+
 
 class DealScorer:
     """Stateless deal evaluator.
@@ -31,22 +42,29 @@ class DealScorer:
     config hot-reloads take effect without restarting.
     """
 
-    def estimate_market_value(self, listing: Listing, live_value: float | None = None) -> float:
+    def estimate_market_value(
+        self, listing: Listing, live_value: float | None = None
+    ) -> float | None:
         """Look up an estimated market value for the listing.
 
-        If *live_value* is provided (from eBay/Cardmarket), it takes priority
-        over the static config table.  Otherwise checks config.market_values
-        for the best (longest) matching substring against the listing title.
-        Falls back to the 'default' key.
+        If *live_value* is provided (from eBay/Cardmarket), it is returned
+        directly.  Otherwise the static ``market_values`` config table is
+        checked for a matching title substring (longest match wins).
+
+        The ``default`` key is **never** used as a fallback because the
+        card-price-validation rules require real market data for every
+        valuation.  ``None`` is returned when no live price is available
+        and no specific static entry matches the title.
         """
         if live_value is not None and live_value > 0:
             return live_value
 
         title_lower = listing.title.lower()
         best_key = ""
-        best_value = settings.market_values.get("default", 30.0)
+        best_value: float | None = None
 
         for key, value in settings.market_values.items():
+            # Skip the catch-all default – we never use it.
             if key == "default":
                 continue
             if key in title_lower and len(key) > len(best_key):
@@ -95,6 +113,42 @@ class DealScorer:
             return False
         return True
 
+    def should_post_bulk(self, listing: Listing) -> bool:
+        """Return True when a bulk lot qualifies for posting.
+
+        A bulk listing passes only when:
+        - Hard filters pass (blacklist, max price, seller rating).
+        - ``listing.price_per_card`` is known and ≤ ``BULK_MAX_PRICE_PER_CARD``.
+
+        When the card count is unknown the listing is unverifiable and is
+        rejected unless ``settings.allow_low_confidence`` is enabled.
+        """
+        if not self.passes_filters(listing):
+            return False
+
+        if listing.price_per_card is None:
+            if settings.allow_low_confidence:
+                logger.info(
+                    "Listing %s bulk lot with unknown card count – posting "
+                    "because allow_low_confidence=true",
+                    listing.listing_id,
+                )
+                return True
+            logger.debug(
+                "Listing %s bulk lot rejected: card count unknown",
+                listing.listing_id,
+            )
+            return False
+
+        qualifies = listing.price_per_card <= BULK_MAX_PRICE_PER_CARD
+        logger.debug(
+            "Listing %s bulk lot price/card=%.4f – %s",
+            listing.listing_id,
+            listing.price_per_card,
+            "PASS" if qualifies else "FAIL",
+        )
+        return qualifies
+
     def score(self, listing: Listing, live_market_value: float | None = None) -> int:
         """Compute and return the deal score (0–100).
 
@@ -103,6 +157,11 @@ class DealScorer:
 
         *live_market_value* may be supplied from a real-time eBay/Cardmarket
         lookup.  When provided it takes priority over static config values.
+
+        If no live market value is found **and** no specific static entry
+        matches the title, ``listing.estimated_market_value`` is set to
+        ``None`` and the listing scores 0 (unverified).  The caller can
+        still allow it through by enabling ``settings.allow_low_confidence``.
         """
         if not self.passes_filters(listing):
             listing.score = 0
@@ -110,6 +169,26 @@ class DealScorer:
 
         emv = self.estimate_market_value(listing, live_value=live_market_value)
         listing.estimated_market_value = emv
+
+        # No market value available and live data was not found → unverified.
+        if emv is None:
+            if not settings.allow_low_confidence:
+                logger.debug(
+                    "Listing %s: no market value available – marking unverified",
+                    listing.listing_id,
+                )
+                listing.score = 0
+                if not listing.valuation_explanation:
+                    listing.valuation_explanation = (
+                        "No live market price found and no specific static "
+                        "market value matches this listing."
+                    )
+                if listing.confidence == "Low":
+                    pass  # already set
+                listing.confidence = "Low"
+                return 0
+            # allow_low_confidence: score without a discount component.
+            emv = 0.0
 
         total = 0
         title_lower = listing.title.lower()
