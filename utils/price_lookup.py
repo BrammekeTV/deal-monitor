@@ -4,33 +4,31 @@ utils/price_lookup.py
 Live market price comparison from eBay and Cardmarket.
 
 eBay uses the public Finding API (requires a free App ID).
-Cardmarket uses the official MKM API v2.0 (requires OAuth 1.0 credentials
-from https://www.cardmarket.com/en/Magic/Account/SellYourCards/ApiRegistration).
+Cardmarket is scraped via Playwright + BeautifulSoup (no credentials needed)
+using the approach from DrankRock/AutoScrape's cardmarket_parser plugin.
 
-Both lookups are optional; if the required credentials are absent the
-lookup is silently skipped and the scorer falls back to the static
-market_values defined in config.yaml.
+Both lookups are optional:
+- eBay is skipped when ``EBAY_APP_ID`` is not set.
+- Cardmarket is skipped when no Playwright ``Browser`` is provided.
 
 Results are cached in-process for ``settings.price_lookup_cache_ttl``
-seconds to avoid hammering the APIs on every new listing.
+seconds to avoid hammering the sites on every new listing.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import random
-import string
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from config.settings import settings
 from utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser
 
 logger = get_logger(__name__)
 
@@ -189,152 +187,37 @@ async def _ebay_lookup(
 
 
 # ---------------------------------------------------------------------------
-# Cardmarket MKM API v2.0
+# Cardmarket scraper (Playwright + BeautifulSoup)
 # ---------------------------------------------------------------------------
 
-_CM_API_BASE = "https://api.cardmarket.com/ws/v2.0"
-
-
-def _cm_oauth_header(
-    method: str,
-    url: str,
-    params: dict[str, str],
-    app_token: str,
-    app_secret: str,
-    access_token: str,
-    access_token_secret: str,
-) -> str:
-    """Build an OAuth 1.0 Authorization header for the MKM API."""
-    oauth_params = {
-        "oauth_consumer_key": app_token,
-        "oauth_token": access_token,
-        "oauth_signature_method": "HMAC-SHA1",
-        "oauth_timestamp": str(int(time.time())),
-        "oauth_nonce": "".join(
-            random.choices(string.ascii_letters + string.digits, k=32)
-        ),
-        "oauth_version": "1.0",
-    }
-
-    all_params = {**params, **oauth_params}
-    sorted_params = sorted(all_params.items())
-    encoded_params = urllib.parse.urlencode(sorted_params)
-
-    base_string = "&".join(
-        urllib.parse.quote(s, safe="")
-        for s in [method.upper(), url, encoded_params]
-    )
-
-    signing_key = "&".join(
-        urllib.parse.quote(s, safe="")
-        for s in [app_secret, access_token_secret]
-    )
-
-    signature = base64.b64encode(
-        hmac.new(
-            signing_key.encode(),
-            base_string.encode(),
-            hashlib.sha1,
-        ).digest()
-    ).decode()
-
-    oauth_params["oauth_signature"] = signature
-    header_parts = ", ".join(
-        f'{urllib.parse.quote(k, safe="")}="{urllib.parse.quote(v, safe="")}"'
-        for k, v in sorted(oauth_params.items())
-    )
-    return f"OAuth realm=\"{url}\", {header_parts}"
-
-
 async def _cardmarket_lookup(
-    session: aiohttp.ClientSession, query: str
+    browser: "Browser", query: str
 ) -> PriceResult | None:
-    """Fetch product prices from Cardmarket via the MKM API."""
-    app_token = settings.cardmarket_app_token
-    app_secret = settings.cardmarket_app_secret
-    access_token = settings.cardmarket_access_token
-    access_token_secret = settings.cardmarket_access_token_secret
+    """Scrape Cardmarket product prices for *query* using Playwright + BS4."""
+    from scraper.cardmarket import CardmarketPriceScraper
 
-    if not all([app_token, app_secret, access_token, access_token_secret]):
-        logger.debug("Cardmarket credentials not set – skipping Cardmarket price lookup")
+    scraper = CardmarketPriceScraper(browser)
+    prices = await scraper.lookup(query, sample_size=settings.cardmarket_sample_size)
+
+    if not prices:
         return None
 
-    search_url_web = (
+    avg = sum(prices) / len(prices)
+    search_url = (
         f"https://www.cardmarket.com/en/Pokemon/Products/Search"
         f"?searchString={urllib.parse.quote_plus(query)}"
     )
-
-    endpoint = f"{_CM_API_BASE}/products/find"
-    params = {"search": query, "exact": "0", "onlyExactCategory": "0"}
-    query_string = urllib.parse.urlencode(params)
-    full_url = f"{endpoint}?{query_string}"
-
-    auth_header = _cm_oauth_header(
-        method="GET",
-        url=endpoint,
-        params=params,
-        app_token=app_token,  # type: ignore[arg-type]
-        app_secret=app_secret,  # type: ignore[arg-type]
-        access_token=access_token,  # type: ignore[arg-type]
-        access_token_secret=access_token_secret,  # type: ignore[arg-type]
+    return PriceResult(
+        platform="Cardmarket",
+        query=query,
+        avg_price=round(avg, 2),
+        min_price=round(min(prices), 2),
+        max_price=round(max(prices), 2),
+        currency="EUR",
+        search_url=search_url,
+        sample_count=len(prices),
+        prices=prices,
     )
-
-    try:
-        async with session.get(
-            full_url,
-            headers={
-                "Authorization": auth_header,
-                "User-Agent": "deal-monitor/1.0",
-            },
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status == 204:
-                logger.debug("Cardmarket: no products found for '%s'", query)
-                return None
-            if resp.status != 200:
-                logger.warning("Cardmarket API returned HTTP %d", resp.status)
-                return None
-            data: dict[str, Any] = await resp.json(content_type=None)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Cardmarket lookup failed: %s", exc)
-        return None
-
-    try:
-        products = data.get("product", [])
-        if not products:
-            return None
-
-        prices: list[float] = []
-        for product in products[: settings.cardmarket_sample_size]:
-            price_guide = product.get("priceGuide", {})
-            # Prefer 'TREND' (market trend price), fall back to 'AVG'
-            for key in ("TREND", "AVG", "AVG1", "LOW"):
-                raw = price_guide.get(key)
-                if raw is not None:
-                    try:
-                        prices.append(float(raw))
-                    except (ValueError, TypeError):
-                        pass
-                    break
-
-        if not prices:
-            return None
-
-        avg = sum(prices) / len(prices)
-        return PriceResult(
-            platform="Cardmarket",
-            query=query,
-            avg_price=round(avg, 2),
-            min_price=round(min(prices), 2),
-            max_price=round(max(prices), 2),
-            currency="EUR",
-            search_url=search_url_web,
-            sample_count=len(prices),
-            prices=prices,
-        )
-    except (KeyError, TypeError) as exc:
-        logger.warning("Cardmarket response parsing failed: %s", exc)
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +225,15 @@ async def _cardmarket_lookup(
 # ---------------------------------------------------------------------------
 
 async def lookup_prices(
-    session: aiohttp.ClientSession, query: str
+    session: aiohttp.ClientSession,
+    query: str,
+    browser: "Browser | None" = None,
 ) -> list[PriceResult]:
     """Return live price results for *query* from all enabled platforms.
+
+    *session* is used for the eBay Finding API.
+    *browser* is a Playwright Browser instance used for Cardmarket scraping;
+    if ``None`` the Cardmarket lookup is skipped.
 
     Results are cached for ``settings.price_lookup_cache_ttl`` seconds.
     Returns an empty list if no platforms are enabled or all fail.
@@ -368,16 +257,20 @@ async def lookup_prices(
                 ebay_result.sample_count,
             )
 
-    if settings.cardmarket_enabled:
-        cm_result = await _cardmarket_lookup(session, query)
+    if settings.cardmarket_enabled and browser is not None:
+        cm_result = await _cardmarket_lookup(browser, query)
         if cm_result:
             results.append(cm_result)
             logger.info(
-                "Cardmarket: '%s' → avg %.2f EUR (%d products)",
+                "Cardmarket: '%s' → avg %.2f EUR (%d price points)",
                 query,
                 cm_result.avg_price,
                 cm_result.sample_count,
             )
+    elif settings.cardmarket_enabled and browser is None:
+        logger.debug(
+            "Cardmarket lookup skipped for '%s' – no browser available", query
+        )
 
     _store_cache(query, results)
     return results

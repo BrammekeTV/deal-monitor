@@ -3,12 +3,19 @@ scraper/cardmarket.py
 ~~~~~~~~~~~~~~~~~~~~~
 Playwright-based price scraper for Cardmarket (cardmarket.com).
 
-Cardmarket does not provide a public API, so we scrape their search
-results page directly using the same browser instance that already runs
-for the Vinted scraper.
+Cardmarket does not provide a public API, so we scrape their pages
+directly using a Playwright browser (needed to pass Cloudflare).
 
-The scraper navigates to the Pokémon product search page, waits for the
-results table to load, and reads the trend price from each product row.
+Approach (inspired by DrankRock/AutoScrape cardmarket_parser plugin):
+  1. Navigate to the Pokémon product search page.
+  2. Find the URL of the first matching product.
+  3. Navigate to that product page.
+  4. Parse the structured price info block (``.info-list-container``) with
+     BeautifulSoup to extract: price trend, lowest price, 30-day / 7-day /
+     1-day averages.
+
+This two-step approach gives richer, more reliable price data than trying
+to scrape prices from the summary search-results table.
 """
 
 from __future__ import annotations
@@ -16,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+from typing import Any
 from urllib.parse import quote_plus
 
+from bs4 import BeautifulSoup
 from playwright.async_api import Browser, BrowserContext, Page
 
 from utils.logger import get_logger
@@ -35,21 +44,7 @@ _CM_SEARCH_URL = (
     + "?searchString={query}&sortBy=price_asc&perSite=20"
 )
 
-# Cardmarket uses a React/server-rendered hybrid; these selectors target the
-# rendered product table on the search results page.
-#
-# Primary selector: each product row in the results table.
-_ROW_SEL = "div.table-body div.row"
-# Within a row, the product name.
-_NAME_SEL = "div.col-seller a, div.col-title a, .product-title a"
-# Trend price element – Cardmarket renders prices as formatted strings like
-# "1,23 €". We look for the element carrying the trend/from price.
-_PRICE_SEL = (
-    "div.col-price span.color-primary,"
-    "span.font-weight-bold.color-primary,"
-    "div.price-container span"
-)
-# Cookie / consent banner accept button.
+# Cookie / consent banner accept button selectors.
 _COOKIE_SEL = (
     "button#cmVendorAcceptBtn,"
     "button[data-role='acceptAll'],"
@@ -57,31 +52,135 @@ _COOKIE_SEL = (
     "#onetrust-accept-btn-handler"
 )
 
+# Search-results page: any link pointing to a Pokemon product.
+_PRODUCT_LINK_SEL = "a[href*='/en/Pokemon/Products/']"
 
-def _parse_cm_price(raw: str) -> float | None:
-    """Convert Cardmarket price strings like '12,34 €' or '1.234,56 €' to float."""
-    # Strip everything except digits, commas and dots.
-    cleaned = re.sub(r"[^\d.,]", "", raw.strip())
-    if not cleaned:
-        return None
-    # Cardmarket uses comma as decimal separator, dot as thousands separator.
-    # e.g. "1.234,56" → 1234.56
-    if "," in cleaned and "." in cleaned:
-        # Thousands dot present: remove dots first, then swap comma.
-        cleaned = cleaned.replace(".", "").replace(",", ".")
-    elif "," in cleaned:
-        cleaned = cleaned.replace(",", ".")
+
+# ---------------------------------------------------------------------------
+# HTML parsing helpers  (AutoScrape / cardmarket_parser inspired)
+# ---------------------------------------------------------------------------
+
+def _clean_price_string(price_string: str) -> str:
+    """Fix mojibake encoding issues in price strings (â‚¬ → €, etc.)."""
+    if not price_string:
+        return ""
+    return (
+        price_string
+        .replace("â\x82¬", "€")
+        .replace("Â£", "£")
+        .strip()
+    )
+
+
+def _parse_price_to_float(price_string: str) -> float:
+    """Parse a European-format price string (``"13,98 €"``) into a float.
+
+    Handles both comma-as-decimal (``13,98``) and dot-as-thousands-separator
+    (``1.234,56``) formats.
+    """
+    if not price_string:
+        return 0.0
     try:
+        cleaned = "".join(c for c in price_string if c.isdigit() or c in ",.").strip()
+        if "," in cleaned and "." in cleaned:
+            # European with thousands separator: "1.234,56" → "1234.56"
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif "," in cleaned:
+            # Decimal comma only: "13,98" → "13.98"
+            cleaned = cleaned.replace(",", ".")
         return float(cleaned)
-    except ValueError:
-        return None
+    except (ValueError, AttributeError):
+        return 0.0
 
+
+def _parse_product_page(html_content: str) -> dict[str, float]:
+    """Extract price fields from a Cardmarket product page.
+
+    Returns a dict with keys: ``lowest_price``, ``price_trend``,
+    ``avg_30_days``, ``avg_7_days``, ``avg_1_day``.  Missing fields are
+    omitted from the dict.
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    prices: dict[str, float] = {}
+
+    container = soup.select_one(".info-list-container")
+    if not container:
+        logger.debug("Cardmarket: .info-list-container not found in page HTML")
+        return prices
+
+    dl = container.select_one("dl")
+    if not dl:
+        return prices
+
+    dt_elements = dl.select("dt")
+    dd_elements = dl.select("dd")
+
+    price_data: dict[str, str] = {}
+    for i in range(min(len(dt_elements), len(dd_elements))):
+        key = dt_elements[i].get_text().strip()
+        v_el = dd_elements[i].select_one("span")
+        value = v_el.get_text().strip() if v_el else dd_elements[i].get_text().strip()
+        price_data[key] = _clean_price_string(value)
+
+    # Lowest price  (labels: "From" / "De" / "Ab")
+    for key, value in price_data.items():
+        if key.lower() in ("from", "de", "ab"):
+            v = _parse_price_to_float(value)
+            if v > 0:
+                prices["lowest_price"] = v
+            break
+
+    # Price trend  (labels containing "trend" / "tendance")
+    for key, value in price_data.items():
+        if any(t in key.lower() for t in ("trend", "tendance")):
+            v = _parse_price_to_float(value)
+            if v > 0:
+                prices["price_trend"] = v
+            break
+
+    # 30-day average
+    for key, value in price_data.items():
+        if "30" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+            v = _parse_price_to_float(value)
+            if v > 0:
+                prices["avg_30_days"] = v
+            break
+
+    # 7-day average
+    for key, value in price_data.items():
+        if "7" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+            v = _parse_price_to_float(value)
+            if v > 0:
+                prices["avg_7_days"] = v
+            break
+
+    # 1-day average
+    for key, value in price_data.items():
+        if "1" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+            v = _parse_price_to_float(value)
+            if v > 0:
+                prices["avg_1_day"] = v
+            break
+
+    return prices
+
+
+# ---------------------------------------------------------------------------
+# Main scraper class
+# ---------------------------------------------------------------------------
 
 class CardmarketPriceScraper:
-    """Scrapes Cardmarket search results for Pokémon product prices.
+    """Scrapes Cardmarket product pages for Pokémon prices.
 
-    Designed to reuse an existing Playwright ``Browser`` instance (shared
-    with the Vinted scraper) so we don't launch a second browser process.
+    Reuses an existing Playwright ``Browser`` instance (managed externally)
+    so only one browser process is needed for the whole application.
+
+    Flow per ``lookup()`` call:
+    1. Open search results page for *query*.
+    2. Find the first product link.
+    3. Open that product page.
+    4. Parse the price info block with BeautifulSoup.
+    5. Return the collected prices as a plain list of floats.
     """
 
     def __init__(self, browser: Browser) -> None:
@@ -89,53 +188,80 @@ class CardmarketPriceScraper:
         self._cookie_accepted = False
 
     async def lookup(self, query: str, sample_size: int = 5) -> list[float] | None:
-        """Return up to *sample_size* trend prices for *query* on Cardmarket.
+        """Return price data for *query* scraped from Cardmarket.
 
-        Returns ``None`` on failure, or an empty list if no prices were found.
+        *sample_size* is accepted for API compatibility but the product-page
+        approach returns up to 5 price points regardless (trend, lowest,
+        avg_30, avg_7, avg_1).
+
+        Returns a non-empty list of floats on success, ``None`` on failure.
         """
-        url = _CM_SEARCH_URL.format(query=quote_plus(query))
-        logger.info("Cardmarket: searching %s", url)
+        search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
+        logger.info("Cardmarket: searching '%s'", query)
 
         context = await self._new_context()
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            # ── Step 1: search page ──────────────────────────────────────────
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
             await self._accept_cookies(page)
             await asyncio.sleep(random.uniform(1.5, 3.0))
 
-            # Wait for product rows to appear.
-            try:
-                await page.wait_for_selector(_ROW_SEL, timeout=12_000)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Cardmarket: no product rows found for '%s'", query
-                )
+            product_url = await self._find_first_product_url(page)
+            if not product_url:
+                logger.warning("Cardmarket: no product link found for '%s'", query)
                 return None
 
-            rows = await page.query_selector_all(_ROW_SEL)
-            logger.debug("Cardmarket: found %d rows for '%s'", len(rows), query)
+            # ── Step 2: product page ─────────────────────────────────────────
+            logger.debug("Cardmarket: navigating to product page %s", product_url)
+            await page.goto(product_url, wait_until="domcontentloaded", timeout=30_000)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
-            prices: list[float] = []
-            for row in rows[:sample_size]:
-                price_el = await row.query_selector(_PRICE_SEL)
-                if not price_el:
-                    continue
-                raw = (await price_el.inner_text()).strip()
-                price = _parse_cm_price(raw)
-                if price and price > 0:
-                    prices.append(price)
+            html = await page.content()
+            prices_dict = _parse_product_page(html)
 
-            if not prices:
+            if not prices_dict:
                 logger.debug("Cardmarket: no prices parsed for '%s'", query)
                 return None
 
-            return prices
+            # Prefer trend price as primary value; add averages and lowest.
+            prices: list[float] = []
+            for key in ("price_trend", "avg_30_days", "avg_7_days", "avg_1_day", "lowest_price"):
+                v = prices_dict.get(key)
+                if v is not None and v > 0:
+                    prices.append(v)
+
+            logger.debug(
+                "Cardmarket: '%s' → prices %s (from %s)",
+                query, prices, prices_dict,
+            )
+            return prices if prices else None
 
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cardmarket scrape error for '%s': %s", query, exc)
             return None
         finally:
             await context.close()
+
+    async def _find_first_product_url(self, page: Page) -> str | None:
+        """Return the href of the first product link on the search results page."""
+        try:
+            # Wait briefly for at least one product link to appear.
+            await page.wait_for_selector(_PRODUCT_LINK_SEL, timeout=12_000)
+        except Exception:  # noqa: BLE001
+            return None
+
+        links = await page.query_selector_all(_PRODUCT_LINK_SEL)
+        for link in links:
+            href = await link.get_attribute("href")
+            if not href:
+                continue
+            # Filter out category/search links – we want individual product pages.
+            # Product pages have at least 5 path segments after /en/Pokemon/Products/.
+            if href.count("/") >= 6:
+                full_url = href if href.startswith("http") else _CM_BASE + href
+                return full_url
+        return None
 
     async def _accept_cookies(self, page: Page) -> None:
         """Dismiss the Cardmarket cookie / consent banner if present."""
