@@ -1,0 +1,127 @@
+# =============================================================================
+# deal-monitor configuration
+# Secrets (tokens, webhooks) should be placed in .env – never here.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Scraper settings
+# ---------------------------------------------------------------------------
+scraper:
+  # How often to run a full scrape cycle (seconds).  Actual delay is randomised
+  # between interval_min and interval_max to reduce anti-bot fingerprinting.
+  interval_min: 60     # 1 minute
+  interval_max: 300    # 5 minutes
+
+  # Number of results to fetch per search term per cycle.
+  results_per_term: 30
+
+  # Playwright browser settings.
+  headless: true
+  browser: "chromium"   # chromium | firefox | webkit
+
+  # Delay range (seconds) between individual Playwright page navigations.
+  page_delay_min: 2.0
+  page_delay_max: 5.0
+
+  # Retry settings for failed requests.
+  max_retries: 3
+  retry_delay: 10
+
+  # Country filter – leave empty to search all countries.
+  # Uses ISO-3166-1 alpha-2 codes, e.g. ["NL", "BE", "DE"].
+  countries: []
+
+# ---------------------------------------------------------------------------
+# Search terms
+# ---------------------------------------------------------------------------
+search_terms:
+  - "Pokemon"
+  - "Pokémon"
+  - "151"
+  - "Scarlet Violet"
+  - "ETB"
+  - "Booster Box"
+  - "Charizard"
+  - "PSA"
+
+# ---------------------------------------------------------------------------
+# Deal detection
+# ---------------------------------------------------------------------------
+deal:
+  # Maximum price (EUR) to consider a listing at all.
+  max_price: 500.0
+
+  # Minimum deal score (0-100) to trigger a Discord post.
+  min_score: 30
+
+  # Percentage below estimated market value to flag as a good deal.
+  # E.g. 20 means 20 % below market value earns extra score points.
+  discount_threshold_pct: 20
+
+  # Keywords that raise the deal score (case-insensitive).
+  positive_keywords:
+    - "sealed"
+    - "mint"
+    - "PSA"
+    - "graded"
+    - "complete set"
+    - "booster box"
+    - "ETB"
+    - "elite trainer"
+    - "first edition"
+    - "1st edition"
+    - "holo"
+    - "charizard"
+    - "pikachu"
+    - "umbreon"
+    - "espeon"
+    - "vmax"
+    - "vstar"
+
+  # Keywords that disqualify a listing entirely (case-insensitive).
+  blacklist_keywords:
+    - "fake"
+    - "proxy"
+    - "replica"
+    - "damaged"
+    - "lot of stickers"
+
+  # Minimum seller star rating (Vinted shows 1–5).  Set to 0 to disable.
+  min_seller_rating: 3.0
+
+  # Treat listings with multiple items as a bundle bonus.
+  bundle_keywords:
+    - "lot"
+    - "bundle"
+    - "collection"
+    - "bulk"
+    - "set"
+
+# ---------------------------------------------------------------------------
+# Discord
+# ---------------------------------------------------------------------------
+discord:
+  # Discord channel ID to post deals into (can also be set via DISCORD_CHANNEL_ID env var).
+  channel_id: 0
+
+  # Colour (hex) used for "good deal" embeds.
+  embed_colour: 0x00FF7F
+
+  # Whether to also post via webhook (DISCORD_WEBHOOK_URL must be set in .env).
+  use_webhook: false
+
+# ---------------------------------------------------------------------------
+# Estimated market values
+# Used when no live price source is configured.
+# Keys are case-insensitive substrings matched against the listing title.
+# ---------------------------------------------------------------------------
+market_values:
+  "booster box scarlet violet": 140.0
+  "booster box": 120.0
+  "etb": 55.0
+  "elite trainer box": 55.0
+  "psa 10 charizard": 300.0
+  "psa 10": 150.0
+  "psa 9": 80.0
+  "151": 45.0
+  "default": 30.0

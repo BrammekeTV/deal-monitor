@@ -1,0 +1,17 @@
+# Core Discord library
+discord.py>=2.3.2
+
+# Async Playwright for browser automation
+playwright>=1.44.0
+
+# Async SQLite
+aiosqlite>=0.20.0
+
+# YAML configuration parsing
+PyYAML>=6.0.1
+
+# Environment variable loading
+python-dotenv>=1.0.0
+
+# HTTP client (for webhook delivery)
+aiohttp>=3.9.0

@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  deal-monitor:
+    build: .
+    container_name: deal-monitor
+    restart: unless-stopped
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - DATABASE_PATH=/app/data/deals.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Persist the database and logs outside the container.
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Mount config so you can edit it without rebuilding.
+      - ./config/config.yaml:/app/config/config.yaml:ro
