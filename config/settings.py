@@ -94,6 +94,24 @@ class Settings:
             k.lower(): float(v) for k, v in raw.get("market_values", {}).items()
         }
 
+        # --- Price lookup ---
+        pl = raw.get("price_lookup", {})
+        self.price_lookup_cache_ttl: int = int(pl.get("cache_ttl", 3600))
+
+        ebay_cfg = pl.get("ebay", {})
+        self.ebay_enabled: bool = bool(ebay_cfg.get("enabled", True))
+        self.ebay_sample_size: int = int(ebay_cfg.get("sample_size", 10))
+        self.ebay_site_id: int = int(ebay_cfg.get("site_id", 3))
+        self.ebay_app_id: str | None = os.getenv("EBAY_APP_ID")
+
+        cm_cfg = pl.get("cardmarket", {})
+        self.cardmarket_enabled: bool = bool(cm_cfg.get("enabled", True))
+        self.cardmarket_sample_size: int = int(cm_cfg.get("sample_size", 5))
+        self.cardmarket_app_token: str | None = os.getenv("CARDMARKET_APP_TOKEN")
+        self.cardmarket_app_secret: str | None = os.getenv("CARDMARKET_APP_SECRET")
+        self.cardmarket_access_token: str | None = os.getenv("CARDMARKET_ACCESS_TOKEN")
+        self.cardmarket_access_token_secret: str | None = os.getenv("CARDMARKET_ACCESS_TOKEN_SECRET")
+
         # --- Discord presentation ---
         disc = raw.get("discord", {})
         self.embed_colour: int = int(disc.get("embed_colour", 0x00FF7F))

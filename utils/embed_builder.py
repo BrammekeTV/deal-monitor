@@ -7,11 +7,15 @@ Builds discord.py Embed objects for Vinted deal listings.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import discord
 
 from config.settings import settings
 from scraper.base import Listing
+
+if TYPE_CHECKING:
+    from utils.price_lookup import PriceResult
 
 
 def _score_bar(score: int) -> str:
@@ -31,8 +35,15 @@ def _deal_label(score: int) -> str:
     return "ℹ️ Listing"
 
 
-def build_listing_embed(listing: Listing) -> discord.Embed:
-    """Create a Discord Embed from a scored Listing."""
+def build_listing_embed(
+    listing: Listing,
+    price_results: list["PriceResult"] | None = None,
+) -> discord.Embed:
+    """Create a Discord Embed from a scored Listing.
+
+    Optional *price_results* from live eBay/Cardmarket lookups are shown
+    as comparison fields so users can judge the deal at a glance.
+    """
     colour = settings.embed_colour
     label = _deal_label(listing.score)
     bar = _score_bar(listing.score)
@@ -65,6 +76,28 @@ def build_listing_embed(listing: Listing) -> discord.Embed:
                 name="📉 Discount",
                 value=f"{discount:.1f}% below market",
                 inline=True,
+            )
+
+    # Live price comparisons from eBay / Cardmarket
+    if price_results:
+        for result in price_results:
+            discount_text = ""
+            if result.avg_price > 0 and listing.price > 0:
+                diff_pct = (1 - listing.price / result.avg_price) * 100
+                if diff_pct > 0:
+                    discount_text = f"\n✅ **{diff_pct:.1f}% cheaper** than avg"
+                elif diff_pct < 0:
+                    discount_text = f"\n⚠️ {abs(diff_pct):.1f}% above avg"
+            embed.add_field(
+                name=f"🔎 {result.platform} (avg of {result.sample_count} sold)",
+                value=(
+                    f"[Search results]({result.search_url})\n"
+                    f"Avg: **{result.avg_price:.2f} {result.currency}**  "
+                    f"| Low: {result.min_price:.2f}  "
+                    f"| High: {result.max_price:.2f}"
+                    f"{discount_text}"
+                ),
+                inline=False,
             )
 
     # Deal score
