@@ -31,12 +31,17 @@ class DealScorer:
     config hot-reloads take effect without restarting.
     """
 
-    def estimate_market_value(self, listing: Listing) -> float:
+    def estimate_market_value(self, listing: Listing, live_value: float | None = None) -> float:
         """Look up an estimated market value for the listing.
 
-        Checks config.market_values for the best (longest) matching substring
-        against the listing title.  Falls back to the 'default' key.
+        If *live_value* is provided (from eBay/Cardmarket), it takes priority
+        over the static config table.  Otherwise checks config.market_values
+        for the best (longest) matching substring against the listing title.
+        Falls back to the 'default' key.
         """
+        if live_value is not None and live_value > 0:
+            return live_value
+
         title_lower = listing.title.lower()
         best_key = ""
         best_value = settings.market_values.get("default", 30.0)
@@ -90,17 +95,20 @@ class DealScorer:
             return False
         return True
 
-    def score(self, listing: Listing) -> int:
+    def score(self, listing: Listing, live_market_value: float | None = None) -> int:
         """Compute and return the deal score (0–100).
 
         Also sets ``listing.score`` and ``listing.estimated_market_value``
         as side effects.
+
+        *live_market_value* may be supplied from a real-time eBay/Cardmarket
+        lookup.  When provided it takes priority over static config values.
         """
         if not self.passes_filters(listing):
             listing.score = 0
             return 0
 
-        emv = self.estimate_market_value(listing)
+        emv = self.estimate_market_value(listing, live_value=live_market_value)
         listing.estimated_market_value = emv
 
         total = 0

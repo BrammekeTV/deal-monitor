@@ -29,6 +29,7 @@ from scraper.vinted import VintedScraper
 from utils.deal_scorer import DealScorer
 from utils.embed_builder import build_listing_embed
 from utils.logger import get_logger
+from utils.price_lookup import best_market_value, lookup_prices
 
 if TYPE_CHECKING:
     from scraper.base import Listing
@@ -154,8 +155,17 @@ class MonitorCog(commands.Cog, name="Monitor"):
             logger.debug("Already seen: %s", listing.listing_id)
             return
 
-        # Score.
-        score = self.scorer.score(listing)
+        # Fetch live market prices from eBay / Cardmarket.
+        price_results = []
+        if self._http:
+            price_results = await lookup_prices(
+                self._http, listing.title, browser=self.scraper._browser
+            )
+
+        live_value = best_market_value(price_results) if price_results else None
+
+        # Score (uses live market value when available).
+        score = self.scorer.score(listing, live_market_value=live_value)
         logger.debug(
             "Listing %s '%s' £%.2f → score %d",
             listing.listing_id,
@@ -179,12 +189,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         # Post to Discord / webhook if score qualifies.
         if score >= settings.min_score:
-            await self._post_listing(listing, channel)
+            await self._post_listing(listing, channel, price_results=price_results)
 
     async def _post_listing(
-        self, listing: "Listing", channel: discord.TextChannel | None
+        self,
+        listing: "Listing",
+        channel: discord.TextChannel | None,
+        price_results: list | None = None,
     ) -> None:
-        embed = build_listing_embed(listing)
+        embed = build_listing_embed(listing, price_results=price_results)
 
         # Try the bot channel first.
         if channel:

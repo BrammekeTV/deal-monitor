@@ -36,13 +36,30 @@ scraper:
 # ---------------------------------------------------------------------------
 search_terms:
   - "Pokemon"
-  - "Pokémon"
-  - "151"
-  - "Scarlet Violet"
-  - "ETB"
-  - "Booster Box"
-  - "Charizard"
-  - "PSA"
+
+# ---------------------------------------------------------------------------
+# Price lookup (live market comparison)
+# ---------------------------------------------------------------------------
+price_lookup:
+  # Maximum age of cached price lookups (seconds) before re-fetching.
+  cache_ttl: 3600
+
+  # eBay Finding API – free App ID from https://developer.ebay.com/
+  # Looks up recently *sold* listings so you get real transaction prices.
+  # Set EBAY_APP_ID in your .env to enable.
+  ebay:
+    enabled: true
+    # Number of recent sold listings to average.
+    sample_size: 10
+    # eBay global site ID: 0=US, 3=UK, 77=DE, 71=FR, 71=NL, 101=IT, 186=ES
+    site_id: 3   # UK – change to match your country
+
+  # Cardmarket – scraped via Playwright, no credentials required.
+  # Requires the bot's browser to be running (it reuses the Vinted browser).
+  cardmarket:
+    enabled: true
+    # Number of product rows to sample for average price.
+    sample_size: 5
 
 # ---------------------------------------------------------------------------
 # Deal detection
