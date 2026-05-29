@@ -94,7 +94,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
     @_monitor_loop.before_loop
     async def _before_loop(self) -> None:
         await self.bot.wait_until_ready()
-        logger.info("Bot ready – monitor loop starting")
+        logger.info("Bot ready – running immediate startup scrape cycle")
+        await self._run_cycle()
+        logger.info("Startup scrape cycle complete – regular interval loop begins")
 
     @_monitor_loop.error
     async def _loop_error(self, error: Exception) -> None:
