@@ -59,7 +59,7 @@ def _get_base_urls() -> list[str]:
     """Return the list of Vinted base URLs to scrape based on country settings."""
     countries = settings.countries
     if not countries:
-        return ["https://www.vinted.com"]
+        return ["https://www.vinted.nl"]
     urls = []
     for code in countries:
         base = _COUNTRY_DOMAINS.get(code.upper())
@@ -67,7 +67,7 @@ def _get_base_urls() -> list[str]:
             urls.append(base)
         else:
             logger.warning("Unknown country code %s \u2013 skipping", code)
-    return urls or ["https://www.vinted.com"]
+    return urls or ["https://www.vinted.nl"]
 
 
 class VintedScraper(BaseScraper):
