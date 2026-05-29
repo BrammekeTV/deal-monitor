@@ -13,8 +13,9 @@ scoring, and duplicate prevention.
 | 🔍 Multi-term search | Configurable list of Pokémon-related search terms |
 | 🌍 Country filtering | Scrape specific Vinted country domains (NL, DE, FR, GB, …) |
 | 📊 Deal scoring | Automated 0-100 score based on price, keywords, seller rating, bundles |
+| 💹 Live price comparison | Real-time eBay sold listings (Finding API) + Cardmarket prices shown in embeds |
 | 🚫 Duplicate prevention | SQLite-backed seen-listing store |
-| 🎨 Rich Discord embeds | Title, price, EMV, discount %, score bar, seller, thumbnail |
+| 🎨 Rich Discord embeds | Title, price, EMV, discount %, live market comparisons, score bar, seller, thumbnail |
 | 🔕 Blacklist | Keyword blacklist to filter fakes / proxies |
 | ⚙️ Slash commands | Manage filters and search terms at runtime via `/set_filter`, `/add_term`, etc. |
 | 🔄 Auto-reconnect | discord.py handles reconnection transparently |
@@ -43,12 +44,14 @@ deal-monitor/
 │
 ├── scraper/
 │   ├── base.py              # Abstract BaseScraper + Listing dataclass
-│   └── vinted.py            # Playwright-based Vinted scraper
+│   ├── vinted.py            # API-based Vinted scraper (vinted_scraper package)
+│   └── cardmarket.py        # Playwright-based Cardmarket price scraper
 │
 ├── utils/
 │   ├── logger.py            # Centralised logging setup
 │   ├── deal_scorer.py       # Configurable deal scoring logic
-│   └── embed_builder.py     # discord.py Embed builders
+│   ├── embed_builder.py     # discord.py Embed builders
+│   └── price_lookup.py      # Live eBay + Cardmarket price lookup with caching
 │
 └── bot/
     ├── client.py            # Bot factory (intents, events)
@@ -80,6 +83,10 @@ cp .env.example .env
 ```
 
 Edit `config/config.yaml` to adjust search terms, price limits, and scoring.
+
+> **Optional – eBay price comparison:** obtain a free App ID from
+> <https://developer.ebay.com/> and add it to `.env` as `EBAY_APP_ID`.
+> Cardmarket price scraping is enabled by default and requires no credentials.
 
 ### 3. Create a Discord bot
 
@@ -120,7 +127,13 @@ docker-compose logs -f
 | `deal.min_score` | 30 | Minimum deal score to trigger a Discord post |
 | `deal.blacklist_keywords` | `[fake, proxy, …]` | Keywords that disqualify a listing |
 | `deal.min_seller_rating` | 3.0 | Minimum seller star rating (0 to disable) |
-| `market_values` | see config | Title substring → estimated EUR market value |
+| `price_lookup.cache_ttl` | 3600 | Seconds to cache live price results in memory |
+| `price_lookup.ebay.enabled` | `true` | Enable eBay sold-listing lookups (requires `EBAY_APP_ID`) |
+| `price_lookup.ebay.sample_size` | 10 | Number of recent sold eBay listings to average |
+| `price_lookup.ebay.site_id` | 3 | eBay site: 0=US, 3=UK, 77=DE, 71=FR, 101=IT, 186=ES |
+| `price_lookup.cardmarket.enabled` | `true` | Enable Cardmarket price scraping via Playwright |
+| `price_lookup.cardmarket.sample_size` | 5 | Price points to collect per Cardmarket lookup |
+| `market_values` | see config | Title substring → estimated EUR market value (fallback when live data unavailable) |
 
 ---
 
@@ -160,6 +173,9 @@ docker-compose logs -f
 ---
 
 ## 🛠 Extending to other marketplaces
+
+Cardmarket price scraping is already built in (`scraper/cardmarket.py`).
+To add a fully new listing source (e.g. Marktplaats, eBay listings):
 
 1. Create `scraper/marketplace_name.py`.
 2. Subclass `BaseScraper` from `scraper/base.py`.

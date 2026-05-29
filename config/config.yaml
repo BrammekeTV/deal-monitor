@@ -54,8 +54,9 @@ price_lookup:
     # eBay global site ID: 0=US, 3=UK, 77=DE, 71=FR, 71=NL, 101=IT, 186=ES
     site_id: 3   # UK – change to match your country
 
-  # Cardmarket – scraped via Playwright, no credentials required.
-  # Requires the bot's browser to be running (it reuses the Vinted browser).
+  # Cardmarket – prices are scraped via Playwright + BeautifulSoup (no credentials required).
+  # Requires playwright to be installed (`playwright install chromium`).
+  # To disable, set enabled: false below.
   cardmarket:
     enabled: true
     # Number of product rows to sample for average price.

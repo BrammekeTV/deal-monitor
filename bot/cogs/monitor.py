@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 import discord
 from discord.ext import commands, tasks
+from playwright.async_api import async_playwright
 
 from config.settings import settings
 from database.db import Database
@@ -32,6 +33,7 @@ from utils.logger import get_logger
 from utils.price_lookup import best_market_value, lookup_prices
 
 if TYPE_CHECKING:
+    from playwright.async_api import Browser
     from scraper.base import Listing
 
 logger = get_logger(__name__)
@@ -55,6 +57,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # aiohttp session for webhook delivery.
         self._http: aiohttp.ClientSession | None = None
 
+        # Playwright browser for Cardmarket scraping.
+        self._playwright = None
+        self._browser: Browser | None = None
+
     # ------------------------------------------------------------------
     # Cog lifecycle
     # ------------------------------------------------------------------
@@ -63,6 +69,19 @@ class MonitorCog(commands.Cog, name="Monitor"):
         logger.info("MonitorCog loading – starting scraper and background task")
         await self.scraper.setup()
         self._http = aiohttp.ClientSession()
+        if settings.cardmarket_enabled:
+            try:
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
+                logger.info("Playwright browser launched for Cardmarket scraping")
+            except Exception:
+                logger.warning(
+                    "Failed to launch Playwright browser – Cardmarket lookups disabled",
+                    exc_info=True,
+                )
         self._monitor_loop.start()
 
     async def cog_unload(self) -> None:
@@ -71,6 +90,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
         await self.scraper.teardown()
         if self._http:
             await self._http.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
 
     # ------------------------------------------------------------------
     # Background loop
@@ -160,7 +183,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Fetch live market prices from eBay / Cardmarket.
         price_results = []
         if self._http:
-            price_results = await lookup_prices(self._http, listing.title)
+            price_results = await lookup_prices(self._http, listing.title, browser=self._browser)
 
         live_value = best_market_value(price_results) if price_results else None
 
