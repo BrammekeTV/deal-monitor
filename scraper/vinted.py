@@ -47,14 +47,48 @@ VINTED_SEARCH_URL = VINTED_BASE_URL + "/catalog?search_text={query}&order=newest
 
 # Selectors – these may change if Vinted updates their markup.
 # Prefer data attributes and aria labels over fragile class names.
-_ITEM_CARD_SEL = "[data-testid='item-box']"
-_COOKIE_ACCEPT_SEL = "button[data-testid='gdpr-accept-all-button']"
+# NOTE: The old `item-box` data-testid is no longer present in Vinted's DOM.
+#       We wait for item titles instead, then use JS to walk up to the card.
+_ITEM_CARD_SEL = "[data-testid='item-title']"
+# Try both the newer GDPR button and the OneTrust fallback used on some domains.
+_COOKIE_ACCEPT_SEL = (
+    "button[data-testid='gdpr-accept-all-button'], #onetrust-accept-btn-handler"
+)
 
-# Fallback CSS selectors for listing card fields.
-_CARD_TITLE_SEL = "[data-testid='item-box--description'] [class*='title']"
-_CARD_PRICE_SEL = "[data-testid='item-box--price'] [class*='price']"
+# CSS selectors for listing card fields (used in _parse_card fallback).
+_CARD_TITLE_SEL = "[data-testid='item-title']"
+_CARD_PRICE_SEL = "[data-testid='item-price']"
 _CARD_LINK_SEL = "a[href*='/items/']"
-_CARD_IMAGE_SEL = "img[src*='images']"
+_CARD_IMAGE_SEL = "[data-testid='item-image'] img"
+
+# JavaScript that extracts all visible listings in one round-trip.
+# For each item-title element it walks up the DOM until it finds an ancestor
+# that contains a link to /items/, then collects title, href, price and image.
+_EXTRACT_LISTINGS_JS = """
+() => {
+    const titleEls = document.querySelectorAll("[data-testid='item-title']");
+    return Array.from(titleEls).map(titleEl => {
+        let card = titleEl;
+        let linkEl = null;
+        for (let i = 0; i < 12; i++) {
+            card = card.parentElement;
+            if (!card) break;
+            linkEl = card.querySelector("a[href*='/items/']");
+            if (linkEl) break;
+        }
+        if (!linkEl) return null;
+        const href = linkEl.href || "";
+        const priceEl = card.querySelector("[data-testid='item-price']");
+        const price = priceEl ? priceEl.innerText.trim() : "0";
+        const imageEl = (
+            card.querySelector("[data-testid='item-image'] img") ||
+            card.querySelector("img")
+        );
+        const image = imageEl ? (imageEl.src || "") : "";
+        return { title: titleEl.innerText.trim(), href, price, image };
+    }).filter(item => item && item.href);
+}
+"""
 
 # Vinted country subdomains for filtering.
 _COUNTRY_DOMAINS: dict[str, str] = {
@@ -203,9 +237,9 @@ class VintedScraper(BaseScraper):
         if base_url in self._cookie_accepted:
             return
         try:
-            btn = page.locator(_COOKIE_ACCEPT_SEL)
+            btn = page.locator(_COOKIE_ACCEPT_SEL).first
             if await btn.count() > 0:
-                await btn.first.click()
+                await btn.click()
                 logger.debug("Cookie banner accepted on %s", base_url)
                 await _random_delay(1.0, 2.0)
         except Exception as exc:  # noqa: BLE001
@@ -247,19 +281,22 @@ class VintedScraper(BaseScraper):
             await self._navigate_with_retry(page, search_url)
             await _random_delay()
 
-            # Wait for item cards to load.
+            # Wait for item titles to appear (more stable than the old item-box
+            # container which Vinted removed in a DOM update).
             try:
                 await page.wait_for_selector(_ITEM_CARD_SEL, timeout=15_000)
             except Exception:  # noqa: BLE001
-                logger.warning("No item cards found for query '%s' on %s", query, base_url)
+                logger.warning("No item titles found for query '%s' on %s", query, base_url)
                 return
 
-            cards = await page.query_selector_all(_ITEM_CARD_SEL)
-            logger.info("Found %d cards for '%s' on %s", len(cards), query, base_url)
+            # Extract all listing data in one JS round-trip so we don't rely on
+            # a specific card-container selector.
+            raw_items: list[dict] = await page.evaluate(_EXTRACT_LISTINGS_JS)
+            logger.info("Found %d items for '%s' on %s", len(raw_items), query, base_url)
 
             count = 0
-            for card in cards[:max_results]:
-                listing = await self._parse_card(card, base_url)
+            for item in raw_items[:max_results]:
+                listing = self._build_listing(item, base_url)
                 if listing:
                     count += 1
                     yield listing
@@ -275,8 +312,41 @@ class VintedScraper(BaseScraper):
     # Parsing
     # ------------------------------------------------------------------
 
+    def _build_listing(self, item: dict, base_url: str) -> Listing | None:
+        """Build a Listing from the raw dict returned by *_EXTRACT_LISTINGS_JS*."""
+        try:
+            href = item.get("href", "")
+            url = href if href.startswith("http") else base_url + href
+            listing_id = _extract_listing_id(url)
+            if not listing_id:
+                return None
+
+            title = (item.get("title") or "Unknown").strip() or "Unknown"
+            price = _parse_price(item.get("price", "0")) or 0.0
+            currency = _currency_for_base_url(base_url)
+
+            image = item.get("image", "")
+            images = [image] if image and image.startswith("http") else []
+
+            seller_match = re.search(r"vinted\.[a-z.]+/([^/]+)/items/", url)
+            seller_name = seller_match.group(1) if seller_match else None
+
+            return Listing(
+                listing_id=listing_id,
+                title=title,
+                price=price,
+                currency=currency,
+                url=url,
+                seller_name=seller_name,
+                seller_rating=None,
+                images=images,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to build listing: %s", exc)
+            return None
+
     async def _parse_card(self, card, base_url: str) -> Listing | None:
-        """Extract a Listing from a DOM card element."""
+        """Extract a Listing from a DOM card element (kept as a fallback)."""
         try:
             # URL + ID
             link_el = await card.query_selector(_CARD_LINK_SEL)
