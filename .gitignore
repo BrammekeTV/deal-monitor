@@ -1,0 +1,36 @@
+# Byte-compiled / optimised / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.eggs/
+dist/
+build/
+*.egg-info/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Logs
+logs/
+
+# Database
+data/
+
+# Playwright browser binaries
+/ms-playwright/
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Docker
+*.env.local
