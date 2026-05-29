@@ -176,6 +176,170 @@ def build_error_embed(title: str, description: str) -> discord.Embed:
     return discord.Embed(title=title, description=description, colour=0xFF4444)
 
 
+def build_review_embed(
+    listing: Listing,
+    candidates: list[dict] | None = None,
+    failure_reason: str | None = None,
+) -> discord.Embed:
+    """Embed for an unidentified listing posted to the #card-review channel.
+
+    Community members can react or reply with reference URLs to help identify
+    the listing.
+    """
+    embed = discord.Embed(
+        title=f"🔍 Unidentified Listing: {listing.title}",
+        url=listing.url,
+        colour=0xFFA500,
+        timestamp=datetime.now(timezone.utc),
+        description=(
+            "This listing could not be automatically identified.\n"
+            "Reply to this message with a reference URL (Cardmarket, eBay, "
+            "PriceCharting, or TCGPlayer) to help match it.\n\n"
+            "✅ Correct Match  ❌ Incorrect Match  🔍 Needs More Research"
+        ),
+    )
+
+    embed.add_field(
+        name="💰 Asking Price",
+        value=f"**{listing.price:.2f} {listing.currency}**",
+        inline=True,
+    )
+
+    conf_emoji = _confidence_emoji(listing.confidence)
+    embed.add_field(
+        name=f"{conf_emoji} Confidence",
+        value=listing.confidence,
+        inline=True,
+    )
+
+    reason = failure_reason or listing.valuation_explanation or "No market data found."
+    embed.add_field(
+        name="❓ Why Failed",
+        value=reason[:1024],
+        inline=False,
+    )
+
+    if listing.description:
+        embed.add_field(
+            name="📝 Description",
+            value=listing.description[:512],
+            inline=False,
+        )
+
+    if listing.ocr_text:
+        embed.add_field(
+            name="🔤 OCR Results",
+            value=listing.ocr_text[:512],
+            inline=False,
+        )
+
+    if candidates:
+        lines = []
+        for c in candidates[:3]:
+            val = f"€{c['market_value']:.2f}" if c.get("market_value") else "price unknown"
+            ref = c.get("reference_url") or ""
+            lines.append(f"• **{c['card_name']}** ({val}) — [reference]({ref})" if ref else f"• **{c['card_name']}** ({val})")
+        embed.add_field(
+            name="📚 Memory Matches",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    if listing.images:
+        embed.set_image(url=listing.images[0])
+
+    seller_text = listing.seller_name or "Unknown"
+    embed.set_footer(text=f"Vinted  •  ID {listing.listing_id}  •  Seller: {seller_text}")
+    return embed
+
+
+def build_reference_confirmation_embed(
+    unidentified: dict,
+    reference_url: str,
+    platform: str,
+    submitted_by: discord.User | discord.Member,
+) -> discord.Embed:
+    """Embed posted by the bot when a user submits a reference URL."""
+    embed = discord.Embed(
+        title=f"🔗 Reference Submitted: {platform}",
+        colour=0x5865F2,
+        timestamp=datetime.now(timezone.utc),
+        description=(
+            f"**{submitted_by.display_name}** submitted a reference for:\n"
+            f"**{unidentified['title']}**\n\n"
+            f"React ✅ to **approve** this match or ❌ to **reject** it."
+        ),
+    )
+    embed.add_field(name="📎 Reference URL", value=reference_url[:1024], inline=False)
+    embed.add_field(
+        name="💰 Listing Price",
+        value=f"{unidentified['price']:.2f} {unidentified.get('currency', 'EUR')}",
+        inline=True,
+    )
+    embed.add_field(name="🏪 Platform", value=platform, inline=True)
+    embed.set_footer(text=f"Listing ID: {unidentified['id']}")
+    return embed
+
+
+def build_deal_escalation_embed(
+    unidentified: dict,
+    market_value: float,
+    reference_url: str,
+) -> discord.Embed:
+    """Embed posted to the main deals channel after a manual review finds a deal."""
+    price = unidentified["price"]
+    currency = unidentified.get("currency", "EUR")
+    discount_pct = (1 - price / market_value) * 100 if market_value > 0 else 0.0
+    profit_margin = market_value - price
+
+    embed = discord.Embed(
+        title="🔥 Manual Review Found a Deal",
+        url=unidentified["url"],
+        colour=0xFF4500,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="🃏 Card", value=unidentified["title"], inline=False)
+    embed.add_field(
+        name="📊 Market Value",
+        value=f"€{market_value:.2f}",
+        inline=True,
+    )
+    embed.add_field(
+        name="💰 Listing Price",
+        value=f"{price:.2f} {currency}",
+        inline=True,
+    )
+    embed.add_field(
+        name="📉 Discount",
+        value=f"{discount_pct:.1f}%",
+        inline=True,
+    )
+    embed.add_field(
+        name="💹 Profit Margin",
+        value=f"€{profit_margin:.2f}",
+        inline=True,
+    )
+    embed.add_field(name="🏪 Source", value="Vinted (via community review)", inline=True)
+    embed.add_field(name="🔗 Reference", value=reference_url[:1024], inline=False)
+    embed.add_field(
+        name="🛒 Original Listing",
+        value=unidentified["url"],
+        inline=False,
+    )
+
+    # Show first image if available
+    try:
+        import json
+        images = json.loads(unidentified.get("images") or "[]")
+        if images:
+            embed.set_thumbnail(url=images[0])
+    except (ValueError, TypeError):
+        pass
+
+    embed.set_footer(text="Identified through community review")
+    return embed
+
+
 def build_status_embed(
     *,
     listings_checked: int,

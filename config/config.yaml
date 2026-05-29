@@ -126,6 +126,11 @@ discord:
   # Discord channel ID to post deals into (can also be set via DISCORD_CHANNEL_ID env var).
   channel_id: 0
 
+  # Discord channel ID for community review of unidentified listings.
+  # Right-click the channel → "Copy Channel ID" (Developer Mode must be on).
+  # Can also be set via DISCORD_REVIEW_CHANNEL_ID env var.
+  review_channel_id: 0
+
   # Colour (hex) used for "good deal" embeds.
   embed_colour: 0x00FF7F
 
