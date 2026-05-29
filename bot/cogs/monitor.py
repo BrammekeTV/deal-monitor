@@ -34,6 +34,7 @@ from utils.logger import get_logger
 from utils.price_lookup import best_market_value, lookup_prices
 
 if TYPE_CHECKING:
+    from bot.cogs.review import ReviewCog
     from playwright.async_api import Browser
     from scraper.base import Listing
 
@@ -186,12 +187,31 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # card count + price per card before any pricing decisions are made.
         self.card_analyzer.analyze(listing)
 
+        # --- Check identification memory for previously approved matches ---
+        memory_matches = await self.db.find_in_memory(listing.title)
+        memory_value: float | None = None
+        if memory_matches:
+            best = next((m for m in memory_matches if m.get("market_value")), None)
+            if best:
+                memory_value = best["market_value"]
+                listing.confidence = "Medium"
+                listing.valuation_explanation = (
+                    f"Matched from community memory: {best['card_name']}. "
+                    f"Reference: {best.get('reference_url') or 'n/a'}"
+                )
+                logger.info(
+                    "Memory match for listing %s: '%s' (value=%.2f)",
+                    listing.listing_id,
+                    best["card_name"],
+                    memory_value,
+                )
+
         # Fetch live market prices from eBay / Cardmarket.
         price_results = []
         if self._http:
             price_results = await lookup_prices(self._http, listing.title, browser=self._browser)
 
-        live_value = best_market_value(price_results) if price_results else None
+        live_value = best_market_value(price_results) if price_results else memory_value
 
         # Upgrade confidence to High when we have a live market price match.
         if live_value is not None and listing.confidence == "Medium":
@@ -207,6 +227,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Decide whether to post this listing.
         # ----------------------------------------------------------------
         should_post: bool
+        send_to_review: bool = False
 
         if listing.is_bulk_lot:
             # Bulk lots bypass the score system; pass only at ≤ €0.01/card.
@@ -229,8 +250,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 score,
             )
             if score == 0 and not settings.allow_low_confidence:
-                # Unverified (no live market data and no static match).
+                # Unverified – route to review channel instead of discarding.
                 should_post = False
+                send_to_review = True
             else:
                 should_post = score >= settings.min_score
 
@@ -260,6 +282,19 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Post to Discord / webhook if it qualifies.
         if should_post:
             await self._post_listing(listing, channel, price_results=price_results)
+        elif send_to_review:
+            await self._post_for_review(listing)
+
+    async def _post_for_review(self, listing: "Listing") -> None:
+        """Delegate an unidentified listing to the ReviewCog."""
+        review_cog: "ReviewCog | None" = self.bot.cogs.get("Review")  # type: ignore[assignment]
+        if review_cog is None:
+            logger.debug(
+                "ReviewCog not loaded – unidentified listing %s will not be posted",
+                listing.listing_id,
+            )
+            return
+        await review_cog.post_for_review(listing)
 
     async def _post_listing(
         self,

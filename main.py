@@ -26,6 +26,7 @@ from pathlib import Path
 from bot.client import create_bot
 from bot.cogs.filters import FiltersCog
 from bot.cogs.monitor import MonitorCog
+from bot.cogs.review import ReviewCog
 from config.settings import settings
 from database.db import Database
 from utils.logger import configure_logging, get_logger
@@ -66,6 +67,7 @@ async def main() -> None:
 
     # Create bot and register cogs.
     bot = create_bot()
+    await bot.add_cog(ReviewCog(bot, db))
     await bot.add_cog(MonitorCog(bot, db))
     await bot.add_cog(FiltersCog(bot, db))
 

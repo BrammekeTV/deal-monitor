@@ -40,6 +40,8 @@ class Listing:
     # "High" | "Medium" | "Low"
     confidence: str = "Low"
     valuation_explanation: str = ""
+    # OCR text extracted from listing images (populated externally when available)
+    ocr_text: str | None = None
 
     @property
     def discount_pct(self) -> float | None:
