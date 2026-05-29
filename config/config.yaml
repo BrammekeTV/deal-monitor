@@ -54,12 +54,11 @@ price_lookup:
     # eBay global site ID: 0=US, 3=UK, 77=DE, 71=FR, 71=NL, 101=IT, 186=ES
     site_id: 3   # UK – change to match your country
 
-  # Cardmarket MKM API v2.0 – https://www.cardmarket.com/en/Magic/Account/API
-  # Set CARDMARKET_APP_TOKEN, CARDMARKET_APP_SECRET,
-  # CARDMARKET_ACCESS_TOKEN, CARDMARKET_ACCESS_TOKEN_SECRET in your .env.
+  # Cardmarket – scraped via Playwright, no credentials required.
+  # Requires the bot's browser to be running (it reuses the Vinted browser).
   cardmarket:
     enabled: true
-    # Number of card results to sample for average price.
+    # Number of product rows to sample for average price.
     sample_size: 5
 
 # ---------------------------------------------------------------------------

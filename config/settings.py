@@ -107,10 +107,6 @@ class Settings:
         cm_cfg = pl.get("cardmarket", {})
         self.cardmarket_enabled: bool = bool(cm_cfg.get("enabled", True))
         self.cardmarket_sample_size: int = int(cm_cfg.get("sample_size", 5))
-        self.cardmarket_app_token: str | None = os.getenv("CARDMARKET_APP_TOKEN")
-        self.cardmarket_app_secret: str | None = os.getenv("CARDMARKET_APP_SECRET")
-        self.cardmarket_access_token: str | None = os.getenv("CARDMARKET_ACCESS_TOKEN")
-        self.cardmarket_access_token_secret: str | None = os.getenv("CARDMARKET_ACCESS_TOKEN_SECRET")
 
         # --- Discord presentation ---
         disc = raw.get("discord", {})
