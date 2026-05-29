@@ -243,6 +243,36 @@ class CardmarketPriceScraper:
         finally:
             await context.close()
 
+    async def lookup_url(self, url: str) -> dict[str, float] | None:
+        """Fetch price data directly from a Cardmarket product page URL.
+
+        Returns the raw prices dict (``lowest_price``, ``price_trend``,
+        ``avg_30_days``, …) on success, or ``None`` on failure.
+        """
+        logger.info("Cardmarket: fetching prices from URL %s", url)
+        context = await self._new_context()
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            await self._accept_cookies(page)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            html = await page.content()
+            prices_dict = _parse_product_page(html)
+
+            if not prices_dict:
+                logger.debug("Cardmarket lookup_url: no prices parsed from %s", url)
+                return None
+
+            logger.debug("Cardmarket lookup_url: %s → %s", url, prices_dict)
+            return prices_dict
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cardmarket lookup_url error for %s: %s", url, exc)
+            return None
+        finally:
+            await context.close()
+
     async def _find_first_product_url(self, page: Page) -> str | None:
         """Return the href of the first product link on the search results page."""
         try:

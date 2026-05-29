@@ -30,9 +30,22 @@ def create_bot() -> commands.Bot:
     async def on_ready() -> None:
         logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id if bot.user else "?")
         # Sync slash commands with Discord.
+        # Guild-scoped sync is instant; global sync can take up to an hour.
+        from config.settings import settings
+
         try:
-            synced = await bot.tree.sync()
-            logger.info("Synced %d slash command(s)", len(synced))
+            if settings.discord_guild_id:
+                guild = discord.Object(id=settings.discord_guild_id)
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                logger.info(
+                    "Synced %d slash command(s) to guild %d",
+                    len(synced),
+                    settings.discord_guild_id,
+                )
+            else:
+                synced = await bot.tree.sync()
+                logger.info("Synced %d slash command(s) globally", len(synced))
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to sync slash commands: %s", exc)
 

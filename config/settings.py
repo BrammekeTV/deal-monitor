@@ -59,6 +59,10 @@ class Settings:
             os.getenv("DISCORD_REVIEW_CHANNEL_ID")
             or _deep_get(raw, "discord", "review_channel_id", default=0)
         )
+        self.discord_guild_id: int = int(
+            os.getenv("DISCORD_GUILD_ID")
+            or _deep_get(raw, "discord", "guild_id", default=0)
+        )
         self.discord_webhook_url: str | None = os.getenv("DISCORD_WEBHOOK_URL")
 
         # --- Scraper ---
