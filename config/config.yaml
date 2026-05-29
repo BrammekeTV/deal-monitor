@@ -29,7 +29,7 @@ scraper:
 
   # Country filter – leave empty to search all countries.
   # Uses ISO-3166-1 alpha-2 codes, e.g. ["NL", "BE", "DE"].
-  countries: []
+  countries: ["NL"]
 
 # ---------------------------------------------------------------------------
 # Search terms
