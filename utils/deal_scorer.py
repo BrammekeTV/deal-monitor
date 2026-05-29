@@ -25,9 +25,14 @@ required for a non-bulk individual-card listing to score above zero.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from config.settings import settings
 from scraper.base import Listing
 from utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from utils.price_lookup import PriceResult
 
 logger = get_logger(__name__)
 
@@ -148,6 +153,61 @@ class DealScorer:
             "PASS" if qualifies else "FAIL",
         )
         return qualifies
+
+    def cardmarket_deal_type(
+        self, listing: Listing, cm_result: "PriceResult"
+    ) -> tuple[bool, str]:
+        """Check Cardmarket-specific deal conditions and return (should_post, label).
+
+        Evaluates the four deal tiers defined by the pricing requirements:
+
+        * **Exceptional Deal** – listing price ≥ 30 % below 30-day average
+        * **Strong Deal**      – listing price ≥ 20 % below price trend
+        * **Trend Deal**       – listing price < price trend
+        * **Market Floor Deal** – listing price < from price
+
+        Multiple conditions can be satisfied simultaneously; all matching
+        labels are included in the returned description.  Returns
+        ``(True, label)`` when at least one condition is met, otherwise
+        ``(False, "")``.
+        """
+        price = listing.price
+        labels: list[str] = []
+
+        # Exceptional Deal: ≥ 30 % below 30-day average
+        if cm_result.avg_30_days and cm_result.avg_30_days > 0:
+            discount = (1 - price / cm_result.avg_30_days) * 100
+            if discount >= 30:
+                labels.append(
+                    f"🏆 Exceptional Deal ({discount:.1f}% below 30-day avg)"
+                )
+
+        # Strong Deal / Trend Deal: compare against price trend
+        if cm_result.price_trend and cm_result.price_trend > 0:
+            discount = (1 - price / cm_result.price_trend) * 100
+            if discount >= 20:
+                labels.append(
+                    f"💥 Strong Deal ({discount:.1f}% below trend)"
+                )
+            elif discount > 0:
+                labels.append(
+                    f"📈 Trend Deal ({discount:.1f}% below trend)"
+                )
+
+        # Market Floor Deal: listing is below the current from-price
+        if cm_result.from_price and cm_result.from_price > 0 and price < cm_result.from_price:
+            floor_diff = cm_result.from_price - price
+            labels.append(
+                f"🔻 Market Floor Deal (€{floor_diff:.2f} below from-price)"
+            )
+
+        should_post = bool(labels)
+        label = "  ".join(labels)
+        if should_post:
+            logger.debug(
+                "Listing %s Cardmarket deal: %s", listing.listing_id, label
+            )
+        return should_post, label
 
     def score(self, listing: Listing, live_market_value: float | None = None) -> int:
         """Compute and return the deal score (0–100).

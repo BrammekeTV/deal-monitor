@@ -239,25 +239,50 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     f"€{listing.price_per_card:.4f}/card."
                 )
         else:
-            # Individual card: score and check min_score threshold.
+            # Individual card: check Cardmarket deal conditions first (when
+            # Cardmarket data is available), then fall back to score threshold.
+            cm_result = next(
+                (r for r in price_results if r.platform == "Cardmarket"), None
+            )
+
+            cm_qualifies = False
+            cm_deal_label = ""
+            if cm_result is not None:
+                cm_qualifies, cm_deal_label = self.scorer.cardmarket_deal_type(
+                    listing, cm_result
+                )
+
             score = self.scorer.score(listing, live_market_value=live_value)
             logger.debug(
-                "Listing %s '%s' %.2f %s → score %d",
+                "Listing %s '%s' %.2f %s → score %d cm_qualifies=%s",
                 listing.listing_id,
                 listing.title,
                 listing.price,
                 listing.currency,
                 score,
+                cm_qualifies,
             )
-            if score == 0 and not settings.allow_low_confidence:
+
+            if cm_qualifies:
+                # Cardmarket conditions met – always post regardless of score.
+                should_post = True
+                # Annotate the deal label in the explanation.
+                listing.valuation_explanation = (
+                    f"Cardmarket deal detected: {cm_deal_label}. "
+                    + (listing.valuation_explanation or "")
+                ).strip()
+                if listing.confidence == "Low":
+                    listing.confidence = "Medium"
+            elif score == 0 and not settings.allow_low_confidence:
                 # Unverified – route to review channel instead of discarding.
                 should_post = False
                 send_to_review = True
             else:
                 should_post = score >= settings.min_score
 
-            # Annotate explanation when market data was found.
-            if price_results and listing.estimated_market_value:
+            # Annotate explanation when market data was found (only if not
+            # already set by Cardmarket deal detection above).
+            if not cm_qualifies and price_results and listing.estimated_market_value:
                 sources = ", ".join(r.platform for r in price_results)
                 urls = "  ".join(r.search_url for r in price_results)
                 listing.valuation_explanation = (
