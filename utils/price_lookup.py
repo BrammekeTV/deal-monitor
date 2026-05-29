@@ -51,6 +51,13 @@ class PriceResult:
     # Individual sold/listed prices for transparency
     prices: list[float] = field(default_factory=list)
 
+    # Cardmarket-specific price metrics (only set for platform == "Cardmarket")
+    from_price: float | None = None      # Current market floor ("From" price)
+    price_trend: float | None = None     # Conservative reference value
+    avg_30_days: float | None = None     # Market value (30-day average)
+    avg_7_days: float | None = None      # Recent market activity (7-day)
+    avg_1_day: float | None = None       # Recent market activity (1-day)
+
 
 # ---------------------------------------------------------------------------
 # In-process cache
@@ -197,7 +204,17 @@ async def _cardmarket_lookup(
     from scraper.cardmarket import CardmarketPriceScraper
 
     scraper = CardmarketPriceScraper(browser)
-    prices = await scraper.lookup(query, sample_size=settings.cardmarket_sample_size)
+    prices_dict = await scraper.lookup(query, sample_size=settings.cardmarket_sample_size)
+
+    if not prices_dict:
+        return None
+
+    # Build the flat price list (for avg/min/max) in a consistent order.
+    prices: list[float] = []
+    for key in ("price_trend", "avg_30_days", "avg_7_days", "avg_1_day", "lowest_price"):
+        v = prices_dict.get(key)
+        if v is not None and v > 0:
+            prices.append(v)
 
     if not prices:
         return None
@@ -217,6 +234,12 @@ async def _cardmarket_lookup(
         search_url=search_url,
         sample_count=len(prices),
         prices=prices,
+        # Cardmarket-specific metrics for deal detection
+        from_price=prices_dict.get("lowest_price"),
+        price_trend=prices_dict.get("price_trend"),
+        avg_30_days=prices_dict.get("avg_30_days"),
+        avg_7_days=prices_dict.get("avg_7_days"),
+        avg_1_day=prices_dict.get("avg_1_day"),
     )
 
 

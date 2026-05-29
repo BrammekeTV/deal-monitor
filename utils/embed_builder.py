@@ -108,24 +108,71 @@ def build_listing_embed(
     # Live price comparisons from eBay / Cardmarket
     if price_results:
         for result in price_results:
-            discount_text = ""
-            if result.avg_price > 0 and listing.price > 0:
-                diff_pct = (1 - listing.price / result.avg_price) * 100
-                if diff_pct > 0:
-                    discount_text = f"\n✅ **{diff_pct:.1f}% cheaper** than avg"
-                elif diff_pct < 0:
-                    discount_text = f"\n⚠️ {abs(diff_pct):.1f}% above avg"
-            embed.add_field(
-                name=f"🔎 {result.platform} (avg of {result.sample_count} sold)",
-                value=(
-                    f"[Search results]({result.search_url})\n"
-                    f"Avg: **{result.avg_price:.2f} {result.currency}**  "
-                    f"| Low: {result.min_price:.2f}  "
-                    f"| High: {result.max_price:.2f}"
-                    f"{discount_text}"
-                ),
-                inline=False,
-            )
+            if result.platform == "Cardmarket" and any(
+                v is not None
+                for v in (
+                    result.from_price,
+                    result.price_trend,
+                    result.avg_30_days,
+                    result.avg_7_days,
+                    result.avg_1_day,
+                )
+            ):
+                # Rich Cardmarket block: show each metric individually.
+                lines: list[str] = [f"[Product page]({result.search_url})"]
+                if result.from_price:
+                    lines.append(f"**From:** €{result.from_price:.2f}")
+                if result.price_trend:
+                    disc = (
+                        (1 - listing.price / result.price_trend) * 100
+                        if listing.price > 0 else 0.0
+                    )
+                    trend_str = f"€{result.price_trend:.2f}"
+                    if disc > 0:
+                        trend_str += f"  ✅ **{disc:.1f}% cheaper**"
+                    elif disc < 0:
+                        trend_str += f"  ⚠️ {abs(disc):.1f}% above"
+                    lines.append(f"**Price Trend:** {trend_str}")
+                if result.avg_30_days:
+                    disc30 = (
+                        (1 - listing.price / result.avg_30_days) * 100
+                        if listing.price > 0 else 0.0
+                    )
+                    avg30_str = f"€{result.avg_30_days:.2f}"
+                    if disc30 > 0:
+                        avg30_str += f"  ✅ **{disc30:.1f}% cheaper**"
+                    elif disc30 < 0:
+                        avg30_str += f"  ⚠️ {abs(disc30):.1f}% above"
+                    lines.append(f"**30-day Avg:** {avg30_str}")
+                if result.avg_7_days:
+                    lines.append(f"**7-day Avg:** €{result.avg_7_days:.2f}")
+                if result.avg_1_day:
+                    lines.append(f"**1-day Avg:** €{result.avg_1_day:.2f}")
+                embed.add_field(
+                    name="🃏 Cardmarket Prices",
+                    value="\n".join(lines),
+                    inline=False,
+                )
+            else:
+                # Generic block for eBay or Cardmarket without named metrics.
+                discount_text = ""
+                if result.avg_price > 0 and listing.price > 0:
+                    diff_pct = (1 - listing.price / result.avg_price) * 100
+                    if diff_pct > 0:
+                        discount_text = f"\n✅ **{diff_pct:.1f}% cheaper** than avg"
+                    elif diff_pct < 0:
+                        discount_text = f"\n⚠️ {abs(diff_pct):.1f}% above avg"
+                embed.add_field(
+                    name=f"🔎 {result.platform} (avg of {result.sample_count} sold)",
+                    value=(
+                        f"[Search results]({result.search_url})\n"
+                        f"Avg: **{result.avg_price:.2f} {result.currency}**  "
+                        f"| Low: {result.min_price:.2f}  "
+                        f"| High: {result.max_price:.2f}"
+                        f"{discount_text}"
+                    ),
+                    inline=False,
+                )
 
     # Deal score (only meaningful for individual card listings)
     if not listing.is_bulk_lot:
