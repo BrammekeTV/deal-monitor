@@ -11,6 +11,8 @@ Commands:
   /add_term       – Add a search term for the current session.
   /remove_term    – Remove a search term for the current session.
   /reload_config  – Reload config.yaml from disk.
+  /pause          – Pause the deal-monitoring loop.
+  /resume         – Resume the deal-monitoring loop.
 """
 
 from __future__ import annotations
@@ -205,3 +207,49 @@ class FiltersCog(commands.Cog, name="Filters"):
             await interaction.response.send_message(
                 f"❌ Reload failed: {exc}", ephemeral=True
             )
+
+    # ------------------------------------------------------------------
+    # /pause / /resume
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="pause", description="Pause the deal-monitoring loop"
+    )
+    async def pause(self, interaction: discord.Interaction) -> None:
+        monitor = self._get_monitor()
+        if monitor is None:
+            await interaction.response.send_message(
+                "❌ Monitor cog is not loaded.", ephemeral=True
+            )
+            return
+        if not monitor._monitor_loop.is_running():
+            await interaction.response.send_message(
+                "⚠️ Monitoring is already paused.", ephemeral=True
+            )
+            return
+        monitor._monitor_loop.cancel()
+        logger.info("/pause by %s", interaction.user)
+        await interaction.response.send_message(
+            "⏸️ Deal monitoring paused. Use `/resume` to restart.", ephemeral=True
+        )
+
+    @app_commands.command(
+        name="resume", description="Resume the deal-monitoring loop"
+    )
+    async def resume(self, interaction: discord.Interaction) -> None:
+        monitor = self._get_monitor()
+        if monitor is None:
+            await interaction.response.send_message(
+                "❌ Monitor cog is not loaded.", ephemeral=True
+            )
+            return
+        if monitor._monitor_loop.is_running():
+            await interaction.response.send_message(
+                "⚠️ Monitoring is already running.", ephemeral=True
+            )
+            return
+        monitor._monitor_loop.start()
+        logger.info("/resume by %s", interaction.user)
+        await interaction.response.send_message(
+            "▶️ Deal monitoring resumed.", ephemeral=True
+        )

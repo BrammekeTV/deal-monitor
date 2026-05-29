@@ -127,7 +127,10 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
     # ── Strategy 1: rendered info-list-container ──────────────────────────
     container = soup.select_one(_PRICE_CONTAINER_SEL)
     if container:
-        dl = container.select_one("dl")
+        # The .info-list-container class may be on the <dl> itself, or the
+        # <dl> may be a child.  Handle both cases so the parser works with
+        # both the old and current Cardmarket HTML structure.
+        dl = container if container.name == "dl" else container.select_one("dl")
         if dl:
             dt_elements = dl.select("dt")
             dd_elements = dl.select("dd")
@@ -139,15 +142,15 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
                 value = v_el.get_text().strip() if v_el else dd_elements[i].get_text().strip()
                 price_data[key] = _clean_price_string(value)
 
-            # Lowest / From price  (labels: "From" / "De" / "Ab")
+            # Lowest / From price  (labels: "From" / "De" / "Ab" / "Vanaf")
             for key, value in price_data.items():
-                if key.lower() in ("from", "de", "ab"):
+                if key.lower() in ("from", "de", "ab", "vanaf"):
                     v = _parse_price_to_float(value)
                     if v > 0:
                         prices["lowest_price"] = v
                     break
 
-            # Price trend  (labels containing "trend" / "tendance")
+            # Price trend  (labels containing "trend" / "tendance" / "prijstrend")
             for key, value in price_data.items():
                 if any(t in key.lower() for t in ("trend", "tendance")):
                     v = _parse_price_to_float(value)
@@ -157,7 +160,7 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
 
             # 30-day average
             for key, value in price_data.items():
-                if "30" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+                if "30" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
                     v = _parse_price_to_float(value)
                     if v > 0:
                         prices["avg_30_days"] = v
@@ -165,7 +168,7 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
 
             # 7-day average
             for key, value in price_data.items():
-                if "7" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+                if "7" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
                     v = _parse_price_to_float(value)
                     if v > 0:
                         prices["avg_7_days"] = v
@@ -173,7 +176,7 @@ def _parse_product_page(html_content: str) -> dict[str, float]:
 
             # 1-day average
             for key, value in price_data.items():
-                if "1" in key and any(t in key.lower() for t in ("day", "jour", "tage")):
+                if "1" in key and any(t in key.lower() for t in ("day", "jour", "tage", "dag")):
                     v = _parse_price_to_float(value)
                     if v > 0:
                         prices["avg_1_day"] = v
@@ -356,7 +359,7 @@ class CardmarketPriceScraper:
         snapshot the HTML.  Falls back to a timed delay if the element
         never appears (some pages render differently).
         """
-        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        await page.goto(url, wait_until="load", timeout=30_000)
 
         # Wait for the price container to be rendered (dynamic content).
         try:
@@ -414,14 +417,20 @@ class CardmarketPriceScraper:
     async def _new_context(self) -> BrowserContext:
         widths = [1280, 1366, 1440, 1920]
         w = random.choice(widths)
+        # Rotate through recent Chrome stable versions to reduce fingerprinting.
+        chrome_versions = ["124.0.0.0", "125.0.0.0", "131.0.0.0", "132.0.0.0", "136.0.0.0"]
+        chrome_ver = random.choice(chrome_versions)
         return await self._browser.new_context(
             viewport={"width": w, "height": int(w * 0.5625)},
             locale="en-GB",
             timezone_id="Europe/Amsterdam",
             user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
+                f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                f"AppleWebKit/537.36 (KHTML, like Gecko) "
+                f"Chrome/{chrome_ver} Safari/537.36"
             ),
             java_script_enabled=True,
+            extra_http_headers={
+                "Accept-Language": "en-GB,en;q=0.9",
+            },
         )
