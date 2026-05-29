@@ -1,8 +1,11 @@
 # Core Discord library
 discord.py>=2.3.2
 
-# Async Playwright for browser automation
-playwright>=1.44.0
+# Vinted scraper (API-based, no browser required)
+vinted_scraper>=3.1.0
+
+# httpx is pulled in by vinted_scraper; pinned here for clarity
+httpx[brotli]>=0.20.0
 
 # Async SQLite
 aiosqlite>=0.20.0

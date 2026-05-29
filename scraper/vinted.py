@@ -1,36 +1,21 @@
 """
 scraper/vinted.py
 ~~~~~~~~~~~~~~~~~
-Vinted marketplace scraper using Playwright for browser automation.
+Vinted marketplace scraper using the `vinted_scraper` package by Giglium.
 
-Vinted is a dynamic SPA, so we use a real browser to:
-  1. Accept the cookie banner on first visit.
-  2. Navigate to the search URL with filters.
-  3. Parse listing cards from the rendered DOM.
+Uses Vinted's internal JSON API via httpx (no browser required).
+Automatic cookie management and retries are handled by the library.
 
-Anti-bot mitigations applied:
-  - Randomised delays between page actions.
-  - Stealth user-agent via playwright-stealth (if installed).
-  - Random viewport sizes.
-  - Retry logic with exponential back-off.
+See: https://github.com/Giglium/vinted_scraper
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import random
-import re
 from typing import AsyncIterator
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Page,
-    Playwright,
-    async_playwright,
-)
+from vinted_scraper import AsyncVintedScraper as _AsyncVintedScraper
 
 from config.settings import settings
 from scraper.base import BaseScraper, Listing
@@ -41,54 +26,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-VINTED_BASE_URL = "https://www.vinted.com"
-VINTED_SEARCH_URL = VINTED_BASE_URL + "/catalog?search_text={query}&order=newest_first"
-
-# Selectors – these may change if Vinted updates their markup.
-# Prefer data attributes and aria labels over fragile class names.
-# NOTE: The old `item-box` data-testid is no longer present in Vinted's DOM.
-#       We wait for item titles instead, then use JS to walk up to the card.
-_ITEM_CARD_SEL = "[data-testid='item-title']"
-# Try both the newer GDPR button and the OneTrust fallback used on some domains.
-_COOKIE_ACCEPT_SEL = (
-    "button[data-testid='gdpr-accept-all-button'], #onetrust-accept-btn-handler"
-)
-
-# CSS selectors for listing card fields (used in _parse_card fallback).
-_CARD_TITLE_SEL = "[data-testid='item-title']"
-_CARD_PRICE_SEL = "[data-testid='item-price']"
-_CARD_LINK_SEL = "a[href*='/items/']"
-_CARD_IMAGE_SEL = "[data-testid='item-image'] img"
-
-# JavaScript that extracts all visible listings in one round-trip.
-# For each item-title element it walks up the DOM until it finds an ancestor
-# that contains a link to /items/, then collects title, href, price and image.
-_EXTRACT_LISTINGS_JS = """
-() => {
-    const titleEls = document.querySelectorAll("[data-testid='item-title']");
-    return Array.from(titleEls).map(titleEl => {
-        let card = titleEl;
-        let linkEl = null;
-        for (let i = 0; i < 12; i++) {
-            card = card.parentElement;
-            if (!card) break;
-            linkEl = card.querySelector("a[href*='/items/']");
-            if (linkEl) break;
-        }
-        if (!linkEl) return null;
-        const href = linkEl.href || "";
-        const priceEl = card.querySelector("[data-testid='item-price']");
-        const price = priceEl ? priceEl.innerText.trim() : "0";
-        const imageEl = (
-            card.querySelector("[data-testid='item-image'] img") ||
-            card.querySelector("img")
-        );
-        const image = imageEl ? (imageEl.src || "") : "";
-        return { title: titleEl.innerText.trim(), href, price, image };
-    }).filter(item => item && item.href);
-}
-"""
 
 # Vinted country subdomains for filtering.
 _COUNTRY_DOMAINS: dict[str, str] = {
@@ -117,432 +54,203 @@ _COUNTRY_DOMAINS: dict[str, str] = {
     "NO": "https://www.vinted.no",
 }
 
-# Maps the registered domain (eTLD+1) to ISO 4217 currency code.
-_DOMAIN_CURRENCY: dict[str, str] = {
-    "vinted.co.uk": "GBP",
-    "vinted.pl": "PLN",
-    "vinted.cz": "CZK",
-    "vinted.se": "SEK",
-    "vinted.dk": "DKK",
-    "vinted.no": "NOK",
-    "vinted.hu": "HUF",
-    "vinted.ro": "RON",
-}
-
-
-def _currency_for_base_url(base_url: str) -> str:
-    """Return the ISO 4217 currency code that corresponds to a Vinted domain.
-
-    Parses the *hostname* of the URL properly so that a substring match
-    cannot be tricked by a crafted path component (e.g. ``/vinted.co.uk``).
-    """
-    hostname = urlparse(base_url).hostname or ""
-    # Strip leading "www." to normalise.
-    if hostname.startswith("www."):
-        hostname = hostname[4:]
-    return _DOMAIN_CURRENCY.get(hostname, "EUR")
-
 
 def _get_base_urls() -> list[str]:
     """Return the list of Vinted base URLs to scrape based on country settings."""
     countries = settings.countries
     if not countries:
-        return [VINTED_BASE_URL]
+        return ["https://www.vinted.com"]
     urls = []
     for code in countries:
         base = _COUNTRY_DOMAINS.get(code.upper())
         if base:
             urls.append(base)
         else:
-            logger.warning("Unknown country code %s – skipping", code)
-    return urls or [VINTED_BASE_URL]
-
-
-async def _random_delay(min_s: float | None = None, max_s: float | None = None) -> None:
-    lo = min_s if min_s is not None else settings.page_delay_min
-    hi = max_s if max_s is not None else settings.page_delay_max
-    await asyncio.sleep(random.uniform(lo, hi))
-
-
-def _random_viewport() -> dict[str, int]:
-    widths = [1280, 1366, 1440, 1600, 1920]
-    w = random.choice(widths)
-    return {"width": w, "height": int(w * 0.5625)}  # 16:9 ratio
-
-
-def _extract_listing_id(url: str) -> str | None:
-    """Extract numeric Vinted listing ID from a URL."""
-    match = re.search(r"/items/(\d+)", url)
-    return match.group(1) if match else None
-
-
-def _parse_price(raw: str) -> float | None:
-    """Convert a price string like '€ 12,50' or '12.50' to float."""
-    cleaned = re.sub(r"[^\d.,]", "", raw).replace(",", ".")
-    # Handle edge cases like '12.50.00'
-    parts = cleaned.split(".")
-    if len(parts) > 2:
-        # Only last two decimal digits are cents
-        cleaned = "".join(parts[:-1]) + "." + parts[-1]
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
+            logger.warning("Unknown country code %s \u2013 skipping", code)
+    return urls or ["https://www.vinted.com"]
 
 
 class VintedScraper(BaseScraper):
-    """Playwright-based scraper for Vinted."""
+    """API-based scraper for Vinted using the `vinted_scraper` package."""
 
     name = "vinted"
 
     def __init__(self) -> None:
-        self._playwright: Playwright | None = None
-        self._browser: Browser | None = None
-        self._cookie_accepted: set[str] = set()  # per-domain
+        # Keyed by base URL; populated in setup().
+        self._scrapers: dict[str, _AsyncVintedScraper] = {}
+        # Kept as None so price_lookup passes it safely (Cardmarket scraping
+        # is skipped when browser is None).
+        self._browser = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def setup(self) -> None:
-        """Launch the browser."""
-        logger.info("Launching %s browser (headless=%s)", settings.browser, settings.headless)
-        self._playwright = await async_playwright().start()
-        launcher = getattr(self._playwright, settings.browser)
-        self._browser = await launcher.launch(
-            headless=settings.headless,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
-        logger.info("Browser ready")
+        """Initialise one AsyncVintedScraper per configured country domain."""
+        base_urls = _get_base_urls()
+        for base_url in base_urls:
+            try:
+                scraper = await _AsyncVintedScraper.create(base_url)
+                self._scrapers[base_url] = scraper
+                logger.info("AsyncVintedScraper ready for %s", base_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to initialise scraper for %s: %s", base_url, exc)
 
     async def teardown(self) -> None:
-        """Close the browser and Playwright instance."""
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-        logger.info("Browser closed")
-
-    # ------------------------------------------------------------------
-    # Cookie consent
-    # ------------------------------------------------------------------
-
-    async def _accept_cookies(self, page: Page, base_url: str) -> None:
-        """Click the GDPR cookie-accept button if present."""
-        if base_url in self._cookie_accepted:
-            return
-        try:
-            btn = page.locator(_COOKIE_ACCEPT_SEL).first
-            if await btn.count() > 0:
-                await btn.click()
-                logger.debug("Cookie banner accepted on %s", base_url)
-                await _random_delay(1.0, 2.0)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Cookie accept failed (probably not shown): %s", exc)
-        self._cookie_accepted.add(base_url)
+        """Close all underlying httpx clients."""
+        for base_url, scraper in self._scrapers.items():
+            try:
+                await scraper._client.aclose()
+                logger.debug("Closed httpx client for %s", base_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error closing client for %s: %s", base_url, exc)
+        self._scrapers.clear()
+        logger.info("VintedScraper torn down")
 
     # ------------------------------------------------------------------
     # Core search
     # ------------------------------------------------------------------
 
-    async def search(self, query: str, max_results: int = 30) -> AsyncIterator[Listing]:  # type: ignore[override]
+    async def search(  # type: ignore[override]
+        self, query: str, max_results: int = 30
+    ) -> AsyncIterator[Listing]:
         """Yield Listing objects matching *query* from all configured countries."""
-        if not self._browser:
-            raise RuntimeError("VintedScraper.setup() has not been called")
+        if not self._scrapers:
+            raise RuntimeError(
+                "VintedScraper.setup() has not been called or no scrapers initialised"
+            )
 
-        base_urls = _get_base_urls()
+        base_urls = list(self._scrapers.keys())
 
-        for base_url in base_urls:
+        for i, base_url in enumerate(base_urls):
             async for listing in self._search_domain(query, max_results, base_url):
                 yield listing
             # Polite delay between domains.
-            if len(base_urls) > 1:
-                await _random_delay(2.0, 4.0)
+            if i < len(base_urls) - 1:
+                await asyncio.sleep(2.0)
 
     async def _search_domain(
         self, query: str, max_results: int, base_url: str
     ) -> AsyncIterator[Listing]:
-        """Scrape one Vinted domain for *query*."""
-        context = await self._new_context()
-        page = await context.new_page()
+        """Yield Listings from a single Vinted domain."""
+        scraper = self._scrapers.get(base_url)
+        if not scraper:
+            logger.warning("No scraper available for %s", base_url)
+            return
 
         try:
-            # First visit the homepage to get cookies / consent.
-            await self._navigate_with_retry(page, base_url)
-            await self._accept_cookies(page, base_url)
+            params = {
+                "search_text": query,
+                "per_page": max_results,
+                "order": "newest_first",
+            }
+            items = await scraper.search(params)
+            logger.info(
+                "Found %d items for '%s' on %s", len(items), query, base_url
+            )
 
-            search_url = f"{base_url}/catalog?search_text={quote_plus(query)}&order=newest_first"
-            logger.info("Searching: %s", search_url)
-            await self._navigate_with_retry(page, search_url)
-            await _random_delay()
-
-            # Wait for item titles to appear (more stable than the old item-box
-            # container which Vinted removed in a DOM update).
-            try:
-                await page.wait_for_selector(_ITEM_CARD_SEL, timeout=15_000)
-            except Exception:  # noqa: BLE001
-                logger.warning("No item titles found for query '%s' on %s", query, base_url)
-                return
-
-            # Extract all listing data in one JS round-trip so we don't rely on
-            # a specific card-container selector.
-            raw_items: list[dict] = await page.evaluate(_EXTRACT_LISTINGS_JS)
-            logger.info("Found %d items for '%s' on %s", len(raw_items), query, base_url)
-
-            count = 0
-            for item in raw_items[:max_results]:
-                listing = self._build_listing(item, base_url)
+            for vinted_item in items[:max_results]:
+                listing = _vinted_item_to_listing(vinted_item, base_url)
                 if listing:
-                    count += 1
                     yield listing
 
-            logger.debug("Yielded %d listings for '%s' on %s", count, query, base_url)
-
         except Exception as exc:  # noqa: BLE001
-            logger.error("Error searching '%s' on %s: %s", query, base_url, exc, exc_info=True)
-        finally:
-            await context.close()
-
-    # ------------------------------------------------------------------
-    # Parsing
-    # ------------------------------------------------------------------
-
-    def _build_listing(self, item: dict, base_url: str) -> Listing | None:
-        """Build a Listing from the raw dict returned by *_EXTRACT_LISTINGS_JS*."""
-        try:
-            href = item.get("href", "")
-            url = href if href.startswith("http") else base_url + href
-            listing_id = _extract_listing_id(url)
-            if not listing_id:
-                return None
-
-            title = (item.get("title") or "Unknown").strip() or "Unknown"
-            price = _parse_price(item.get("price", "0")) or 0.0
-            currency = _currency_for_base_url(base_url)
-
-            image = item.get("image", "")
-            images = [image] if image and image.startswith("http") else []
-
-            seller_match = re.search(r"vinted\.[a-z.]+/([^/]+)/items/", url)
-            seller_name = seller_match.group(1) if seller_match else None
-
-            return Listing(
-                listing_id=listing_id,
-                title=title,
-                price=price,
-                currency=currency,
-                url=url,
-                seller_name=seller_name,
-                seller_rating=None,
-                images=images,
+            logger.error(
+                "Error searching '%s' on %s: %s", query, base_url, exc, exc_info=True
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to build listing: %s", exc)
+            # Attempt to refresh cookie and continue on next cycle.
+            try:
+                scraper.session_cookie = await scraper.refresh_cookie()
+                logger.info("Cookie refreshed for %s", base_url)
+            except Exception as refresh_exc:  # noqa: BLE001
+                logger.error(
+                    "Cookie refresh failed for %s: %s", base_url, refresh_exc
+                )
+
+    # ------------------------------------------------------------------
+    # Detail page
+    # ------------------------------------------------------------------
+
+    async def get_listing(self, url: str) -> Listing | None:  # type: ignore[override]
+        """Fetch full listing details by item ID extracted from the URL."""
+        import re
+
+        match = re.search(r"/items/(\d+)", url)
+        if not match:
+            logger.warning("Cannot extract item ID from URL: %s", url)
             return None
 
-    async def _parse_card(self, card, base_url: str) -> Listing | None:
-        """Extract a Listing from a DOM card element (kept as a fallback)."""
-        try:
-            # URL + ID
-            link_el = await card.query_selector(_CARD_LINK_SEL)
-            if not link_el:
-                return None
-            href = await link_el.get_attribute("href") or ""
-            url = href if href.startswith("http") else base_url + href
-            listing_id = _extract_listing_id(url)
-            if not listing_id:
-                return None
+        item_id = match.group(1)
 
-            # Title
-            title_el = await card.query_selector(_CARD_TITLE_SEL)
-            title = (await title_el.inner_text()).strip() if title_el else "Unknown"
-            if not title:
-                # Fallback: use image alt text.
-                img_el = await card.query_selector(_CARD_IMAGE_SEL)
-                if img_el:
-                    title = (await img_el.get_attribute("alt") or "Unknown").strip()
-
-            # Price
-            price_el = await card.query_selector(_CARD_PRICE_SEL)
-            price_raw = (await price_el.inner_text()).strip() if price_el else "0"
-            price = _parse_price(price_raw) or 0.0
-
-            # Currency – derive from the domain portion of the base URL only.
-            currency = _currency_for_base_url(base_url)
-
-            # Images
-            images: list[str] = []
-            img_els = await card.query_selector_all("img")
-            for img_el in img_els:
-                src = await img_el.get_attribute("src")
-                if src and "images" in src:
-                    images.append(src)
-
-            # Seller – Vinted cards don't always expose the seller directly;
-            # we fall back to extracting it from the URL path or skip it.
-            seller_match = re.search(r"vinted\.[a-z.]+/([^/]+)/items/", url)
-            seller_name = seller_match.group(1) if seller_match else None
-
-            return Listing(
-                listing_id=listing_id,
-                title=title,
-                price=price,
-                currency=currency,
-                url=url,
-                seller_name=seller_name,
-                seller_rating=None,  # Requires visiting the profile page
-                images=images,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to parse card: %s", exc)
+        # Use the first available scraper (item IDs are global across domains).
+        scraper = next(iter(self._scrapers.values()), None)
+        if not scraper:
             return None
 
-    # ------------------------------------------------------------------
-    # Detail page (optional enrichment)
-    # ------------------------------------------------------------------
-
-    async def get_listing(self, url: str) -> Listing | None:
-        """Fetch full listing details by navigating to the listing page."""
-        if not self._browser:
-            raise RuntimeError("VintedScraper.setup() has not been called")
-
-        context = await self._new_context()
-        page = await context.new_page()
         try:
-            await self._navigate_with_retry(page, url)
-            await _random_delay()
-
-            # Extract data from the __NEXT_DATA__ JSON blob if available (fastest).
-            listing = await self._extract_next_data(page, url)
-            if listing:
-                return listing
-
-            # Fallback: manual DOM extraction.
-            return await self._extract_listing_dom(page, url)
+            vinted_item = await scraper.item(item_id)
+            # Determine the domain from the URL to resolve currency.
+            hostname = urlparse(url).hostname or ""
+            base_url = f"https://{hostname}"
+            return _vinted_item_to_listing(vinted_item, base_url)
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to fetch listing %s: %s", url, exc, exc_info=True)
             return None
-        finally:
-            await context.close()
 
-    async def _extract_next_data(self, page: Page, url: str) -> Listing | None:
-        """Try to parse the __NEXT_DATA__ JSON embedded by Next.js."""
-        try:
-            data_raw: str = await page.evaluate(
-                "() => document.getElementById('__NEXT_DATA__')?.textContent || ''"
-            )
-            if not data_raw:
-                return None
-            data = json.loads(data_raw)
-            item = (
-                data.get("props", {})
-                .get("pageProps", {})
-                .get("item")
-            )
-            if not item:
-                return None
 
-            listing_id = str(item.get("id", ""))
-            title = item.get("title", "Unknown")
-            price = float(item.get("price_numeric", 0))
-            currency = item.get("currency", "EUR")
-            seller = item.get("user", {}).get("login")
-            seller_rating_raw = item.get("user", {}).get("feedback_reputation")
-            seller_rating = float(seller_rating_raw) * 5 if seller_rating_raw else None
-            photos = [
-                p.get("url", "")
-                for p in item.get("photos", [])
-                if p.get("url")
-            ]
-            description = item.get("description", "")
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-            return Listing(
-                listing_id=listing_id,
-                title=title,
-                price=price,
-                currency=currency,
-                url=url,
-                seller_name=seller,
-                seller_rating=seller_rating,
-                images=photos,
-                description=description,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("__NEXT_DATA__ extraction failed: %s", exc)
+def _vinted_item_to_listing(vinted_item, base_url: str) -> Listing | None:
+    """Convert a VintedItem (from the library) into our Listing dataclass."""
+    try:
+        listing_id = str(vinted_item.id) if vinted_item.id is not None else None
+        if not listing_id:
             return None
 
-    async def _extract_listing_dom(self, page: Page, url: str) -> Listing | None:
-        """Fallback DOM scrape for a listing detail page."""
-        try:
-            listing_id = _extract_listing_id(url)
-            if not listing_id:
-                return None
-            title_el = await page.query_selector("h1")
-            title = (await title_el.inner_text()).strip() if title_el else "Unknown"
-            price_el = await page.query_selector("[itemprop='price']")
-            price_raw = (
-                await price_el.get_attribute("content") or "0"
-                if price_el
-                else "0"
-            )
-            price = float(price_raw) if price_raw else 0.0
-            images = await page.evaluate(
-                """() => Array.from(document.querySelectorAll('img[src*="images"]'))
-                         .map(i => i.src)"""
-            )
-            return Listing(
-                listing_id=listing_id,
-                title=title,
-                price=price,
-                currency="EUR",
-                url=url,
-                images=images or [],
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("DOM extraction failed: %s", exc)
-            return None
+        title = (vinted_item.title or "Unknown").strip() or "Unknown"
+        price = float(vinted_item.price or 0.0)
+        currency = vinted_item.currency or "EUR"
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        # Build absolute URL.
+        raw_url = vinted_item.url or ""
+        if raw_url.startswith("http"):
+            item_url = raw_url
+        elif raw_url:
+            item_url = base_url.rstrip("/") + "/" + raw_url.lstrip("/")
+        else:
+            item_url = f"{base_url.rstrip('/')}/items/{listing_id}"
 
-    async def _new_context(self) -> BrowserContext:
-        vp = _random_viewport()
-        return await self._browser.new_context(  # type: ignore[union-attr]
-            viewport=vp,
-            locale="en-GB",
-            timezone_id="Europe/Amsterdam",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            java_script_enabled=True,
+        # Images – prefer the full-size photo URL.
+        images: list[str] = []
+        if vinted_item.photos:
+            for photo in vinted_item.photos:
+                src = getattr(photo, "url", None) or getattr(photo, "full_size_url", None)
+                if src and src.startswith("http"):
+                    images.append(src)
+
+        # Seller info.
+        seller_name: str | None = None
+        seller_rating: float | None = None
+        if vinted_item.user:
+            seller_name = getattr(vinted_item.user, "login", None)
+            rep = getattr(vinted_item.user, "feedback_reputation", None)
+            if rep is not None:
+                seller_rating = float(rep) * 5  # 0-1 scale -> 0-5
+
+        return Listing(
+            listing_id=listing_id,
+            title=title,
+            price=price,
+            currency=currency,
+            url=item_url,
+            seller_name=seller_name,
+            seller_rating=seller_rating,
+            images=images,
+            description=vinted_item.description,
         )
-
-    async def _navigate_with_retry(
-        self, page: Page, url: str, retries: int | None = None
-    ) -> None:
-        """Navigate to *url* with retry + exponential back-off."""
-        max_retries = retries if retries is not None else settings.max_retries
-        for attempt in range(1, max_retries + 1):
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                return
-            except Exception as exc:  # noqa: BLE001
-                if attempt == max_retries:
-                    raise
-                wait = settings.retry_delay * (2 ** (attempt - 1))
-                logger.warning(
-                    "Navigation failed (attempt %d/%d): %s – retrying in %ds",
-                    attempt,
-                    max_retries,
-                    exc,
-                    wait,
-                )
-                await asyncio.sleep(wait)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to convert VintedItem to Listing: %s", exc)
+        return None
