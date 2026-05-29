@@ -38,6 +38,7 @@ from utils.embed_builder import (
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from bot.cogs.monitor import MonitorCog
     from scraper.base import Listing
 
 logger = get_logger(__name__)
@@ -106,6 +107,9 @@ class ReviewCog(commands.Cog, name="Review"):
     def __init__(self, bot: commands.Bot, db: Database) -> None:
         self.bot = bot
         self.db = db
+
+    def _get_monitor(self) -> "MonitorCog | None":
+        return self.bot.cogs.get("Monitor")  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Public API used by MonitorCog
@@ -273,6 +277,33 @@ class ReviewCog(commands.Cog, name="Review"):
         market_value: float | None,
     ) -> None:
         """Persist the reference submission and post a confirmation embed."""
+        # --- Fetch live price data from the submitted reference URL ----------
+        site_prices: dict[str, float] = {}
+        if platform == "Cardmarket":
+            monitor = self._get_monitor()
+            if monitor is not None and monitor._browser is not None:
+                try:
+                    from scraper.cardmarket import CardmarketPriceScraper
+
+                    scraper = CardmarketPriceScraper(monitor._browser)
+                    result = await scraper.lookup_url(url)
+                    if result:
+                        site_prices = result
+                        # Use the trend price (or lowest) as the authoritative
+                        # market value if the user didn't supply one manually.
+                        if market_value is None:
+                            market_value = (
+                                site_prices.get("price_trend")
+                                or site_prices.get("avg_30_days")
+                                or site_prices.get("lowest_price")
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Could not fetch Cardmarket prices for reference URL %s: %s",
+                        url,
+                        exc,
+                    )
+
         ref_id = await self.db.add_reference_submission(
             listing_id=unidentified["id"],
             submitted_by=str(message.author.id),
@@ -288,7 +319,28 @@ class ReviewCog(commands.Cog, name="Review"):
             submitted_by=message.author,
         )
 
-        if market_value is not None:
+        # --- Show prices fetched from the site --------------------------------
+        if site_prices:
+            price_lines = []
+            label_map = {
+                "lowest_price": "Lowest",
+                "price_trend": "Price Trend",
+                "avg_30_days": "Avg 30 days",
+                "avg_7_days": "Avg 7 days",
+                "avg_1_day": "Avg today",
+            }
+            for key in ("price_trend", "lowest_price", "avg_30_days", "avg_7_days", "avg_1_day"):
+                val = site_prices.get(key)
+                if val is not None and val > 0:
+                    price_lines.append(f"{label_map[key]}: **€{val:.2f}**")
+            if price_lines:
+                embed.add_field(
+                    name="🏷️ Cardmarket Prices",
+                    value="\n".join(price_lines),
+                    inline=True,
+                )
+        elif market_value is not None:
+            # Fallback: manually extracted price from the user's message text.
             embed.add_field(
                 name="💶 Submitted Market Value",
                 value=f"€{market_value:.2f}",

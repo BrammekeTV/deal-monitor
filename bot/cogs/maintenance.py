@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import discord
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Absolute path to the repository root (two levels above this file).
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 # ---------------------------------------------------------------------------
 # Subprocess helpers
@@ -34,11 +38,12 @@ logger = get_logger(__name__)
 
 
 async def _run(*args: str) -> tuple[int, str]:
-    """Run a subprocess command; return (returncode, combined stdout+stderr)."""
+    """Run a subprocess command from the repo root; return (returncode, combined output)."""
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=_REPO_ROOT,
     )
     stdout, stderr = await proc.communicate()
     output = (stdout + stderr).decode(errors="replace").strip()
@@ -79,6 +84,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
 
         current_version = await _git_version()
 
+        # Capture the current HEAD hash before pulling (reflog may not exist
+        # in shallow clones, so we store the hash explicitly).
+        rc_head, pre_pull_hash = await _run("git", "rev-parse", "HEAD")
+        pre_pull_hash = pre_pull_hash.strip() if rc_head == 0 else ""
+
         # 1. Fetch latest refs and tags.
         rc, fetch_out = await _run("git", "fetch", "--tags")
         if rc != 0:
@@ -97,21 +107,20 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             )
             return
 
-        # 3. Collect the list of changed files since the previous HEAD.
-        rc_diff, diff_out = await _run(
-            "git", "diff", "--name-only", "HEAD@{1}", "HEAD"
-        )
-        changed_files: list[str] = (
-            [f for f in diff_out.splitlines() if f.strip()] if rc_diff == 0 else []
-        )
+        # 3. Collect the list of changed files using the saved pre-pull hash.
+        changed_files: list[str] = []
+        if pre_pull_hash:
+            rc_diff, diff_out = await _run(
+                "git", "diff", "--name-only", pre_pull_hash, "HEAD"
+            )
+            if rc_diff == 0 and diff_out.strip():
+                changed_files = [f for f in diff_out.splitlines() if f.strip()]
 
-        # 4. Re-install dependencies when requirements.txt was touched or
-        #    when there is no prior commit to compare against (fresh checkout).
+        # 4. Re-install dependencies when requirements.txt was touched.
+        #    Always run pip when we can't determine what changed.
         deps_updated = False
         deps_error = ""
-        should_update_deps = (
-            not changed_files or "requirements.txt" in changed_files
-        )
+        should_update_deps = not changed_files or "requirements.txt" in changed_files
         if should_update_deps:
             rc_pip, pip_out = await _run(
                 sys.executable,
