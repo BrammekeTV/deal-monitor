@@ -160,9 +160,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Fetch live market prices from eBay / Cardmarket.
         price_results = []
         if self._http:
-            price_results = await lookup_prices(
-                self._http, listing.title, browser=self.scraper._browser
-            )
+            price_results = await lookup_prices(self._http, listing.title)
 
         live_value = best_market_value(price_results) if price_results else None
 
