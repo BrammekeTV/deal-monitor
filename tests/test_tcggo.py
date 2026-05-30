@@ -528,3 +528,123 @@ class TestTcggoClientSearchCard:
         session = self._mock_session([])
         result = await client.lookup_by_url(session, url)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TcggoClient – retry behaviour (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestTcggoClientRetry:
+    """Tests for _get_with_retry inside TcggoClient."""
+
+    def _make_client(self):
+        from utils.tcggo import TcggoClient
+
+        return TcggoClient(
+            rapidapi_key="test-key",
+            rapidapi_host="tcggo.p.rapidapi.com",
+            api_url="https://tcggo.p.rapidapi.com",
+        )
+
+    def _mock_session_responses(self, responses: list[tuple[int, Any, dict]]) -> MagicMock:
+        """Build a session mock from a list of (status, json_data, headers) tuples."""
+        session = MagicMock()
+        response_mocks = []
+        for status, json_data, extra_headers in responses:
+            resp = MagicMock()
+            resp.status = status
+            resp.json = AsyncMock(return_value=json_data)
+            resp.headers = extra_headers
+            resp.__aenter__ = AsyncMock(return_value=resp)
+            resp.__aexit__ = AsyncMock(return_value=False)
+            response_mocks.append(resp)
+
+        call_count = {"n": 0}
+
+        def _side_effect(*args, **kwargs):
+            n = call_count["n"]
+            call_count["n"] += 1
+            if n < len(response_mocks):
+                return response_mocks[n]
+            # Default: success with empty results
+            empty = MagicMock()
+            empty.status = 200
+            empty.json = AsyncMock(return_value={"results": []})
+            empty.headers = {}
+            empty.__aenter__ = AsyncMock(return_value=empty)
+            empty.__aexit__ = AsyncMock(return_value=False)
+            return empty
+
+        session.get.side_effect = _side_effect
+        return session
+
+    @pytest.mark.asyncio
+    async def test_429_retries_and_succeeds(self):
+        """A single 429 should be retried; the subsequent 200 should be returned."""
+        client = self._make_client()
+        success_data = {"results": [{"card_name": "Pikachu", "priceTrend": 5.0}]}
+        session = self._mock_session_responses([
+            (429, None, {"Retry-After": "0"}),
+            (200, success_data, {}),
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            status, data = await client._get_with_retry(session, "https://tcggo.p.rapidapi.com/search", {"q": "Pikachu"})
+
+        assert status == 200
+        assert data == success_data
+
+    @pytest.mark.asyncio
+    async def test_429_exhausts_retries_returns_none(self):
+        """When every attempt gets 429, _get_with_retry should return (429, None)."""
+        client = self._make_client()
+        session = self._mock_session_responses([
+            (429, None, {"Retry-After": "0"}),
+            (429, None, {"Retry-After": "0"}),
+            (429, None, {"Retry-After": "0"}),
+            (429, None, {"Retry-After": "0"}),
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            status, data = await client._get_with_retry(
+                session, "https://tcggo.p.rapidapi.com/search", {"q": "Pikachu"}, max_retries=3
+            )
+
+        assert status == 429
+        assert data is None
+
+    @pytest.mark.asyncio
+    async def test_500_retries_and_succeeds(self):
+        """A single 500 should be retried; the subsequent 200 should be returned."""
+        client = self._make_client()
+        success_data = {"results": [{"card_name": "Mewtwo", "priceTrend": 50.0}]}
+        session = self._mock_session_responses([
+            (500, None, {}),
+            (200, success_data, {}),
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            status, data = await client._get_with_retry(
+                session, "https://tcggo.p.rapidapi.com/search", {"q": "Mewtwo"}
+            )
+
+        assert status == 200
+        assert data == success_data
+
+    @pytest.mark.asyncio
+    async def test_search_card_retries_on_429(self):
+        """search_card should return a result after recovering from a 429."""
+        client = self._make_client()
+        success_data = {"results": [{"card_name": "Charizard", "priceTrend": 100.0}]}
+        session = self._mock_session_responses([
+            (429, None, {"Retry-After": "0"}),
+            (200, success_data, {}),
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.search_card(session, card_name="Charizard")
+
+        assert result is not None
+        assert result.card_name == "Charizard"
+        assert result.price_trend == 100.0
