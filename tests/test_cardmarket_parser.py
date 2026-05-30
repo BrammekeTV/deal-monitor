@@ -459,3 +459,56 @@ class TestNormalizeCardmarketUrl:
         assert "sortBy=price_asc" in result
         assert "sellerCountry=23" in result
         assert "language=1" in result
+
+
+# ---------------------------------------------------------------------------
+# build_cardmarket_url
+# ---------------------------------------------------------------------------
+
+from scraper.cardmarket import build_cardmarket_url  # noqa: E402
+
+
+class TestBuildCardmarketUrl:
+    def test_promo_svp_pikachu(self) -> None:
+        """Pikachu (SVP 214) → SV-Black-Star-Promos/Pikachu-SVP214"""
+        url = build_cardmarket_url("Pikachu", "SVP", "214", promo=True)
+        assert url is not None
+        assert "SV-Black-Star-Promos" in url
+        assert "Pikachu-SVP214" in url
+        assert "sellerCountry=23" in url
+        assert "language=1" in url
+
+    def test_promo_auto_detected_no_slash(self) -> None:
+        """When collector_number has no '/', the format auto-detects as promo."""
+        url = build_cardmarket_url("Pikachu", "SVP", "214", promo=False)
+        assert url is not None
+        # No slash in number → auto-detected as promo: set_code+number suffix
+        assert "Pikachu-SVP214" in url
+
+    def test_standard_card_with_slash_number(self) -> None:
+        """Standard card: Charizard ex OBF 125/197 → Obsidian-Flames/Charizard-ex-125"""
+        url = build_cardmarket_url("Charizard ex", "OBF", "125/197")
+        assert url is not None
+        assert "Obsidian-Flames" in url
+        assert "Charizard-ex-125" in url
+        assert "sellerCountry=23" in url
+
+    def test_unknown_set_code_returns_none(self) -> None:
+        url = build_cardmarket_url("Pikachu", "UNKNOWN999", "001")
+        assert url is None
+
+    def test_swsh_promo(self) -> None:
+        url = build_cardmarket_url("Pikachu", "SWSHP", "088", promo=True)
+        assert url is not None
+        assert "SWSH-Black-Star-Promos" in url
+        assert "Pikachu-SWSHP088" in url
+
+    def test_card_name_spaces_replaced(self) -> None:
+        url = build_cardmarket_url("Raikou V", "SVP", "001", promo=True)
+        assert url is not None
+        assert "Raikou-V-SVP001" in url
+
+    def test_returns_full_https_url(self) -> None:
+        url = build_cardmarket_url("Mewtwo ex", "SVP", "100", promo=True)
+        assert url is not None
+        assert url.startswith("https://www.cardmarket.com/en/Pokemon/Products/Singles/")

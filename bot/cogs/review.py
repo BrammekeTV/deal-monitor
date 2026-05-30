@@ -10,12 +10,10 @@ Workflow:
      adds ✅ / ❌ / 🔍 reactions.
   3. Community members can reply to the review message with a reference URL
      from Cardmarket, eBay, PriceCharting, or TCGPlayer.
-  4. The bot posts a confirmation embed with ✅ / ❌ reactions for the
-     submitted reference.
-  5. When any user reacts ✅ on the confirmation embed the reference is
-     approved.  The listing is marked as identified and the match is saved
-     to the identification_memory table for future lookups.
-  6. If the listing price is sufficiently below the supplied market value the
+  4. The bot **immediately auto-approves** the reference, stores it in the
+     identification_memory table, and posts a confirmation embed that includes
+     scraped Cardmarket prices from the reference URL.
+  5. If the listing price is sufficiently below the supplied market value the
      bot immediately posts a 🔥 deal alert to the main deals channel.
 """
 
@@ -224,25 +222,13 @@ class ReviewCog(commands.Cog, name="Review"):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        """Handle reactions on review messages and reference confirmation messages."""
+        """Handle reactions on original review messages (dismiss / needs-research)."""
         # Ignore the bot's own reactions.
         if payload.user_id == self.bot.user.id:  # type: ignore[union-attr]
             return
 
         emoji = str(payload.emoji)
         message_id = str(payload.message_id)
-
-        # --- Reaction on a reference confirmation message ---
-        ref = await self.db.get_reference_by_confirm_message(message_id)
-        if ref:
-            if emoji == _REACT_CORRECT and ref["validated"] == 0:
-                await self._approve_reference(ref, payload)
-            elif emoji == _REACT_INCORRECT and ref["validated"] == 0:
-                await self.db.update_reference_validated(ref["id"], -1)
-                logger.info(
-                    "Reference %d rejected by user %s", ref["id"], payload.user_id
-                )
-            return
 
         # --- Reaction on an original review message ---
         unidentified = await self.db.get_unidentified_by_message_id(message_id)
@@ -276,7 +262,15 @@ class ReviewCog(commands.Cog, name="Review"):
         platform: str,
         market_value: float | None,
     ) -> None:
-        """Persist the reference submission and post a confirmation embed."""
+        """Persist the reference, auto-approve it, and post a confirmation embed."""
+        logger.info(
+            "Reference submission from user %s for listing %s: platform=%s url=%s",
+            message.author.id,
+            unidentified["id"],
+            platform,
+            url,
+        )
+
         # --- Fetch live price data from the submitted reference URL ----------
         site_prices: dict[str, float] = {}
         if platform == "Cardmarket":
@@ -284,12 +278,19 @@ class ReviewCog(commands.Cog, name="Review"):
             if monitor is not None:
                 # Primary: use TCGGO API to fetch prices from the Cardmarket URL.
                 if monitor._tcggo_client is not None and monitor._http is not None:
+                    logger.debug(
+                        "Fetching Cardmarket prices via TCGGO for reference URL: %s", url
+                    )
                     try:
-                        from utils.tcggo import TcggoClient  # noqa: F401 (type check)
                         tcggo_result = await monitor._tcggo_client.lookup_by_url(
                             monitor._http, url
                         )
                         if tcggo_result:
+                            logger.info(
+                                "TCGGO returned prices for reference URL %s: trend=%.2f",
+                                url,
+                                tcggo_result.price_trend or 0,
+                            )
                             # Map TcggoCardResult fields to the price dict format
                             # expected by the embed builder.
                             if tcggo_result.price_trend:
@@ -311,13 +312,30 @@ class ReviewCog(commands.Cog, name="Review"):
                                     or site_prices.get("avg_30_days")
                                     or site_prices.get("lowest_price")
                                 )
+                                logger.debug(
+                                    "Auto-derived market value from TCGGO: %.2f",
+                                    market_value or 0,
+                                )
+                        else:
+                            logger.warning(
+                                "TCGGO returned no result for reference URL: %s", url
+                            )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
-                            "TCGGO lookup failed for reference URL %s: %s", url, exc
+                            "TCGGO lookup failed for reference URL %s: %s", url, exc,
+                            exc_info=True,
                         )
+                else:
+                    logger.debug(
+                        "TCGGO client not available; skipping price fetch for reference URL %s",
+                        url,
+                    )
 
                 # Fallback: Playwright scraper (only when explicitly configured).
                 if not site_prices and monitor._browser is not None:
+                    logger.debug(
+                        "Trying Playwright scraper fallback for reference URL: %s", url
+                    )
                     try:
                         from scraper.cardmarket import CardmarketPriceScraper, normalize_cardmarket_url
 
@@ -326,19 +344,36 @@ class ReviewCog(commands.Cog, name="Review"):
                         result = await scraper.lookup_url(normalized_url)
                         if result:
                             site_prices = result
+                            logger.info(
+                                "Playwright scraper returned prices for %s: %s",
+                                normalized_url,
+                                {k: v for k, v in result.items() if v},
+                            )
                             if market_value is None:
                                 market_value = (
                                     site_prices.get("price_trend")
                                     or site_prices.get("avg_30_days")
                                     or site_prices.get("lowest_price")
                                 )
+                        else:
+                            logger.warning(
+                                "Playwright scraper returned no prices for %s", normalized_url
+                            )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "Could not fetch Cardmarket prices for reference URL %s: %s",
                             url,
                             exc,
+                            exc_info=True,
                         )
+        else:
+            logger.debug(
+                "Platform %s: skipping Cardmarket price fetch for reference URL %s",
+                platform,
+                url,
+            )
 
+        # Persist the reference submission.
         ref_id = await self.db.add_reference_submission(
             listing_id=unidentified["id"],
             submitted_by=str(message.author.id),
@@ -346,76 +381,64 @@ class ReviewCog(commands.Cog, name="Review"):
             platform=platform,
             market_value=market_value,
         )
+        logger.debug("Saved reference submission %d for listing %s", ref_id, unidentified["id"])
 
+        # --- Auto-approve immediately (no reaction required) ---
+        ref = {
+            "id": ref_id,
+            "listing_id": unidentified["id"],
+            "reference_url": url,
+            "platform": platform,
+            "market_value": market_value,
+        }
+        await self._approve_reference(ref, approved_by=str(message.author.id))
+
+        # Post one confirmation embed that includes the scraped prices.
         embed = build_reference_confirmation_embed(
             unidentified=unidentified,
             reference_url=url,
             platform=platform,
             submitted_by=message.author,
+            site_prices=site_prices or None,
+            market_value=market_value,
         )
 
-        # --- Show prices fetched from the site --------------------------------
-        if site_prices:
-            price_lines = []
-            label_map = {
-                "lowest_price": "Lowest",
-                "price_trend": "Price Trend",
-                "avg_30_days": "Avg 30 days",
-                "avg_7_days": "Avg 7 days",
-                "avg_1_day": "Avg today",
-            }
-            for key in ("price_trend", "lowest_price", "avg_30_days", "avg_7_days", "avg_1_day"):
-                val = site_prices.get(key)
-                if val is not None and val > 0:
-                    price_lines.append(f"{label_map[key]}: **€{val:.2f}**")
-            if price_lines:
-                embed.add_field(
-                    name="🏷️ Cardmarket Prices",
-                    value="\n".join(price_lines),
-                    inline=True,
-                )
-        elif market_value is not None:
-            # Fallback: manually extracted price from the user's message text.
-            embed.add_field(
-                name="💶 Submitted Market Value",
-                value=f"€{market_value:.2f}",
-                inline=True,
-            )
-
         try:
-            confirm_msg = await message.channel.send(embed=embed)
+            await message.channel.send(embed=embed)
         except discord.HTTPException as exc:
             logger.error("Failed to post confirmation embed: %s", exc)
             return
 
-        await self.db.set_confirm_message_id(ref_id, str(confirm_msg.id))
-
-        for emoji in (_REACT_CORRECT, _REACT_INCORRECT):
-            try:
-                await confirm_msg.add_reaction(emoji)
-            except discord.HTTPException:
-                pass
-
         logger.info(
-            "Reference submission %d from user %s for listing %s (platform=%s value=%s)",
+            "Auto-approved reference %d from user %s for listing %s "
+            "(platform=%s value=%s prices_found=%s)",
             ref_id,
             message.author.id,
             unidentified["id"],
             platform,
             market_value,
+            bool(site_prices),
         )
 
     async def _approve_reference(
         self,
         ref: dict,
-        payload: discord.RawReactionActionEvent,
+        approved_by: str,
     ) -> None:
         """Approve a reference submission: update DB, store memory, escalate deal."""
         listing_id: str = ref["listing_id"]
         reference_url: str = ref["reference_url"]
         platform: str = ref.get("platform") or "Unknown"
         market_value: float | None = ref.get("market_value")
-        approved_by = str(payload.user_id)
+
+        logger.info(
+            "Auto-approving reference %d for listing %s (platform=%s value=%s) by user %s",
+            ref["id"],
+            listing_id,
+            platform,
+            market_value,
+            approved_by,
+        )
 
         await self.db.update_reference_validated(ref["id"], 1)
         await self.db.update_unidentified_status(listing_id, "identified")

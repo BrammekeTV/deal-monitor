@@ -7,15 +7,14 @@ URL and display all available pricing data from the TCGGO API.
 
 from __future__ import annotations
 
-import logging
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from config.settings import settings
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CheckCardCog(commands.Cog, name="check_card"):
@@ -62,15 +61,91 @@ class CheckCardCog(commands.Cog, name="check_card"):
         is_url = query.startswith("http://") or query.startswith("https://")
 
         result = None
+        resolved_url: str | None = None
+
         try:
             if is_url:
+                logger.info("check_card: URL lookup for %r", query)
                 result = await tcggo.lookup_by_url(http, query)
             else:
-                result = await tcggo.search_card(http, listing_title=query)
+                # Try to extract structured card info and build a direct
+                # Cardmarket URL for a more accurate lookup.
+                from utils.card_analyzer import extract_card_info
+                from scraper.cardmarket import build_cardmarket_url, _SET_CODE_TO_SLUG
+
+                card_info = extract_card_info(query)
+                card_name = card_info.get("card_name")
+                collector_number = card_info.get("collector_number")
+                set_code = card_info.get("set_code")
+                set_name = card_info.get("set_name")
+
+                logger.info(
+                    "check_card: text query %r → card_name=%r set_code=%r "
+                    "collector_number=%r set_name=%r",
+                    query,
+                    card_name,
+                    set_code,
+                    collector_number,
+                    set_name,
+                )
+
+                # Attempt to build a direct Cardmarket URL when set code is known.
+                if set_code and set_code.upper() in _SET_CODE_TO_SLUG:
+                    collector_num = collector_number or ""
+                    is_promo = "/" not in collector_num
+                    built = build_cardmarket_url(
+                        card_name or query,
+                        set_code,
+                        collector_num,
+                        promo=is_promo,
+                    )
+                    if built:
+                        resolved_url = built
+                        logger.info(
+                            "check_card: built Cardmarket URL for %r: %s",
+                            query,
+                            built,
+                        )
+                    else:
+                        logger.debug(
+                            "check_card: build_cardmarket_url returned None for "
+                            "set=%r num=%r",
+                            set_code,
+                            collector_num,
+                        )
+                elif set_code:
+                    logger.debug(
+                        "check_card: set code %r not in known slugs – using text search",
+                        set_code,
+                    )
+
+                if resolved_url:
+                    logger.info("check_card: looking up by built URL: %s", resolved_url)
+                    result = await tcggo.lookup_by_url(http, resolved_url)
+
+                if result is None:
+                    # Fall back to text search with all extracted fields.
+                    logger.info(
+                        "check_card: falling back to text search for %r "
+                        "(card_name=%r set_code=%r num=%r)",
+                        query,
+                        card_name,
+                        set_code,
+                        collector_number,
+                    )
+                    result = await tcggo.search_card(
+                        http,
+                        card_name=card_name,
+                        set_name=set_name,
+                        set_code=set_code,
+                        collector_number=collector_number,
+                        listing_title=query,
+                    )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("check_card: TCGGO lookup failed for %r: %s", query, exc)
+            logger.warning("check_card: TCGGO lookup failed for %r: %s", query, exc, exc_info=True)
 
         if result is None:
+            logger.info("check_card: no result found for %r", query)
             embed = discord.Embed(
                 title="Card Not Found",
                 description=(
@@ -81,6 +156,14 @@ class CheckCardCog(commands.Cog, name="check_card"):
             )
             await interaction.followup.send(embed=embed)
             return
+
+        logger.info(
+            "check_card: result for %r → %r (confidence=%s trend=%.2f)",
+            query,
+            result.card_name,
+            result.confidence,
+            result.price_trend or 0,
+        )
 
         # Build the response embed.
         confidence_colour = {
@@ -169,11 +252,12 @@ class CheckCardCog(commands.Cog, name="check_card"):
                 summary += f"  •  {', '.join(range_parts)}"
             embed.add_field(name="Market Summary", value=summary, inline=False)
 
-        # Link back to Cardmarket if we have one
-        if result.cardmarket_url:
+        # Link back to Cardmarket if we have one (prefer the URL we resolved).
+        cm_url = result.cardmarket_url or resolved_url
+        if cm_url:
             embed.add_field(
                 name="Cardmarket",
-                value=f"[View listing]({result.cardmarket_url})",
+                value=f"[View listing]({cm_url})",
                 inline=False,
             )
 

@@ -256,16 +256,78 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Fetch live market prices from eBay / Cardmarket (via TCGGO API or scraper fallback).
         price_results = []
         if self._http:
+            # When no memory URL exists but card info was extracted, try to build a
+            # direct Cardmarket product URL.  This works for any card with a known
+            # set code (promos and standard sets alike).
+            cm_lookup_url = cm_memory_url
+            if not cm_lookup_url and listing.extracted_set_code:
+                try:
+                    from scraper.cardmarket import build_cardmarket_url, _SET_CODE_TO_SLUG
+                    set_code_upper = listing.extracted_set_code.upper()
+                    if set_code_upper in _SET_CODE_TO_SLUG:
+                        card_name_for_url = listing.extracted_card_name or listing.title
+                        collector_num = listing.extracted_collector_number or ""
+                        is_promo = "/" not in collector_num
+                        built = build_cardmarket_url(
+                            card_name_for_url,
+                            listing.extracted_set_code,
+                            collector_num,
+                            promo=is_promo,
+                        )
+                        if built:
+                            cm_lookup_url = built
+                            logger.info(
+                                "Built Cardmarket URL for listing %s (set=%s num=%s promo=%s): %s",
+                                listing.listing_id,
+                                listing.extracted_set_code,
+                                collector_num or "n/a",
+                                is_promo,
+                                built,
+                            )
+                        else:
+                            logger.debug(
+                                "build_cardmarket_url returned None for listing %s "
+                                "(set=%s num=%s)",
+                                listing.listing_id,
+                                listing.extracted_set_code,
+                                collector_num or "n/a",
+                            )
+                    else:
+                        logger.debug(
+                            "Set code %r not in known slugs for listing %s – "
+                            "falling back to TCGGO text search",
+                            listing.extracted_set_code,
+                            listing.listing_id,
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Error building Cardmarket URL for listing %s",
+                        listing.listing_id,
+                        exc_info=True,
+                    )
+            elif not cm_lookup_url and listing.extracted_card_name:
+                logger.debug(
+                    "Listing %s has card name %r but no set code – using TCGGO text search",
+                    listing.listing_id,
+                    listing.extracted_card_name,
+                )
+
             price_results = await lookup_prices(
                 self._http,
                 listing.title,
                 browser=self._browser,
-                cm_direct_url=cm_memory_url,
+                cm_direct_url=cm_lookup_url,
                 tcggo_client=self._tcggo_client,
                 card_name=listing.extracted_card_name,
                 collector_number=listing.extracted_collector_number,
                 set_code=listing.extracted_set_code,
                 set_name=listing.extracted_set_name,
+            )
+            logger.debug(
+                "Price lookup for listing %s returned %d result(s): %s",
+                listing.listing_id,
+                len(price_results),
+                [r.platform for r in price_results],
             )
 
         live_value = best_market_value(price_results) if price_results else memory_value
