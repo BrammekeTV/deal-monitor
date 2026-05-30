@@ -123,6 +123,14 @@ _LANG_PREFIX_RE = re.compile(
 # Collector number: e.g. "218/172", "006/197", "044/185"
 _COLLECTOR_NUMBER_RE = re.compile(r"\b(\d{1,4})/(\d{2,4})\b")
 
+# Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145"
+# Pattern: 2–6 uppercase letters (set code, typically ending in P for promos)
+# followed by optional whitespace and 1–4 digits.
+# Must be surrounded by word boundaries / non-alphanumeric chars to avoid false positives.
+_PROMO_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{2,6}P?)\s*(\d{1,4})(?![0-9A-Za-z/])"
+)
+
 # Known rarity/variant codes that appear *between* the card name and number.
 # These are stripped so the card name is clean.
 _RARITY_SUFFIX_RE = re.compile(
@@ -141,6 +149,41 @@ _SET_CODE_ONLY_RE = re.compile(
     r"^(?:[\s\-–—]+)?([A-Z][A-Z0-9]{0,3}[0-9a-z]?)\s*$"
 )
 
+# Rarity/type tokens that must NOT be treated as a promo set code.
+_NOT_PROMO_TOKENS: frozenset[str] = frozenset({
+    "VMAX", "VSTAR", "VUNION", "EX", "GX", "TAG", "PROMO",
+    "PSA", "BGS", "CGC", "NM", "LP", "MP", "HP", "MINT",
+    "SAR", "CHR", "CSR", "SSR", "RR", "AR", "SR", "UR", "IR", "HR", "PR",
+})
+
+
+def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None]:
+    """Try to extract a promo-style collector number from *text*.
+
+    Returns *(card_name, set_code, bare_number)* or *(None, None, None)* when
+    no promo number is found.
+
+    Examples::
+
+        _extract_promo_number("Pikachu (SVP 214)")  → ("Pikachu", "SVP", "214")
+        _extract_promo_number("Pikachu SVP214")      → ("Pikachu", "SVP", "214")
+    """
+    for m in _PROMO_NUMBER_RE.finditer(text):
+        token = m.group(1)
+        number = m.group(2)
+        # Skip tokens that are clearly not set codes.
+        if token.upper() in _NOT_PROMO_TOKENS:
+            continue
+        # The token must look like a plausible set code:
+        # pure uppercase letters, possibly ending with "P", length 2-6.
+        if not re.match(r"^[A-Z]{2,6}$", token):
+            continue
+        # Everything before the match (minus surrounding punctuation) is the card name.
+        before = text[: m.start()].strip(" \t()[],-–—")
+        card_name = _RARITY_SUFFIX_RE.sub("", before).strip() or None
+        return card_name, token, number
+    return None, None, None
+
 
 def extract_card_info(title: str) -> dict[str, str | None]:
     """Extract structured card identity fields from a marketplace listing title.
@@ -154,6 +197,10 @@ def extract_card_info(title: str) -> dict[str, str | None]:
         "Pokemon Charizard ex 006/197 Obsidian Flames"
         → card_name="Charizard ex", collector_number="006/197",
           set_code=None, set_name="Obsidian Flames"
+
+        "Pikachu (SVP 214)"
+        → card_name="Pikachu", collector_number="214",
+          set_code="SVP", set_name=None
 
     Returns a dict with keys ``card_name``, ``collector_number``, ``set_code``,
     and ``set_name``; each value is a string or ``None`` when not found.
@@ -184,9 +231,16 @@ def extract_card_info(title: str) -> dict[str, str | None]:
         result["set_code"] = set_code
         result["set_name"] = set_name
     else:
-        # No collector number – use the cleaned text as a best-effort card name.
-        card_name = _RARITY_SUFFIX_RE.sub("", text).strip()
-        result["card_name"] = card_name or None
+        # Try promo-style collector number (e.g. "SVP 214", "SVP214").
+        promo_name, promo_set_code, promo_number = _extract_promo_number(text)
+        if promo_set_code and promo_number:
+            result["card_name"] = promo_name
+            result["set_code"] = promo_set_code
+            result["collector_number"] = promo_number
+        else:
+            # No collector number – use the cleaned text as a best-effort card name.
+            card_name = _RARITY_SUFFIX_RE.sub("", text).strip()
+            result["card_name"] = card_name or None
 
     return result
 

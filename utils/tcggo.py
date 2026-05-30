@@ -468,6 +468,7 @@ class TcggoClient:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
+            "Content-Type": "application/json",
             "x-rapidapi-key": self._key,
         }
         if self._host:
@@ -683,7 +684,7 @@ class TcggoClient:
             return None
 
         endpoint = f"{self._base_url}/pokemon/cards/search"
-        params = {"q": query}
+        params = {"search": query, "sort": "relevance"}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)
@@ -713,7 +714,7 @@ class TcggoClient:
             return None
 
         endpoint = f"{self._base_url}/pokemon/cards/search"
-        params = {"q": query}
+        params = {"search": query, "sort": "relevance"}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)

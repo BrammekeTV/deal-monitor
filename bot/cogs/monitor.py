@@ -256,11 +256,34 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Fetch live market prices from eBay / Cardmarket (via TCGGO API or scraper fallback).
         price_results = []
         if self._http:
+            # When no memory URL exists but card info was extracted, try to build a
+            # direct Cardmarket product URL (works for known set codes including promos).
+            cm_lookup_url = cm_memory_url
+            if not cm_lookup_url and listing.extracted_set_code and listing.extracted_collector_number:
+                try:
+                    from scraper.cardmarket import build_cardmarket_url
+                    is_promo = "/" not in (listing.extracted_collector_number or "")
+                    built = build_cardmarket_url(
+                        listing.extracted_card_name or listing.title,
+                        listing.extracted_set_code,
+                        listing.extracted_collector_number,
+                        promo=is_promo,
+                    )
+                    if built:
+                        cm_lookup_url = built
+                        logger.debug(
+                            "Built Cardmarket URL for listing %s: %s",
+                            listing.listing_id,
+                            built,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
             price_results = await lookup_prices(
                 self._http,
                 listing.title,
                 browser=self._browser,
-                cm_direct_url=cm_memory_url,
+                cm_direct_url=cm_lookup_url,
                 tcggo_client=self._tcggo_client,
                 card_name=listing.extracted_card_name,
                 collector_number=listing.extracted_collector_number,

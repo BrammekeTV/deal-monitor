@@ -110,6 +110,51 @@ class TestExtractCardInfo:
         info = extract_card_info("random stuff for sale")
         assert info["collector_number"] is None
 
+    # ------------------------------------------------------------------
+    # Promo-style collector numbers (e.g. SVP 214)
+    # ------------------------------------------------------------------
+
+    def test_promo_pikachu_svp_with_parens(self):
+        """Pikachu (SVP 214) → card_name='Pikachu', set_code='SVP', collector_number='214'"""
+        info = extract_card_info("Pikachu (SVP 214)")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "SVP"
+        assert info["collector_number"] == "214"
+        assert info["set_name"] is None
+
+    def test_promo_pikachu_svp_no_parens(self):
+        """Pikachu SVP 214 → same result as with parens."""
+        info = extract_card_info("Pikachu SVP 214")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "SVP"
+        assert info["collector_number"] == "214"
+
+    def test_promo_pikachu_svp_no_space(self):
+        """Pikachu SVP214 (no space) → card_name='Pikachu', set_code='SVP', number='214'"""
+        info = extract_card_info("Pikachu SVP214")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "SVP"
+        assert info["collector_number"] == "214"
+
+    def test_promo_swsh_promo(self):
+        """Pikachu SWSHP 088 → set_code='SWSHP'"""
+        info = extract_card_info("Pikachu SWSHP 088")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "SWSHP"
+        assert info["collector_number"] == "088"
+
+    def test_standard_number_takes_priority_over_promo(self):
+        """When a standard xxx/yyy number exists it takes priority over promo detection."""
+        info = extract_card_info("Pikachu 044/185 Vivid Voltage")
+        assert info["collector_number"] == "044/185"
+        assert info["set_code"] is None  # no set code in this title
+
+    def test_vmax_not_treated_as_promo_code(self):
+        """VMAX must NOT be parsed as a promo set code."""
+        info = extract_card_info("Pikachu VMAX 044/185 Vivid Voltage")
+        assert info["card_name"] == "Pikachu VMAX"
+        assert info["collector_number"] == "044/185"
+
 
 class TestParseSetInfo:
     """Tests for _parse_set_info()."""

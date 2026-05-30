@@ -64,7 +64,7 @@ price_lookup:
     sample_size: 5
     # Set to true to enable the legacy Playwright scraper as a fallback when
     # TCGGO returns no result.  Requires playwright + chromium to be installed.
-    scraping_fallback: false
+    scraping_fallback: true
 
   # TCGGO API via RapidAPI – primary source for Cardmarket pricing.
   # Set RAPIDAPI_KEY, RAPIDAPI_HOST (cardmarket-api-tcg.p.rapidapi.com), and

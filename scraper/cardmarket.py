@@ -92,6 +92,159 @@ window.chrome = {runtime: {}};
 # sellerCountry=23 → Netherlands; language=1 → English cards.
 _CM_FILTER_PARAMS: dict[str, str] = {"sellerCountry": "23", "language": "1"}
 
+# ---------------------------------------------------------------------------
+# Set-code → Cardmarket URL slug mapping
+# ---------------------------------------------------------------------------
+# Maps the short set code (as seen in Vinted listing titles) to the slug used
+# in Cardmarket product URLs under /en/Pokemon/Products/Singles/{slug}/...
+# Covers Scarlet & Violet era, Sword & Shield era, and older series.
+_SET_CODE_TO_SLUG: dict[str, str] = {
+    # Scarlet & Violet promos / special sets
+    "SVP": "SV-Black-Star-Promos",
+    "SVE": "SV-Energies",
+    # Scarlet & Violet main sets
+    "SVI": "Scarlet-Violet",
+    "PAL": "Paldea-Evolved",
+    "OBF": "Obsidian-Flames",
+    "MEW": "151",
+    "PAR": "Paradox-Rift",
+    "TEF": "Temporal-Forces",
+    "TWM": "Twilight-Masquerade",
+    "SFA": "Shrouded-Fable",
+    "SCR": "Stellar-Crown",
+    "SSP": "Surging-Sparks",
+    "PRE": "Prismatic-Evolutions",
+    # Sword & Shield promos / special sets
+    "SWSHP": "SWSH-Black-Star-Promos",
+    "CEL25": "Celebrations",
+    "CPA": "Champions-Path",
+    "SWSH45": "Shining-Fates",
+    "CRZ": "Crown-Zenith",
+    "PGO": "Pokemon-GO",
+    # Sword & Shield main sets (SWSH1–SWSH12)
+    "SWSH1": "Sword-Shield",
+    "SWSH2": "Rebel-Clash",
+    "SWSH3": "Darkness-Ablaze",
+    "SWSH4": "Vivid-Voltage",
+    "SWSH5": "Battle-Styles",
+    "SWSH6": "Chilling-Reign",
+    "SWSH7": "Evolving-Skies",
+    "SWSH8": "Fusion-Strike",
+    "SWSH9": "Brilliant-Stars",
+    "SWSH10": "Astral-Radiance",
+    "SWSH11": "Lost-Origin",
+    "SWSH12": "Silver-Tempest",
+    # Sun & Moon promos / special sets
+    "SMP": "SM-Black-Star-Promos",
+    "DRM": "Dragon-Majesty",
+    "HIF": "Hidden-Fates",
+    "CEC": "Cosmic-Eclipse",
+    # Sun & Moon main sets
+    "SM1": "Sun-Moon",
+    "SM2": "Guardians-Rising",
+    "SM3": "Burning-Shadows",
+    "SM4": "Crimson-Invasion",
+    "SM5": "Ultra-Prism",
+    "SM6": "Forbidden-Light",
+    "SM7": "Celestial-Storm",
+    "SM8": "Lost-Thunder",
+    "SM9": "Team-Up",
+    "SM10": "Unbroken-Bonds",
+    "SM11": "Unified-Minds",
+    "SM12": "Cosmic-Eclipse",
+    # XY promos / special sets
+    "XYP": "XY-Black-Star-Promos",
+    "GEN": "Generations",
+    "EVO": "Evolutions",
+    "FCO": "Fates-Collide",
+    "STE": "Steam-Siege",
+    "BKP": "Breakpoint",
+    "BKT": "Breakthrough",
+    "AOR": "Ancient-Origins",
+    "ROS": "Roaring-Skies",
+    "DCR": "Double-Crisis",
+    "PRC": "Primal-Clash",
+    "PHF": "Phantom-Forces",
+    "FLF": "Flashfire",
+    "FFI": "Furious-Fists",
+    "XY1": "XY",
+    # Black & White promos / special sets
+    "BWP": "BW-Black-Star-Promos",
+    "NXD": "Next-Destinies",
+    "DEX": "Dark-Explorers",
+    "DRX": "Dragons-Exalted",
+    "BCR": "Boundaries-Crossed",
+    "PLS": "Plasma-Storm",
+    "PLF": "Plasma-Freeze",
+    "PLB": "Plasma-Blast",
+    "LTR": "Legendary-Treasures",
+    "KSS": "Kalos-Starter-Set",
+    # Japanese set codes used in some listings
+    "S12a": "VSTAR-Universe",
+    "S12": "Silver-Tempest",
+    "S11a": "Lost-Origin",
+    "S11": "Astral-Radiance",
+    "S10b": "Pokemon-GO",
+    "S10a": "Brilliant-Stars",
+    "S10": "Fusion-Strike",
+    "S9a": "Celebrations",
+    "S9": "Evolving-Skies",
+    "S8b": "Chilling-Reign",
+    "S8a": "Battle-Styles",
+    "S8": "Darkness-Ablaze",
+    "S7R": "Rebel-Clash",
+    "S6a": "Vivid-Voltage",
+}
+
+
+def build_cardmarket_url(
+    card_name: str,
+    set_code: str,
+    collector_number: str,
+    *,
+    promo: bool = False,
+) -> str | None:
+    """Build a Cardmarket product URL from card identity fields.
+
+    Handles both standard collector numbers (``006/197``) and promo-style
+    numbers (``SVP 214``, ``SVP214``).
+
+    Returns a normalised Cardmarket URL with ``sellerCountry=23`` and
+    ``language=1`` filter params, or ``None`` when the set code is unknown.
+
+    Examples::
+
+        build_cardmarket_url("Pikachu", "SVP", "214")
+        → "https://www.cardmarket.com/en/Pokemon/Products/Singles/
+           SV-Black-Star-Promos/Pikachu-SVP214?sellerCountry=23&language=1"
+
+        build_cardmarket_url("Charizard ex", "OBF", "125/197")
+        → "https://www.cardmarket.com/en/Pokemon/Products/Singles/
+           Obsidian-Flames/Charizard-ex-125?sellerCountry=23&language=1"
+    """
+    set_slug = _SET_CODE_TO_SLUG.get(set_code.upper() if set_code else "")
+    if not set_slug:
+        return None
+
+    # Build the card slug: replace spaces/special chars with hyphens.
+    card_slug = re.sub(r"[^A-Za-z0-9]+", "-", card_name).strip("-")
+
+    # Build the collector-number suffix.
+    # Promo format:  "SVP 214" or "214"  → suffix = "SVP214" (set_code + bare_number)
+    # Standard format: "125/197"          → suffix = "125"    (just the card number)
+    bare_num = re.sub(r"[^0-9]", "", collector_number.split("/")[0]) if collector_number else ""
+    if promo or "/" not in (collector_number or ""):
+        # Promo card: {card-slug}-{set_code}{number}
+        num_suffix = f"{set_code.upper()}{bare_num}" if bare_num else set_code.upper()
+    else:
+        # Standard card: {card-slug}-{bare_number}
+        num_suffix = bare_num
+
+    product_slug = f"{card_slug}-{num_suffix}" if num_suffix else card_slug
+
+    url = f"{_CM_BASE}/en/Pokemon/Products/Singles/{set_slug}/{product_slug}"
+    return normalize_cardmarket_url(url)
+
 
 # ---------------------------------------------------------------------------
 # URL helpers
