@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     matching_attempts       TEXT,   -- JSON
     discord_message_id      TEXT,
     discord_channel_id      TEXT,
-    status                  TEXT    DEFAULT 'pending',  -- pending | resolved | expired
+    status                  TEXT    DEFAULT 'pending',  -- pending | resolved | expired | skipped | unresolvable
     created_at              TEXT,
     resolved_at             TEXT,
     resolved_cardmarket_url TEXT,
@@ -359,6 +359,7 @@ class Database:
         fingerprint: str | None = None,
         failure_reason: str | None = None,
         matching_attempts: list[dict] | None = None,
+        status: str = "pending",
     ) -> int:
         """Insert a listing into the review queue.  Returns the row ID."""
         now = datetime.now(timezone.utc).isoformat()
@@ -371,12 +372,12 @@ class Database:
                     (listing_id, title, url, price, currency, seller_name,
                      seller_id, description, images, fingerprint,
                      failure_reason, matching_attempts, status, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     listing_id, title, url, price, currency, seller_name,
                     seller_id, description, images_json, fingerprint,
-                    failure_reason, attempts_json, now,
+                    failure_reason, attempts_json, status, now,
                 ),
             )
             await self._conn.commit()  # type: ignore[union-attr]
@@ -433,6 +434,25 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def expire_pending_review_items(self, older_than_days: int) -> int:
+        """Mark stale pending review items as expired. Returns affected row count."""
+        if older_than_days <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc).timestamp() - (older_than_days * 86_400)
+        async with self._lock:
+            cur = await self._conn.execute(  # type: ignore[union-attr]
+                """
+                UPDATE review_queue
+                SET status = 'expired'
+                WHERE status = 'pending'
+                  AND created_at IS NOT NULL
+                  AND strftime('%s', created_at) < ?
+                """,
+                (int(cutoff),),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            return int(cur.rowcount or 0)
+
     # ------------------------------------------------------------------
     # Error log
     # ------------------------------------------------------------------
@@ -454,6 +474,24 @@ class Database:
         """Persist a structured processing error.  Returns the new row ID."""
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
+            # De-duplicate repeated identical errors for the same listing.
+            if listing_id:
+                async with self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    SELECT id
+                    FROM error_log
+                    WHERE listing_id = ?
+                      AND COALESCE(cardmarket_url, '') = COALESCE(?, '')
+                      AND COALESCE(failure_step, '') = COALESCE(?, '')
+                      AND COALESCE(error_message, '') = COALESCE(?, '')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (listing_id, cardmarket_url, failure_step, error_message),
+                ) as existing_cur:
+                    existing = await existing_cur.fetchone()
+                if existing:
+                    return existing["id"]
             cur = await self._conn.execute(  # type: ignore[union-attr]
                 """
                 INSERT INTO error_log
@@ -473,6 +511,24 @@ class Database:
             )
             await self._conn.commit()  # type: ignore[union-attr]
             return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_error_summary(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return aggregated error counts grouped by step and message."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT
+                COALESCE(failure_step, 'unknown') AS failure_step,
+                COALESCE(error_message, 'unknown') AS error_message,
+                COUNT(*) AS total
+            FROM error_log
+            GROUP BY COALESCE(failure_step, 'unknown'), COALESCE(error_message, 'unknown')
+            ORDER BY total DESC
+            LIMIT ?
+            """,
+            (max(limit, 1),),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def update_error_message_id(self, error_log_id: int, discord_message_id: str) -> None:
         """Store the Discord message ID for an error_log entry."""
@@ -538,6 +594,20 @@ class Database:
                     corrected_by, now,
                 ),
             )
+            if learned_prefix and set_code:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO slug_prefix_rules
+                        (set_code, prefix, set_name, uses_successful, uses_failed,
+                         confidence, date_learned, date_last_used)
+                    VALUES (?, ?, ?, 1, 0, 1.0, ?, ?)
+                    ON CONFLICT(set_code, prefix) DO UPDATE SET
+                        uses_successful = uses_successful + 1,
+                        date_last_used = excluded.date_last_used,
+                        set_name = COALESCE(excluded.set_name, slug_prefix_rules.set_name)
+                    """,
+                    (set_code, learned_prefix, set_name, now, now),
+                )
             await self._conn.commit()  # type: ignore[union-attr]
             return cur.lastrowid  # type: ignore[return-value]
 

@@ -26,6 +26,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from rapidfuzz import fuzz, process
 
 from scraper.cardmarket import build_cardmarket_url, normalize_cardmarket_url
@@ -52,6 +53,8 @@ class ResolvedUrl:
     confidence: float                 # 0.0 – 1.0
     mapping_id: int | None = None     # DB row ID when source='database'
     product_name: str | None = None   # From stored mapping, if available
+    set_code: str | None = None
+    prefix_rule_id: int | None = None
 
 
 class CardmarketResolver:
@@ -62,7 +65,7 @@ class CardmarketResolver:
         # In-memory cache of all mappings; refreshed on startup and after writes.
         self._mappings: list[dict[str, Any]] = []
         # In-memory cache of slug prefix rules keyed by set_code (upper-case).
-        self._prefix_rules: dict[str, dict[str, Any]] = {}
+        self._prefix_rules: dict[str, list[dict[str, Any]]] = {}
 
     async def load(self) -> None:
         """Load all card mappings and prefix rules from the database into memory."""
@@ -76,12 +79,20 @@ class CardmarketResolver:
     async def _load_prefix_rules(self) -> None:
         """Reload the in-memory prefix-rule cache from the database."""
         rules = await self._db.get_all_slug_prefix_rules()
-        # Only use rules with reasonable confidence (>= 0.5).
-        self._prefix_rules = {
-            r["set_code"].upper(): r
-            for r in rules
-            if r.get("confidence", 0.0) >= 0.5
-        }
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for rule in rules:
+            if rule.get("confidence", 0.0) < 0.5:
+                continue
+            sc = (rule.get("set_code") or "").upper()
+            if not sc:
+                continue
+            grouped.setdefault(sc, []).append(rule)
+        for sc, rule_list in grouped.items():
+            rule_list.sort(
+                key=lambda r: (float(r.get("uses_successful") or 0), float(r.get("confidence") or 0)),
+                reverse=True,
+            )
+        self._prefix_rules = grouped
 
     async def reload(self) -> None:
         """Reload mappings (call after adding a new mapping)."""
@@ -112,10 +123,21 @@ class CardmarketResolver:
         if db_result:
             return db_result
 
-        # ── 3: Direct URL construction ────────────────────────────────────
-        constructed = self._construct_url(fingerprint)
-        if constructed:
-            return constructed
+        # ── 3: Direct URL construction + URL existence validation ─────────
+        candidates = self._construct_url_candidates(fingerprint)
+        for candidate in candidates:
+            if await self._url_resolves(candidate.url):
+                if candidate.prefix_rule_id and candidate.set_code:
+                    await self._db.record_slug_prefix_rule_use(
+                        candidate.prefix_rule_id, success=True
+                    )
+                    await self._load_prefix_rules()
+                return candidate
+            if candidate.prefix_rule_id and candidate.set_code:
+                await self._db.record_slug_prefix_rule_use(
+                    candidate.prefix_rule_id, success=False
+                )
+                await self._load_prefix_rules()
 
         # ── 4: No resolution found → review queue ────────────────────────
         logger.debug(
@@ -234,83 +256,87 @@ class CardmarketResolver:
     # Direct URL construction
     # ------------------------------------------------------------------
 
-    def _construct_url(self, fingerprint: CardFingerprint) -> ResolvedUrl | None:
-        """Try to build a Cardmarket URL from the fingerprint.
+    def _construct_url_candidates(self, fingerprint: CardFingerprint) -> list[ResolvedUrl]:
+        """Build and rank possible Cardmarket URLs from the fingerprint.
 
-        Returns a ResolvedUrl with confidence < 1.0 (since we have not yet
-        validated the URL resolves to a real product page).
-        Returns None when insufficient data is available.
-
-        When a learned prefix rule exists for the card's set (e.g. Team Rocket
-        → "TR" prefix), the rule is applied before constructing the URL.
+        Candidate URLs are ordered by learned-rule confidence and success count.
         """
         card_name = fingerprint.card_name
         set_code = fingerprint.set_code
         collector_number = fingerprint.collector_number
 
         if not card_name:
-            return None
+            return []
 
-        # Helper: look up a learned prefix for a given set_code.
-        def _get_prefix(sc: str) -> str | None:
-            rule = self._prefix_rules.get(sc.upper())
-            if rule:
-                return rule.get("prefix")
-            return None
-
-        # Try with explicit set code first.
+        candidate_set_codes: list[str] = []
         if set_code:
-            prefix = _get_prefix(set_code)
-            url = build_cardmarket_url(
-                card_name,
-                set_code,
-                collector_number or "",
-                promo=fingerprint.is_promo,
-                number_prefix=prefix,
-            )
-            if url:
-                conf = 0.75 if prefix else 0.60
-                logger.info(
-                    "CardmarketResolver: constructed URL for '%s %s'%s: %s",
-                    card_name, set_code,
-                    f" (prefix={prefix!r})" if prefix else "",
-                    url,
-                )
-                return ResolvedUrl(
-                    url=url,
-                    source="constructed",
-                    confidence=conf,
-                    product_name=None,
-                )
-
-        # Try deriving set code from set name.
+            candidate_set_codes.append(set_code)
         if fingerprint.set_name:
             derived_code = set_name_to_code(fingerprint.set_name)
-            if derived_code:
-                prefix = _get_prefix(derived_code)
+            if derived_code and derived_code not in candidate_set_codes:
+                candidate_set_codes.append(derived_code)
+
+        if not candidate_set_codes:
+            return []
+
+        candidates: list[ResolvedUrl] = []
+        seen_urls: set[str] = set()
+        for idx, candidate_code in enumerate(candidate_set_codes):
+            rules = self._prefix_rules.get(candidate_code.upper(), [])
+            ordered_prefixes: list[tuple[str | None, int | None, float]] = [
+                (r.get("prefix"), r.get("id"), 0.75 + min(float(r.get("uses_successful") or 0) * 0.01, 0.15))
+                for r in rules
+                if r.get("prefix")
+            ]
+            ordered_prefixes.append((None, None, 0.60 if idx == 0 else 0.50))
+            for prefix, rule_id, confidence in ordered_prefixes:
                 url = build_cardmarket_url(
                     card_name,
-                    derived_code,
+                    candidate_code,
                     collector_number or "",
                     promo=fingerprint.is_promo,
                     number_prefix=prefix,
+                    language=fingerprint.language,
+                    reverse_holo=fingerprint.is_reverse_holo,
                 )
-                if url:
-                    conf = 0.65 if prefix else 0.50
-                    logger.info(
-                        "CardmarketResolver: constructed URL via set-name '%s'%s: %s",
-                        fingerprint.set_name,
-                        f" (prefix={prefix!r})" if prefix else "",
-                        url,
-                    )
-                    return ResolvedUrl(
+                if not url:
+                    continue
+                url = normalize_cardmarket_url(
+                    url,
+                    language=fingerprint.language,
+                    reverse_holo=fingerprint.is_reverse_holo,
+                )
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                candidates.append(
+                    ResolvedUrl(
                         url=url,
                         source="constructed",
-                        confidence=conf,
+                        confidence=confidence,
                         product_name=None,
+                        set_code=candidate_code,
+                        prefix_rule_id=rule_id,
                     )
+                )
 
-        return None
+        for candidate in candidates:
+            logger.info("CardmarketResolver: constructed URL candidate: %s", candidate.url)
+        return candidates
+
+    async def _url_resolves(self, url: str) -> bool:
+        """Return True when a Cardmarket product URL resolves successfully."""
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                head_resp = await client.head(url)
+                if head_resp.status_code < 400:
+                    return True
+                if head_resp.status_code == 404:
+                    return False
+                get_resp = await client.get(url)
+                return get_resp.status_code < 400
+        except Exception:  # noqa: BLE001
+            return False
 
     # ------------------------------------------------------------------
     # Persist a new validated mapping
@@ -412,6 +438,9 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "neo destiny": "N4",
     "scarlet violet": "SVI",
     "scarlet & violet": "SVI",
+    "evolutions a paldee": "EV",
+    "fable nebuleuse": "EV35",
+    "faille paradoxe": "EV4",
     "151": "MEW",
     "paldea evolved": "PAL",
     "obsidian flames": "OBF",
@@ -452,6 +481,12 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "evolutions": "EVO",
     "xy": "XY1",
     "pokemon go": "PGO",
+    "heartgold soulsilver": "HGSS",
+    "stormfront": "SF",
+    "supreme victors": "SV",
+    "platinum": "PL",
+    "mcdonald": "MCD",
+    "adv promos": "ADVP",
 }
 
 

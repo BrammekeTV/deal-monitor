@@ -93,6 +93,17 @@ window.chrome = {runtime: {}};
 # Default filter parameters added to product URLs.
 # sellerCountry=23 → Netherlands; language=1 → English cards.
 _CM_FILTER_PARAMS: dict[str, str] = {"sellerCountry": "23", "language": "1"}
+_CM_LANGUAGE_MAP: dict[str, str] = {
+    "english": "1",
+    "french": "2",
+    "german": "3",
+    "spanish": "4",
+    "italian": "5",
+    "portuguese": "8",
+    "dutch": "1",
+    "japanese": "7",
+    "korean": "10",
+}
 
 # ---------------------------------------------------------------------------
 # Set-code → Cardmarket URL slug mapping
@@ -129,6 +140,10 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "SV8": "Surging-Sparks",       # numeric alias
     "PRE": "Prismatic-Evolutions",
     "SV8PT5": "Prismatic-Evolutions",  # numeric alias
+    "EV": "Evolutions-a-Paldee",
+    "EV35": "Fable-Nebuleuse",
+    "EV3.5": "Fable-Nebuleuse",
+    "EV4": "Faille-Paradoxe",
     "JTG": "Journey-Together",
     "SV9": "Journey-Together",     # numeric alias
     # Sword & Shield promos / special sets
@@ -138,6 +153,7 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "SWSH45": "Shining-Fates",
     "CRZ": "Crown-Zenith",
     "PGO": "Pokemon-GO",
+    "GO": "Pokemon-GO",
     # Sword & Shield main sets (SWSH1–SWSH12)
     "SWSH1": "Sword-Shield",
     "SWSH2": "Rebel-Clash",
@@ -203,12 +219,14 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "DEX2": "Dark-Explorers",
     # HeartGold / SoulSilver
     "HS": "HeartGold-SoulSilver",
+    "HGSS": "HeartGold-SoulSilver",
     "UL": "Unleashed",
     "UD": "Undaunted",
     "TM": "Triumphant",
     "CL": "Call-of-Legends",
     # Platinum
     "PL": "Platinum",
+    "PLATINUM": "Platinum",
     "RR": "Rising-Rivals",
     "SV": "Supreme-Victors",
     "AR": "Arceus",
@@ -254,6 +272,10 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "AQ": "Aquapolis",
     "SK": "Skyridge",
     # Japanese sets (partial)
+    "SV2A": "151",
+    "ADVP": "ADV-Promos",
+    "ADV-P": "ADV-Promos",
+    "MCD": "McDonalds-Collection",
     "S12a": "VSTAR-Universe",
     "S9": "Star-Birth",
     "S8b": "VMAX-Climax",
@@ -272,6 +294,8 @@ def build_cardmarket_url(
     *,
     promo: bool = False,
     number_prefix: str | None = None,
+    language: str | None = None,
+    reverse_holo: bool = False,
 ) -> str | None:
     """Build a Cardmarket product URL from card identity fields.
 
@@ -325,10 +349,22 @@ def build_cardmarket_url(
     product_slug = f"{card_slug}-{num_suffix}" if num_suffix else card_slug
 
     url = f"{_CM_BASE}/en/Pokemon/Products/Singles/{set_slug}/{product_slug}"
-    return normalize_cardmarket_url(url)
+    return normalize_cardmarket_url(url, language=language, reverse_holo=reverse_holo)
 
 
-def normalize_cardmarket_url(url: str) -> str:
+def cardmarket_language_id(language: str | None) -> str | None:
+    """Return Cardmarket language filter ID for a human-readable language."""
+    if not language:
+        return None
+    return _CM_LANGUAGE_MAP.get(language.strip().lower())
+
+
+def normalize_cardmarket_url(
+    url: str,
+    *,
+    language: str | None = None,
+    reverse_holo: bool = False,
+) -> str:
     """Return *url* with the standard Cardmarket filter params appended.
 
     Adds ``sellerCountry=23`` (Netherlands) and ``language=1`` (English) if
@@ -345,6 +381,13 @@ def normalize_cardmarket_url(url: str) -> str:
         if key not in params:
             params[key] = [value]
             changed = True
+    lang_id = cardmarket_language_id(language)
+    if lang_id and params.get("language", [""])[0] != lang_id:
+        params["language"] = [lang_id]
+        changed = True
+    if reverse_holo and params.get("isReverseHolo", [""])[0].upper() != "Y":
+        params["isReverseHolo"] = ["Y"]
+        changed = True
     if not changed:
         return url
     new_query = urlencode({k: v[0] for k, v in params.items()})
