@@ -86,10 +86,12 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     logger.info("TCGGO client ready for Cardmarket API lookups")
                 else:
                     logger.info(
-                        "TCGGO client not fully configured "
-                        "(set RAPIDAPI_KEY, RAPIDAPI_HOST, TCGGO_API_URL in .env)"
+                        "TCGGO client not configured – set RAPIDAPI_KEY in .env"
                     )
                     self._tcggo_client = None
+            except ValueError as exc:
+                logger.info("TCGGO client not configured: %s", exc)
+                self._tcggo_client = None
             except Exception:
                 logger.warning("Failed to initialise TCGGO client", exc_info=True)
                 self._tcggo_client = None

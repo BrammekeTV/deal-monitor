@@ -29,6 +29,7 @@ from bot.cogs.filters import FiltersCog
 from bot.cogs.maintenance import MaintenanceCog
 from bot.cogs.monitor import MonitorCog
 from bot.cogs.review import ReviewCog
+from bot.cogs.test_cardmarket import TestCardmarketCog
 from config.settings import settings
 from database.db import Database
 from utils.logger import configure_logging, get_logger
@@ -74,6 +75,7 @@ async def main() -> None:
     await bot.add_cog(FiltersCog(bot, db))
     await bot.add_cog(MaintenanceCog(bot))
     await bot.add_cog(CheckCardCog(bot))
+    await bot.add_cog(TestCardmarketCog(bot))
 
     # Graceful shutdown handler.
     loop = asyncio.get_running_loop()

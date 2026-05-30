@@ -8,9 +8,13 @@ returns structured pricing data (trend, market, low, average, suggested)
 without requiring a browser or DOM parsing.
 
 Configuration (environment variables):
-    RAPIDAPI_KEY      – RapidAPI subscription key (X-RapidAPI-Key header).
-    RAPIDAPI_HOST     – RapidAPI host for TCGGO (X-RapidAPI-Host header).
-    TCGGO_API_URL     – Base URL for the TCGGO API endpoint.
+    RAPIDAPI_KEY      – Required. RapidAPI subscription key (x-rapidapi-key header).
+    RAPIDAPI_HOST     – Optional. RapidAPI host override (default: cardmarket-api-tcg.p.rapidapi.com).
+    TCGGO_API_URL     – Optional. Base URL override (default: https://cardmarket-api-tcg.p.rapidapi.com).
+
+Only ``RAPIDAPI_KEY`` is required.  ``RAPIDAPI_HOST`` and ``TCGGO_API_URL`` default
+to the correct values for the cardmarket-api-tcg RapidAPI endpoint and do not need
+to be set explicitly.
 
 The client is stateless – create one ``TcggoClient`` per session and reuse it.
 """
@@ -18,6 +22,7 @@ The client is stateless – create one ``TcggoClient`` per session and reuse it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -295,8 +300,8 @@ _PRICE_FIELD_MAP: list[tuple[tuple[str, ...], str]] = [
     (("avg7", "avg_7", "avg7Days", "avg_7_days", "averagePrice7", "cmAvg7"), "avg_7_days"),
     # 1-day average
     (("avg1", "avg_1", "avg1Day", "avg_1_day", "averagePrice1", "cmAvg1"), "avg_1_day"),
-    # Generic / unspecified average
-    (("avgPrice", "avg_price", "averagePrice", "avg", "cmAvg"), "avg_price"),
+    # Generic / unspecified average (averageSellPrice is used by cardmarket-api-tcg)
+    (("avgPrice", "avg_price", "averagePrice", "avg", "cmAvg", "averageSellPrice", "sellPrice"), "avg_price"),
     # Low / from price
     (("lowPrice", "low_price", "fromPrice", "from_price", "minPrice", "cmLow"), "low_price"),
     # Suggested price
@@ -336,13 +341,22 @@ def _parse_card_data(raw: dict[str, Any], query_context: dict[str, str | None]) 
     """Build a ``TcggoCardResult`` from a raw API response object."""
     result = TcggoCardResult()
 
+    # ── Handle nested "card" object ──────────────────────────────────────────
+    # Some API responses wrap identity fields in {"card": {...}, "prices": {...}}.
+    # Merge the nested card object so identity fields are found at the top level.
+    card_obj = raw.get("card")
+    if isinstance(card_obj, dict):
+        identity_source: dict[str, Any] = {**raw, **card_obj}
+    else:
+        identity_source = raw
+
     # ── Identity fields ───────────────────────────────────────────────────────
     for api_key, attr in _IDENTITY_FIELD_MAP.items():
-        val = raw.get(api_key)
+        val = identity_source.get(api_key)
         if val is not None and str(val).strip():
             setattr(result, attr, str(val).strip())
 
-    # ── Price fields ──────────────────────────────────────────────────────────
+    # ── Price fields (flat) ───────────────────────────────────────────────────
     for api_keys, attr in _PRICE_FIELD_MAP:
         for k in api_keys:
             val = raw.get(k)
@@ -356,7 +370,7 @@ def _parse_card_data(raw: dict[str, Any], query_context: dict[str, str | None]) 
             except (ValueError, TypeError):
                 pass
 
-    # ── Nested price objects (e.g. {"prices": {"trend": 4.20, ...}}) ─────────
+    # ── Nested price objects (e.g. {"prices": {"trendPrice": 4.20, ...}}) ────
     nested = raw.get("prices") or raw.get("cardmarketPrices") or raw.get("cm_prices") or {}
     if isinstance(nested, dict):
         for api_keys, attr in _PRICE_FIELD_MAP:
@@ -420,46 +434,49 @@ class TcggoClient:
             result = await client.search_card(session, card_name="Charizard ex")
     """
 
+    _DEFAULT_HOST = "cardmarket-api-tcg.p.rapidapi.com"
+    _DEFAULT_BASE_URL = "https://cardmarket-api-tcg.p.rapidapi.com"
+
     def __init__(
         self,
         rapidapi_key: str,
-        rapidapi_host: str,
-        api_url: str,
+        rapidapi_host: str | None = None,
+        api_url: str | None = None,
     ) -> None:
         if not rapidapi_key:
             raise ValueError("RAPIDAPI_KEY is required for TcggoClient")
-        if not rapidapi_host:
-            raise ValueError("RAPIDAPI_HOST is required for TcggoClient")
-        if not api_url:
-            raise ValueError("TCGGO_API_URL is required for TcggoClient")
 
         self._key = rapidapi_key
-        self._host = rapidapi_host
-        self._base_url = api_url.rstrip("/")
+        self._host = rapidapi_host or self._DEFAULT_HOST
+        self._base_url = (api_url or self._DEFAULT_BASE_URL).rstrip("/")
 
     @classmethod
     def from_settings(cls) -> "TcggoClient":
         """Construct from ``config.settings`` (reads env vars automatically)."""
         from config.settings import settings  # local import to avoid circular dep
 
+        if not settings.rapidapi_key:
+            raise ValueError("RAPIDAPI_KEY is not set")
+
         return cls(
-            rapidapi_key=settings.rapidapi_key or "",
-            rapidapi_host=settings.rapidapi_host or "",
-            api_url=settings.tcggo_api_url or "",
+            rapidapi_key=settings.rapidapi_key,
+            rapidapi_host=settings.rapidapi_host or None,
+            api_url=settings.tcggo_api_url or None,
         )
 
     @property
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-RapidAPI-Key": self._key,
-            "X-RapidAPI-Host": self._host,
+            "x-rapidapi-key": self._key,
         }
+        if self._host:
+            headers["x-rapidapi-host"] = self._host
+        return headers
 
     def is_configured(self) -> bool:
-        """Return True when all required credentials are non-empty."""
-        return bool(self._key and self._host and self._base_url)
+        """Return True when the required RAPIDAPI_KEY credential is non-empty."""
+        return bool(self._key)
 
     # ------------------------------------------------------------------
     # Public API
@@ -613,6 +630,15 @@ class TcggoClient:
                         should_retry = True
                     else:
                         data = await resp.json(content_type=None)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            import json as _json
+                            logger.debug(
+                                "TCGGO response [HTTP %d] %s params=%s\n%s",
+                                resp.status,
+                                endpoint,
+                                params,
+                                _json.dumps(data, ensure_ascii=False, indent=2)[:4000],
+                            )
                         return resp.status, data
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TCGGO request to %s failed: %s", endpoint, exc)
@@ -652,12 +678,12 @@ class TcggoClient:
         query: str,
         query_context: dict[str, str | None],
     ) -> TcggoCardResult | None:
-        """GET a card search request to the cardmarket-api-tcg endpoint."""
+        """Search the cardmarket-api-tcg /pokemon/cards/search endpoint."""
         if not query.strip():
             return None
 
         endpoint = f"{self._base_url}/pokemon/cards/search"
-        params = {"search": query, "sort": "relevance"}
+        params = {"q": query}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)
@@ -687,7 +713,7 @@ class TcggoClient:
             return None
 
         endpoint = f"{self._base_url}/pokemon/cards/search"
-        params = {"search": query, "sort": "relevance"}
+        params = {"q": query}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)
@@ -710,29 +736,24 @@ class TcggoClient:
         slug: str | None,
         query_context: dict[str, str | None],
     ) -> TcggoCardResult | None:
-        """Attempt a direct TCGGO lookup by Cardmarket product slug."""
+        """Attempt a card lookup using the name extracted from a Cardmarket URL slug.
+
+        Uses the /pokemon/cards/search endpoint since there is no dedicated slug
+        endpoint on the cardmarket-api-tcg API.  Falls back gracefully when no
+        useful search terms can be derived from the slug.
+        """
         if not slug:
             return None
 
-        endpoint = f"{self._base_url}/cardmarket"
-        params = {"slug": slug, "game": "pokemon"}
-
-        try:
-            status, data = await self._get_with_retry(session, endpoint, params)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("TCGGO slug lookup failed for '%s': %s", slug, exc)
+        # Derive a search query from the slug (e.g. "Singles/Obsidian-Flames/Charizard-ex"
+        # → "Charizard ex Obsidian Flames").
+        parts = [p for p in slug.split("/") if p.lower() not in ("singles", "products")]
+        if not parts:
             return None
 
-        if status != 200:
-            logger.debug(
-                "TCGGO slug lookup HTTP %d for slug '%s'", status, slug
-            )
-            return None
-
-        # Slug lookup returns a single card object (not a list).
-        if isinstance(data, dict):
-            return _parse_card_data(data, query_context)
-        return self._pick_best(data, query_context)
+        query = " ".join(p.replace("-", " ") for p in reversed(parts))
+        logger.debug("TCGGO slug '%s' → search query '%s'", slug, query)
+        return await self._search_exact(session, query, query_context)
 
     def _pick_best(
         self,
