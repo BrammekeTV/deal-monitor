@@ -38,6 +38,7 @@ from config.settings import settings
 from database.db import Database
 from scraper.cardmarket import CardmarketScrapeError, normalize_cardmarket_url
 from services.card_identifier import identify_card
+from services.cardmarket_resolver import set_name_to_code
 from utils.embed_builder import (
     build_error_embed,
     build_review_resolved_embed,
@@ -499,15 +500,23 @@ class ReviewCog(commands.Cog, name="Review"):
             fingerprint=fingerprint,
         )
 
-        if learned_prefix is not None and fingerprint.set_code and monitor.resolver:
+        # Resolve the effective set code: use the fingerprint's explicit set_code
+        # when present, otherwise derive it from the set name (e.g. "Temporal Forces"
+        # → "TEF").  This ensures prefix rules are persisted even when the listing
+        # title does not include an explicit set code token.
+        effective_set_code = fingerprint.set_code or (
+            set_name_to_code(fingerprint.set_name) if fingerprint.set_name else None
+        )
+
+        if learned_prefix is not None and effective_set_code and monitor.resolver:
             await monitor.resolver.store_prefix_rule(
-                set_code=fingerprint.set_code,
+                set_code=effective_set_code,
                 prefix=learned_prefix,
                 set_name=fingerprint.set_name,
             )
             logger.info(
                 "ReviewCog: learned prefix rule set_code=%r prefix=%r from correction by %s",
-                fingerprint.set_code, learned_prefix, submitted_by.display_name,
+                effective_set_code, learned_prefix, submitted_by.display_name,
             )
 
         # ── Store correction in the database ─────────────────────────────
@@ -555,11 +564,11 @@ class ReviewCog(commands.Cog, name="Review"):
             comparison=comparison,
             resolved_by=submitted_by.display_name,
         )
-        if learned_prefix is not None:
+        if learned_prefix is not None and effective_set_code:
             result_embed.add_field(
                 name="🧠 Learned Pattern",
                 value=(
-                    f"Set `{fingerprint.set_code}` uses prefix `{learned_prefix}` "
+                    f"Set `{effective_set_code}` uses prefix `{learned_prefix}` "
                     "before collector numbers. "
                     "Future cards from this set will use this rule automatically."
                 ),
