@@ -594,3 +594,38 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 "▶️ Monitoring **resumed**. Searches will continue on the next cycle.",
                 ephemeral=True,
             )
+
+    @discord.app_commands.command(
+        name="run_cycle",
+        description="Pause the bot, run one scrape cycle, then pause again",
+    )
+    @discord.app_commands.default_permissions(administrator=True)
+    async def run_cycle_command(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        # Pause the bot (stop the background loop from starting a new cycle).
+        was_paused = self._paused
+        self._paused = True
+        self._resume_event.clear()
+        logger.info(
+            "MonitorCog: run_cycle triggered by %s (was_paused=%s)",
+            interaction.user, was_paused,
+        )
+
+        try:
+            await self._run_cycle()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error("MonitorCog: run_cycle command failed: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                f"❌ Cycle failed with error: `{exc}`\nThe bot remains **paused**.",
+                ephemeral=True,
+            )
+            return
+
+        logger.info("MonitorCog: run_cycle completed – bot remains paused")
+        await interaction.followup.send(
+            "✅ Cycle complete. The bot is now **paused**. Use `/resume` to continue.",
+            ephemeral=True,
+        )
