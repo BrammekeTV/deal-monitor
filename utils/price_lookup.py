@@ -19,6 +19,7 @@ seconds to avoid hammering the APIs on every new listing.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -141,16 +142,43 @@ async def _ebay_lookup(
     )
 
     try:
-        async with session.get(
-            _EBAY_FINDING_URL,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=10),
-            headers={"User-Agent": "deal-monitor/1.0"},
-        ) as resp:
-            if resp.status != 200:
-                logger.warning("eBay Finding API returned HTTP %d", resp.status)
+        delay = 1.0
+        data: dict[str, Any] | None = None
+        for attempt in range(3 + 1):
+            should_retry = False
+            try:
+                async with session.get(
+                    _EBAY_FINDING_URL,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    headers={"User-Agent": "deal-monitor/1.0"},
+                ) as resp:
+                    if resp.status >= 500:
+                        logger.warning(
+                            "eBay Finding API returned HTTP %d (attempt %d/3)",
+                            resp.status, attempt + 1,
+                        )
+                        should_retry = True
+                    elif resp.status != 200:
+                        logger.warning(
+                            "eBay Finding API returned HTTP %d", resp.status
+                        )
+                        return None
+                    else:
+                        data = await resp.json(content_type=None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("eBay lookup failed: %s", exc)
                 return None
-            data: dict[str, Any] = await resp.json(content_type=None)
+
+            if not should_retry:
+                break
+            if attempt >= 3:
+                return None
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+        if data is None:
+            return None
     except Exception as exc:  # noqa: BLE001
         logger.warning("eBay lookup failed: %s", exc)
         return None

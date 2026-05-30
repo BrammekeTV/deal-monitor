@@ -17,6 +17,7 @@ The client is stateless – create one ``TcggoClient`` per session and reuse it.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -560,6 +561,70 @@ class TcggoClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def _get_with_retry(
+        self,
+        session: aiohttp.ClientSession,
+        endpoint: str,
+        params: dict[str, str],
+        max_retries: int = 3,
+    ) -> tuple[int, Any]:
+        """Perform a GET request, retrying on HTTP 429 and 5xx responses.
+
+        On HTTP 429 the ``Retry-After`` response header is respected when
+        present; otherwise a 60-second back-off is used.  5xx errors use an
+        exponential back-off starting at 1 second (capped at 30 seconds).
+
+        Returns a ``(status_code, response_data)`` tuple.  When all retries
+        are exhausted ``(last_status, None)`` is returned.
+        """
+        delay = 1.0
+        last_status = -1
+        for attempt in range(max_retries + 1):
+            should_retry = False
+            next_delay = delay
+            try:
+                async with session.get(
+                    endpoint,
+                    params=params,
+                    headers=self._headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    last_status = resp.status
+                    if resp.status == 429:
+                        retry_after = resp.headers.get("Retry-After", "")
+                        try:
+                            next_delay = float(retry_after)
+                        except (ValueError, TypeError):
+                            next_delay = 60.0
+                        logger.warning(
+                            "TCGGO rate limited (HTTP 429); retrying in %.0fs"
+                            " (attempt %d/%d)",
+                            next_delay, attempt + 1, max_retries,
+                        )
+                        should_retry = True
+                    elif resp.status >= 500:
+                        logger.warning(
+                            "TCGGO API returned HTTP %d; retrying in %.0fs"
+                            " (attempt %d/%d)",
+                            resp.status, next_delay, attempt + 1, max_retries,
+                        )
+                        should_retry = True
+                    else:
+                        data = await resp.json(content_type=None)
+                        return resp.status, data
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("TCGGO request to %s failed: %s", endpoint, exc)
+                if attempt >= max_retries:
+                    raise
+                should_retry = True
+
+            if not should_retry or attempt >= max_retries:
+                break
+            await asyncio.sleep(next_delay)
+            delay = min(delay * 2, 30.0)
+
+        return last_status, None
+
     def _build_query(
         self,
         card_name: str | None = None,
@@ -593,23 +658,18 @@ class TcggoClient:
         params = {"q": query, "game": "pokemon"}
 
         try:
-            async with session.get(
-                endpoint,
-                params=params,
-                headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 404:
-                    logger.debug("TCGGO: no result for query '%s'", query)
-                    return None
-                if resp.status != 200:
-                    logger.warning(
-                        "TCGGO API returned HTTP %d for query '%s'", resp.status, query
-                    )
-                    return None
-                data = await resp.json(content_type=None)
+            status, data = await self._get_with_retry(session, endpoint, params)
         except Exception as exc:  # noqa: BLE001
             logger.warning("TCGGO search failed for '%s': %s", query, exc)
+            return None
+
+        if status == 404:
+            logger.debug("TCGGO: no result for query '%s'", query)
+            return None
+        if status != 200:
+            logger.warning(
+                "TCGGO API returned HTTP %d for query '%s'", status, query
+            )
             return None
 
         return self._pick_best(data, query_context)
@@ -628,21 +688,16 @@ class TcggoClient:
         params = {"q": query, "game": "pokemon", "fuzzy": "true"}
 
         try:
-            async with session.get(
-                endpoint,
-                params=params,
-                headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status not in (200, 404):
-                    logger.warning(
-                        "TCGGO fuzzy search returned HTTP %d for '%s'", resp.status, query
-                    )
-                if resp.status != 200:
-                    return None
-                data = await resp.json(content_type=None)
+            status, data = await self._get_with_retry(session, endpoint, params)
         except Exception as exc:  # noqa: BLE001
             logger.warning("TCGGO fuzzy search failed for '%s': %s", query, exc)
+            return None
+
+        if status not in (200, 404):
+            logger.warning(
+                "TCGGO fuzzy search returned HTTP %d for '%s'", status, query
+            )
+        if status != 200:
             return None
 
         return self._pick_best(data, query_context)
@@ -661,20 +716,15 @@ class TcggoClient:
         params = {"slug": slug, "game": "pokemon"}
 
         try:
-            async with session.get(
-                endpoint,
-                params=params,
-                headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status not in (200,):
-                    logger.debug(
-                        "TCGGO slug lookup HTTP %d for slug '%s'", resp.status, slug
-                    )
-                    return None
-                data = await resp.json(content_type=None)
+            status, data = await self._get_with_retry(session, endpoint, params)
         except Exception as exc:  # noqa: BLE001
             logger.warning("TCGGO slug lookup failed for '%s': %s", slug, exc)
+            return None
+
+        if status != 200:
+            logger.debug(
+                "TCGGO slug lookup HTTP %d for slug '%s'", status, slug
+            )
             return None
 
         # Slug lookup returns a single card object (not a list).
