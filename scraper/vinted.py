@@ -70,6 +70,20 @@ def _get_base_urls() -> list[str]:
     return urls or ["https://www.vinted.nl"]
 
 
+# Headers that mimic a real browser to avoid Vinted's 406 bot-detection.
+_BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+}
+
+
 class VintedScraper(BaseScraper):
     """API-based scraper for Vinted using the `vinted_scraper` package."""
 
@@ -92,6 +106,11 @@ class VintedScraper(BaseScraper):
         for base_url in base_urls:
             try:
                 scraper = await _AsyncVintedScraper.create(base_url)
+                # Patch headers to avoid Vinted's 406 bot-detection on cookie
+                # refresh requests (the library hits the root URL with httpx).
+                if hasattr(scraper, "_client"):
+                    scraper._client.headers.update(_BROWSER_HEADERS)
+                    logger.debug("Patched httpx headers for %s", base_url)
                 self._scrapers[base_url] = scraper
                 logger.info("AsyncVintedScraper ready for %s", base_url)
             except Exception as exc:  # noqa: BLE001
