@@ -475,10 +475,11 @@ class ReviewCog(commands.Cog, name="Review"):
         from scraper.base import Listing
         from services.price_comparison import compare_prices
 
-        # Reconstruct a minimal Listing for comparison. We don't have the
-        # price stored in error_log, so use 0.0 as a fallback.
-        listing_price = 0.0
-        listing_currency = "EUR"
+        # Reconstruct a minimal Listing for comparison. Use the price stored
+        # in the error_log row; fall back to 0.0 for old entries that predate
+        # the listing_price column.
+        listing_price = float(error_item.get("listing_price") or 0.0)
+        listing_currency = error_item.get("listing_currency") or "EUR"
         stub_listing = Listing(
             listing_id=listing_id or "correction",
             title=listing_title,
@@ -571,7 +572,7 @@ class ReviewCog(commands.Cog, name="Review"):
             logger.error("ReviewCog: failed to post correction confirmation: %s", exc)
 
         # ── Post to deals channel if profitable ───────────────────────────
-        if comparison.is_profitable and listing_price > 0:
+        if comparison.is_profitable:
             from utils.embed_builder import build_profit_alert_embed
 
             profit_embed = build_profit_alert_embed(
