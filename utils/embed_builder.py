@@ -437,12 +437,18 @@ def build_status_embed(
     last_run: datetime | None,
     next_run: datetime | None,
     search_terms: list[str],
+    paused: bool = False,
 ) -> discord.Embed:
     """Build a bot health/status embed."""
     embed = discord.Embed(
         title="📡 Deal Monitor Status",
         colour=_COLOUR_INFO,
         timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="⏸️ Status",
+        value="**Paused**" if paused else "**Running**",
+        inline=True,
     )
     embed.add_field(name="📊 Listings Checked", value=str(listings_checked), inline=True)
     embed.add_field(name="🔥 Profitable Found", value=str(listings_profitable), inline=True)

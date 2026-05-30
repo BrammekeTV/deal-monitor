@@ -73,6 +73,11 @@ discord:
   # Discord channel ID to post profit alerts (can also be set via DISCORD_CHANNEL_ID env var).
   channel_id: 0
 
+  # Discord channel ID for listings that were correctly identified but are not a good deal.
+  # Use this to verify the tool is working even when no profitable deals are found.
+  # Can also be set via DISCORD_MATCH_CHANNEL_ID env var.
+  match_channel_id: 0
+
   # Discord channel ID for community review of unidentified listings (e.g. #card-review).
   # Can also be set via DISCORD_REVIEW_CHANNEL_ID env var.
   review_channel_id: 0

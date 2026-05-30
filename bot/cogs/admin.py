@@ -52,6 +52,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 last_run=getattr(monitor, "_last_run", None),
                 next_run=getattr(monitor, "_next_run", None),
                 search_terms=settings.search_terms,
+                paused=getattr(monitor, "_paused", False),
             )
         else:
             embed = discord.Embed(
