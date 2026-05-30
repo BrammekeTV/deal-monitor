@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS error_log (
     listing_id          TEXT,
     listing_title       TEXT,
     listing_url         TEXT,
+    listing_price       REAL,
+    listing_currency    TEXT    DEFAULT 'EUR',
     cardmarket_url      TEXT,
     failure_step        TEXT,
     http_status         INTEGER,
@@ -212,6 +214,18 @@ class Database:
             # Column already exists – this is expected for databases created
             # after the migration was included in the schema.
             pass
+        for col, definition in (
+            ("listing_price", "REAL"),
+            ("listing_currency", "TEXT DEFAULT 'EUR'"),
+        ):
+            try:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    f"ALTER TABLE error_log ADD COLUMN {col} {definition}"
+                )
+                await self._conn.commit()  # type: ignore[union-attr]
+                logger.debug("Database: migrated error_log – added %s column", col)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -429,6 +443,8 @@ class Database:
         listing_id: str | None = None,
         listing_title: str | None = None,
         listing_url: str | None = None,
+        listing_price: float | None = None,
+        listing_currency: str | None = None,
         cardmarket_url: str | None = None,
         failure_step: str | None = None,
         http_status: int | None = None,
@@ -441,13 +457,17 @@ class Database:
             cur = await self._conn.execute(  # type: ignore[union-attr]
                 """
                 INSERT INTO error_log
-                    (listing_id, listing_title, listing_url, cardmarket_url,
+                    (listing_id, listing_title, listing_url,
+                     listing_price, listing_currency,
+                     cardmarket_url,
                      failure_step, http_status, error_message, stack_trace,
                      created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    listing_id, listing_title, listing_url, cardmarket_url,
+                    listing_id, listing_title, listing_url,
+                    listing_price, listing_currency or "EUR",
+                    cardmarket_url,
                     failure_step, http_status, error_message, stack_trace, now,
                 ),
             )
