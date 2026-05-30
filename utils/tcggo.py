@@ -450,9 +450,9 @@ class TcggoClient:
     @property
     def _headers(self) -> dict[str, str]:
         return {
+            "Content-Type": "application/json",
             "X-RapidAPI-Key": self._key,
             "X-RapidAPI-Host": self._host,
-            "Accept": "application/json",
         }
 
     def is_configured(self) -> bool:
@@ -650,12 +650,12 @@ class TcggoClient:
         query: str,
         query_context: dict[str, str | None],
     ) -> TcggoCardResult | None:
-        """POST/GET a structured card search request to TCGGO."""
+        """GET a card search request to the cardmarket-api-tcg endpoint."""
         if not query.strip():
             return None
 
-        endpoint = f"{self._base_url}/search"
-        params = {"q": query, "game": "pokemon"}
+        endpoint = f"{self._base_url}/pokemon/cards/search"
+        params = {"search": query, "sort": "relevance"}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)
@@ -680,12 +680,12 @@ class TcggoClient:
         query: str,
         query_context: dict[str, str | None],
     ) -> TcggoCardResult | None:
-        """Fuzzy / title-based search endpoint."""
+        """Fuzzy / title-based search using the cardmarket-api-tcg endpoint."""
         if not query.strip():
             return None
 
-        endpoint = f"{self._base_url}/search"
-        params = {"q": query, "game": "pokemon", "fuzzy": "true"}
+        endpoint = f"{self._base_url}/pokemon/cards/search"
+        params = {"search": query, "sort": "relevance"}
 
         try:
             status, data = await self._get_with_retry(session, endpoint, params)
