@@ -391,8 +391,14 @@ def build_error_embed(
     *,
     http_status: int | None = None,
     stack_trace: str | None = None,
+    fingerprint: "CardFingerprint | None" = None,
 ) -> discord.Embed:
-    """Build a structured error embed for the logging channel."""
+    """Build a structured error embed for the logging channel.
+
+    When *fingerprint* is provided and the failure is related to Cardmarket URL
+    generation, the embed includes extracted card info and instructions for the
+    user to reply with the correct Cardmarket URL.
+    """
     embed = discord.Embed(
         title=f"⚠️ Cardmarket Scrape Error: {failure_step}",
         colour=_COLOUR_ERROR,
@@ -404,12 +410,47 @@ def build_error_embed(
     if listing_url:
         embed.add_field(name="🔗 Vinted URL", value=listing_url[:500], inline=False)
     if cardmarket_url:
-        embed.add_field(name="🃏 Cardmarket URL", value=cardmarket_url[:500], inline=False)
+        embed.add_field(name="🃏 Generated Cardmarket URL", value=cardmarket_url[:500], inline=False)
 
     embed.add_field(name="❌ Error", value=error_message[:1024], inline=False)
 
     if http_status:
         embed.add_field(name="🌐 HTTP Status", value=str(http_status), inline=True)
+
+    # ── Extracted card info ───────────────────────────────────────────────
+    if fingerprint:
+        fp_lines = []
+        if fingerprint.card_name:
+            fp_lines.append(f"Card Name: **{fingerprint.card_name}**")
+        if fingerprint.set_name:
+            fp_lines.append(f"Set: **{fingerprint.set_name}**")
+        if fingerprint.set_code:
+            fp_lines.append(f"Set Code: **{fingerprint.set_code}**")
+        if fingerprint.collector_number:
+            fp_lines.append(f"Collector Number: **{fingerprint.collector_number}**")
+        if fingerprint.rarity:
+            fp_lines.append(f"Rarity: **{fingerprint.rarity}**")
+        if fingerprint.language:
+            fp_lines.append(f"Language: **{fingerprint.language}**")
+        if fp_lines:
+            embed.add_field(
+                name="🔎 Extracted Card Info",
+                value="\n".join(fp_lines),
+                inline=False,
+            )
+
+    # ── Correction instructions ───────────────────────────────────────────
+    if cardmarket_url:
+        embed.add_field(
+            name="💡 How to Fix",
+            value=(
+                "**Reply to this message** with the correct Cardmarket product URL.\n"
+                "The bot will validate it, scrape the pricing data, and permanently "
+                "learn the correct URL for this card.\n\n"
+                "Example: `https://www.cardmarket.com/en/Pokemon/Products/Singles/...`"
+            ),
+            inline=False,
+        )
 
     if stack_trace:
         # Truncate to fit Discord's embed field limit
@@ -420,7 +461,7 @@ def build_error_embed(
             inline=False,
         )
 
-    embed.set_footer(text=f"Step: {failure_step}")
+    embed.set_footer(text=f"Step: {failure_step}  •  Reply with correct Cardmarket URL to fix")
     return embed
 
 

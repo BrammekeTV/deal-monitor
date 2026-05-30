@@ -8,6 +8,8 @@ Tables:
   card_mappings       – learning database: Vinted title/fingerprint → Cardmarket URL
   review_queue        – listings pending manual Discord review
   error_log           – structured Cardmarket scraping / processing errors
+  correction_log      – URL corrections supplied by users via Discord reply
+  slug_prefix_rules   – learned set-prefix patterns (e.g. Team Rocket → TR prefix)
   filter_settings     – runtime-adjustable bot settings
 """
 
@@ -108,17 +110,60 @@ CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
 CREATE INDEX IF NOT EXISTS idx_review_queue_discord_msg ON review_queue(discord_message_id);
 
 CREATE TABLE IF NOT EXISTS error_log (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id     TEXT,
-    listing_title  TEXT,
-    listing_url    TEXT,
-    cardmarket_url TEXT,
-    failure_step   TEXT,
-    http_status    INTEGER,
-    error_message  TEXT,
-    stack_trace    TEXT,
-    created_at     TEXT
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id          TEXT,
+    listing_title       TEXT,
+    listing_url         TEXT,
+    cardmarket_url      TEXT,
+    failure_step        TEXT,
+    http_status         INTEGER,
+    error_message       TEXT,
+    stack_trace         TEXT,
+    discord_message_id  TEXT,
+    created_at          TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_error_log_discord_msg ON error_log(discord_message_id);
+
+CREATE TABLE IF NOT EXISTS correction_log (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Original error details
+    listing_id                  TEXT,
+    listing_title               TEXT,
+    listing_url                 TEXT,
+    generated_cardmarket_url    TEXT,
+    failed_slug                 TEXT,
+    -- Corrected details
+    correct_cardmarket_url      TEXT    NOT NULL,
+    correct_slug                TEXT,
+    product_name                TEXT,
+    -- Card identity fields at the time of correction
+    set_name                    TEXT,
+    set_code                    TEXT,
+    collector_number            TEXT,
+    -- Pattern analysis
+    original_identifier         TEXT,   -- e.g. "Dark-Raichu-83"
+    corrected_identifier        TEXT,   -- e.g. "Dark-Raichu-TR83"
+    learned_prefix              TEXT,   -- e.g. "TR" (NULL if no pattern found)
+    -- Meta
+    corrected_by                TEXT,
+    date_learned                TEXT
+);
+
+CREATE TABLE IF NOT EXISTS slug_prefix_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_name        TEXT,
+    set_code        TEXT    NOT NULL,
+    prefix          TEXT    NOT NULL,
+    uses_successful INTEGER DEFAULT 0,
+    uses_failed     INTEGER DEFAULT 0,
+    confidence      REAL    DEFAULT 1.0,
+    date_learned    TEXT,
+    date_last_used  TEXT,
+    UNIQUE(set_code, prefix)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slug_prefix_rules_set_code ON slug_prefix_rules(set_code);
 
 CREATE TABLE IF NOT EXISTS filter_settings (
     key   TEXT PRIMARY KEY,
@@ -147,7 +192,26 @@ class Database:
         # Apply schema (idempotent – uses CREATE TABLE IF NOT EXISTS).
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
+        # Migrate existing error_log table: add discord_message_id if missing.
+        await self._migrate()
         logger.info("Database opened: %s", self._path)
+
+    async def _migrate(self) -> None:
+        """Apply any incremental schema migrations."""
+        try:
+            await self._conn.execute(  # type: ignore[union-attr]
+                "ALTER TABLE error_log ADD COLUMN discord_message_id TEXT"
+            )
+            await self._conn.execute(  # type: ignore[union-attr]
+                "CREATE INDEX IF NOT EXISTS idx_error_log_discord_msg "
+                "ON error_log(discord_message_id)"
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            logger.debug("Database: migrated error_log – added discord_message_id column")
+        except Exception:  # noqa: BLE001
+            # Column already exists – this is expected for databases created
+            # after the migration was included in the schema.
+            pass
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -370,11 +434,11 @@ class Database:
         http_status: int | None = None,
         error_message: str | None = None,
         stack_trace: str | None = None,
-    ) -> None:
-        """Persist a structured processing error."""
+    ) -> int | None:
+        """Persist a structured processing error.  Returns the new row ID."""
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
+            cur = await self._conn.execute(  # type: ignore[union-attr]
                 """
                 INSERT INTO error_log
                     (listing_id, listing_title, listing_url, cardmarket_url,
@@ -387,6 +451,177 @@ class Database:
                     failure_step, http_status, error_message, stack_trace, now,
                 ),
             )
+            await self._conn.commit()  # type: ignore[union-attr]
+            return cur.lastrowid  # type: ignore[return-value]
+
+    async def update_error_message_id(self, error_log_id: int, discord_message_id: str) -> None:
+        """Store the Discord message ID for an error_log entry."""
+        async with self._lock:
+            await self._conn.execute(  # type: ignore[union-attr]
+                "UPDATE error_log SET discord_message_id = ? WHERE id = ?",
+                (discord_message_id, error_log_id),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    async def get_error_by_message_id(self, discord_message_id: str) -> dict[str, Any] | None:
+        """Return an error_log entry by its Discord message ID."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM error_log WHERE discord_message_id = ? ORDER BY id DESC LIMIT 1",
+            (discord_message_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Correction log
+    # ------------------------------------------------------------------
+
+    async def add_correction(
+        self,
+        *,
+        listing_id: str | None = None,
+        listing_title: str | None = None,
+        listing_url: str | None = None,
+        generated_cardmarket_url: str | None = None,
+        failed_slug: str | None = None,
+        correct_cardmarket_url: str,
+        correct_slug: str | None = None,
+        product_name: str | None = None,
+        set_name: str | None = None,
+        set_code: str | None = None,
+        collector_number: str | None = None,
+        original_identifier: str | None = None,
+        corrected_identifier: str | None = None,
+        learned_prefix: str | None = None,
+        corrected_by: str | None = None,
+    ) -> int:
+        """Insert a user-supplied URL correction.  Returns the new row ID."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            cur = await self._conn.execute(  # type: ignore[union-attr]
+                """
+                INSERT INTO correction_log
+                    (listing_id, listing_title, listing_url,
+                     generated_cardmarket_url, failed_slug,
+                     correct_cardmarket_url, correct_slug, product_name,
+                     set_name, set_code, collector_number,
+                     original_identifier, corrected_identifier, learned_prefix,
+                     corrected_by, date_learned)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    listing_id, listing_title, listing_url,
+                    generated_cardmarket_url, failed_slug,
+                    correct_cardmarket_url, correct_slug, product_name,
+                    set_name, set_code, collector_number,
+                    original_identifier, corrected_identifier, learned_prefix,
+                    corrected_by, now,
+                ),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            return cur.lastrowid  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # Slug prefix rules (pattern learning)
+    # ------------------------------------------------------------------
+
+    async def upsert_slug_prefix_rule(
+        self,
+        *,
+        set_code: str,
+        prefix: str,
+        set_name: str | None = None,
+    ) -> int:
+        """Insert or update a slug prefix rule.  Returns the rule row ID."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            # Try insert first.
+            try:
+                cur = await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO slug_prefix_rules
+                        (set_code, prefix, set_name, uses_successful, uses_failed,
+                         confidence, date_learned, date_last_used)
+                    VALUES (?, ?, ?, 1, 0, 1.0, ?, ?)
+                    """,
+                    (set_code, prefix, set_name, now, now),
+                )
+                await self._conn.commit()  # type: ignore[union-attr]
+                return cur.lastrowid  # type: ignore[return-value]
+            except Exception:  # noqa: BLE001
+                # Row already exists – update success count and set name if provided.
+                async with self._conn.execute(  # type: ignore[union-attr]
+                    "SELECT id FROM slug_prefix_rules WHERE set_code = ? AND prefix = ?",
+                    (set_code, prefix),
+                ) as cur2:
+                    row = await cur2.fetchone()
+                if row:
+                    await self._conn.execute(  # type: ignore[union-attr]
+                        """
+                        UPDATE slug_prefix_rules
+                        SET uses_successful = uses_successful + 1,
+                            date_last_used = ?,
+                            set_name = COALESCE(?, set_name)
+                        WHERE set_code = ? AND prefix = ?
+                        """,
+                        (now, set_name, set_code, prefix),
+                    )
+                    await self._conn.commit()  # type: ignore[union-attr]
+                    return row["id"]
+                return 0
+
+    async def get_slug_prefix_rule(self, set_code: str) -> dict[str, Any] | None:
+        """Return the highest-confidence prefix rule for *set_code*, or None."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT * FROM slug_prefix_rules
+            WHERE set_code = ?
+            ORDER BY confidence DESC, uses_successful DESC
+            LIMIT 1
+            """,
+            (set_code,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_all_slug_prefix_rules(self) -> list[dict[str, Any]]:
+        """Return all slug prefix rules ordered by confidence."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM slug_prefix_rules ORDER BY confidence DESC, uses_successful DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def record_slug_prefix_rule_use(
+        self, rule_id: int, *, success: bool
+    ) -> None:
+        """Increment use counters and recalculate confidence for a prefix rule."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            if success:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    UPDATE slug_prefix_rules
+                    SET uses_successful = uses_successful + 1,
+                        date_last_used = ?,
+                        confidence = CAST(uses_successful + 1 AS REAL)
+                                     / (uses_successful + 1 + uses_failed)
+                    WHERE id = ?
+                    """,
+                    (now, rule_id),
+                )
+            else:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    UPDATE slug_prefix_rules
+                    SET uses_failed = uses_failed + 1,
+                        date_last_used = ?,
+                        confidence = CAST(uses_successful AS REAL)
+                                     / (uses_successful + uses_failed + 1)
+                    WHERE id = ?
+                    """,
+                    (now, rule_id),
+                )
             await self._conn.commit()  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
