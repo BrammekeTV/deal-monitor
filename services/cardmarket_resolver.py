@@ -285,7 +285,7 @@ class CardmarketResolver:
 
         # Try deriving set code from set name.
         if fingerprint.set_name:
-            derived_code = _set_name_to_code(fingerprint.set_name)
+            derived_code = set_name_to_code(fingerprint.set_name)
             if derived_code:
                 prefix = _get_prefix(derived_code)
                 url = build_cardmarket_url(
@@ -455,7 +455,7 @@ _SET_NAME_TO_CODE: dict[str, str] = {
 }
 
 
-def _set_name_to_code(set_name: str) -> str | None:
+def set_name_to_code(set_name: str) -> str | None:
     """Try to derive a set code from a set name."""
     name_lower = set_name.lower().strip()
     for pattern, code in _SET_NAME_TO_CODE.items():
