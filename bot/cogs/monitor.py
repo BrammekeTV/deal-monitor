@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import random
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import discord
@@ -169,9 +169,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
             # Random sleep between cycles.
             delay = random.randint(settings.interval_min, settings.interval_max)
-            self._next_run = datetime.now(timezone.utc).replace(
-                second=datetime.now(timezone.utc).second + delay % 60
-            )
+            self._next_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
             logger.debug("MonitorCog: sleeping %d seconds before next cycle", delay)
             await asyncio.sleep(delay)
 
