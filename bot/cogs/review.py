@@ -36,7 +36,12 @@ from discord.ext import commands
 
 from config.settings import settings
 from database.db import Database
-from scraper.cardmarket import CardmarketScrapeError, normalize_cardmarket_url
+from scraper.cardmarket import (
+    CardmarketScrapeError,
+    contains_psa,
+    extract_psa_grade,
+    normalize_cardmarket_url,
+)
 from services.card_identifier import identify_card
 from services.cardmarket_resolver import set_name_to_code
 from utils.embed_builder import (
@@ -350,6 +355,39 @@ class ReviewCog(commands.Cog, name="Review"):
             )
             return
 
+        # ── PSA-specific listing price ────────────────────────────────────
+        # Mirror the PSA grade check from MonitorCog: if the listing title or
+        # description mentions a PSA grade ≥ 9, attempt to fetch the price of
+        # the matching MT listing on Cardmarket and use it instead of the
+        # generic "From" price.
+        combined_text = listing_title + " " + (review_item.get("description") or "")
+        psa_grade: int | None = None
+        if contains_psa(combined_text):
+            psa_grade = extract_psa_grade(combined_text)
+            if psa_grade is not None:
+                logger.info(
+                    "ReviewCog: PSA %d detected in listing '%s'",
+                    psa_grade, listing_title[:60],
+                )
+
+        if psa_grade is not None and psa_grade >= 9:
+            from dataclasses import replace as _dc_replace
+            psa_price = await monitor.cardmarket_scraper.scrape_psa_listing_price(
+                normalised_url, psa_grade
+            )
+            if psa_price is not None:
+                cm_data = _dc_replace(cm_data, from_price=psa_price)
+                logger.info(
+                    "ReviewCog: using PSA %d MT listing price €%.2f for '%s'",
+                    psa_grade, psa_price, listing_title[:60],
+                )
+            else:
+                logger.info(
+                    "ReviewCog: no PSA %d MT listing found on Cardmarket – "
+                    "falling back to standard From price for '%s'",
+                    psa_grade, listing_title[:60],
+                )
+
         # ── Price comparison ──────────────────────────────────────────────
         from scraper.base import Listing
         from services.price_comparison import compare_prices
@@ -501,6 +539,37 @@ class ReviewCog(commands.Cog, name="Review"):
                 mention_author=False,
             )
             return
+
+        # ── PSA-specific listing price ────────────────────────────────────
+        # Mirror the PSA grade check from MonitorCog: if the listing title
+        # mentions a PSA grade ≥ 9, attempt to fetch the price of the matching
+        # MT listing on Cardmarket and use it instead of the generic "From" price.
+        psa_grade: int | None = None
+        if contains_psa(listing_title):
+            psa_grade = extract_psa_grade(listing_title)
+            if psa_grade is not None:
+                logger.info(
+                    "ReviewCog: PSA %d detected in listing '%s'",
+                    psa_grade, listing_title[:60],
+                )
+
+        if psa_grade is not None and psa_grade >= 9:
+            from dataclasses import replace as _dc_replace
+            psa_price = await monitor.cardmarket_scraper.scrape_psa_listing_price(
+                normalised_url, psa_grade
+            )
+            if psa_price is not None:
+                cm_data = _dc_replace(cm_data, from_price=psa_price)
+                logger.info(
+                    "ReviewCog: using PSA %d MT listing price €%.2f for '%s'",
+                    psa_grade, psa_price, listing_title[:60],
+                )
+            else:
+                logger.info(
+                    "ReviewCog: no PSA %d MT listing found on Cardmarket – "
+                    "falling back to standard From price for '%s'",
+                    psa_grade, listing_title[:60],
+                )
 
         # ── Price comparison ──────────────────────────────────────────────
         from scraper.base import Listing
