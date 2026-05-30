@@ -237,3 +237,47 @@ class AdminCog(commands.Cog, name="Admin"):
             embed.add_field(name=key, value=f"`{val}`", inline=True)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /error_summary  — aggregate failure report
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="error_summary",
+        description="[Admin] Show aggregate error counts grouped by failure step",
+    )
+    @_ADMIN_ONLY
+    async def error_summary(self, interaction: discord.Interaction) -> None:
+        """Display the top failure patterns from the error log."""
+        await interaction.response.defer(ephemeral=True)
+        rows = await self.db.get_error_summary()
+
+        if not rows:
+            await interaction.followup.send(
+                "No errors logged yet.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title="🔴 Error Summary",
+            description=(
+                "Top error patterns from the error log, grouped by failure step "
+                "and message (most frequent first)."
+            ),
+            colour=discord.Colour.red(),
+        )
+
+        for row in rows[:20]:  # Embed field limit is 25; keep some headroom.
+            step = row.get("failure_step") or "unknown"
+            msg = row.get("error_message") or "—"
+            count = row.get("count", 0)
+            embed.add_field(
+                name=f"`{step}` — {count}×",
+                value=_trunc(msg, 80),
+                inline=False,
+            )
+
+        if len(rows) > 20:
+            embed.set_footer(text=f"Showing top 20 of {len(rows)} patterns.")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)

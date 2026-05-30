@@ -39,11 +39,13 @@ from scraper.cardmarket import (
     CardmarketScraper,
     contains_psa,
     extract_psa_grade,
+    validate_cardmarket_url,
 )
 from scraper.vinted import VintedScraper
 from services.card_identifier import identify_card
 from services.cardmarket_resolver import CardmarketResolver
 from services.price_comparison import compare_prices
+from utils.card_analyzer import is_non_card_item
 from utils.embed_builder import (
     build_error_embed,
     build_profit_alert_embed,
@@ -85,6 +87,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         # Background task handle
         self._task: asyncio.Task | None = None
+
+        # Timestamp of the last review-queue expiry cleanup.
+        self._last_cleanup: datetime | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -183,6 +188,19 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._last_run = datetime.now(timezone.utc)
         logger.info("MonitorCog: starting scrape cycle")
 
+        # Periodic review-queue expiry (once per day, when configured).
+        expiry_days = getattr(settings, "review_queue_expiry_days", 30)
+        if expiry_days > 0:
+            now = datetime.now(timezone.utc)
+            if self._last_cleanup is None or (now - self._last_cleanup) >= timedelta(hours=24):
+                expired_count = await self.db.expire_old_review_items(expiry_days)
+                if expired_count:
+                    logger.info(
+                        "MonitorCog: expired %d stale review queue entries (>%d days)",
+                        expired_count, expiry_days,
+                    )
+                self._last_cleanup = now
+
         for term in settings.search_terms:
             if self._paused:
                 logger.info("MonitorCog: paused mid-cycle – aborting remaining search terms")
@@ -234,10 +252,66 @@ class MonitorCog(commands.Cog, name="Monitor"):
             listing.title[:60], listing.price,
         )
 
+        # ── 1b. Non-card pre-filter ───────────────────────────────────────
+        # Skip and log non-TCG-card items (merchandise, accessories, etc.)
+        if is_non_card_item(listing.title, listing.description or ""):
+            logger.info(
+                "MonitorCog: non-card item detected, skipping listing '%s'",
+                listing.title[:60],
+            )
+            await self.db.add_review_item(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                failure_reason="non_card_item",
+                status="skipped",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
         # ── 2. Card identification ────────────────────────────────────────
         fingerprint = identify_card(listing.title)
 
-        # ── 2b. PSA detection ─────────────────────────────────────────────
+        # ── 2b. Unresolvable guard ────────────────────────────────────────
+        # If we extracted no set info and no collector number, skip CM lookup.
+        if (
+            fingerprint.collector_number is None
+            and fingerprint.set_name is None
+            and fingerprint.set_code is None
+        ):
+            logger.info(
+                "MonitorCog: unresolvable listing (no identifiers) '%s'",
+                listing.title[:60],
+            )
+            await self._send_to_review(
+                listing,
+                fingerprint,
+                [],
+                failure_reason="unresolvable_no_identifiers",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=fingerprint.fingerprint_hash(),
+            )
+            return
+
+        # ── 2c. PSA detection ─────────────────────────────────────────────
         # Combine title and description to check for PSA grade.
         combined_text = listing.title + " " + (listing.description or "")
         psa_grade: int | None = None
@@ -272,6 +346,35 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 fingerprint=fingerprint.fingerprint_hash(),
             )
             return
+
+        # ── 3b. URL validation (for constructed URLs only) ────────────────
+        if resolved.needs_validation:
+            url_ok = await validate_cardmarket_url(resolved.url)
+            if not url_ok:
+                logger.warning(
+                    "MonitorCog: constructed URL returned 404, sending to review: %s",
+                    resolved.url,
+                )
+                await self.db.add_review_item(
+                    listing_id=listing.listing_id,
+                    title=listing.title,
+                    url=listing.url,
+                    price=listing.price,
+                    currency=listing.currency,
+                    seller_name=listing.seller_name,
+                    failure_reason="url_404",
+                    fingerprint=fingerprint.fingerprint_hash(),
+                )
+                await self.db.mark_seen(
+                    listing_id=listing.listing_id,
+                    title=listing.title,
+                    url=listing.url,
+                    price=listing.price,
+                    currency=listing.currency,
+                    seller_name=listing.seller_name,
+                    fingerprint=fingerprint.fingerprint_hash(),
+                )
+                return
 
         # ── 4. Cardmarket scraping ────────────────────────────────────────
         try:
@@ -391,29 +494,32 @@ class MonitorCog(commands.Cog, name="Monitor"):
         listing: "Listing",
         fingerprint,
         matching_attempts: list[dict],
+        *,
+        failure_reason: str | None = None,
     ) -> None:
         """Send a listing to the review queue Discord channel."""
         from utils.embed_builder import build_review_embed
 
         self._listings_reviewed += 1
 
-        # Determine failure reason
-        if fingerprint.is_identifiable:
-            failure_reason = (
-                f"Card fingerprint extracted ('{fingerprint.normalised_key()}') "
-                f"but no Cardmarket URL could be built. "
-                f"Set code '{fingerprint.set_code}' may not be in the known mapping table."
-            )
-        elif fingerprint.card_name:
-            failure_reason = (
-                f"Card name '{fingerprint.card_name}' extracted but no set information found. "
-                "Insufficient data to construct a Cardmarket URL."
-            )
-        else:
-            failure_reason = (
-                "Could not extract card name from listing title. "
-                "Title may be too generic or non-standard."
-            )
+        # Determine failure reason (caller can override with explicit message).
+        if failure_reason is None:
+            if fingerprint.is_identifiable:
+                failure_reason = (
+                    f"Card fingerprint extracted ('{fingerprint.normalised_key()}') "
+                    f"but no Cardmarket URL could be built. "
+                    f"Set code '{fingerprint.set_code}' may not be in the known mapping table."
+                )
+            elif fingerprint.card_name:
+                failure_reason = (
+                    f"Card name '{fingerprint.card_name}' extracted but no set information found. "
+                    "Insufficient data to construct a Cardmarket URL."
+                )
+            else:
+                failure_reason = (
+                    "Could not extract card name from listing title. "
+                    "Title may be too generic or non-standard."
+                )
 
         # Add to DB review queue.
         await self.db.add_review_item(

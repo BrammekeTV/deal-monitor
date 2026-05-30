@@ -12,6 +12,10 @@ scraper:
   interval_min: 60     # 1 minute
   interval_max: 300    # 5 minutes
 
+  # Number of days before a pending review queue entry is automatically
+  # marked as 'expired'.  Set to 0 to disable automatic expiry.
+  review_queue_expiry_days: 30
+
   # Number of results to fetch per search term per cycle.
   results_per_term: 30
 
