@@ -3,7 +3,7 @@ bot/cogs/review.py
 ~~~~~~~~~~~~~~~~~~
 Manual Review Learning System.
 
-Workflow:
+Workflow A – unresolvable listings (review channel):
   1. MonitorCog posts listings it cannot resolve to the #review-listings channel.
   2. A user replies to that message with the correct Cardmarket product URL.
   3. This cog detects the reply, validates the URL, normalises it with
@@ -12,14 +12,23 @@ Workflow:
   4. The validated mapping is permanently stored in the learning database so
      future listings matching the same card are resolved automatically.
 
+Workflow B – Cardmarket scrape errors (log channel):
+  1. MonitorCog posts a scrape-error embed to the log channel and stores the
+     Discord message ID in the error_log table.
+  2. A user replies to that message with the correct Cardmarket product URL.
+  3. This cog validates the URL, scrapes pricing data, stores the mapping and
+     the correction, and attempts to extract a reusable slug-prefix rule.
+  4. The prefix rule (e.g. Team Rocket → "TR") is saved and automatically
+     applied to future URL constructions for the same set.
+
 Message format the bot looks for in replies:
-  Any reply to a review message that contains a cardmarket.com URL.
+  Any reply to a known bot message that contains a cardmarket.com URL.
 """
 
 from __future__ import annotations
 
 import re
-import traceback
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING
 
 import discord
@@ -59,6 +68,91 @@ def _extract_cardmarket_url(text: str) -> str | None:
     return url
 
 
+def _extract_product_slug(url: str) -> str | None:
+    """Return the last path segment (product slug) from a Cardmarket URL.
+
+    Example:
+        _extract_product_slug("https://www.cardmarket.com/en/Pokemon/Products/Singles/Team-Rocket/Dark-Raichu-83?...")
+        → "Dark-Raichu-83"
+    """
+    if not url:
+        return None
+    path = urlparse(url).path.rstrip("/")
+    if not path:
+        return None
+    return path.split("/")[-1]
+
+
+def _analyze_correction_pattern(
+    generated_url: str,
+    corrected_url: str,
+    fingerprint,
+) -> tuple[str | None, str | None, str | None]:
+    """Analyse a URL correction to discover a reusable slug-prefix rule.
+
+    Compares the *generated_url* product slug with the *corrected_url* product
+    slug and the card's collector number to detect if the corrected version
+    uses a prefix before the number (e.g. ``83`` → ``TR83``).
+
+    Returns ``(learned_prefix, failed_slug, correct_slug)`` where
+    *learned_prefix* is ``None`` when no reusable pattern was detected.
+
+    Examples::
+
+        _analyze_correction_pattern(
+            "…/Dark-Raichu-83?…",
+            "…/Dark-Raichu-TR83?…",
+            fingerprint,  # collector_number="83/82"
+        )
+        → ("TR", "Dark-Raichu-83", "Dark-Raichu-TR83")
+
+        _analyze_correction_pattern(
+            "…/Krabby-51?…",
+            "…/Krabby-FO51?…",
+            fingerprint,  # collector_number="51"
+        )
+        → ("FO", "Krabby-51", "Krabby-FO51")
+    """
+    failed_slug = _extract_product_slug(generated_url)
+    correct_slug = _extract_product_slug(corrected_url)
+
+    if not failed_slug or not correct_slug or failed_slug == correct_slug:
+        return None, failed_slug, correct_slug
+
+    # Get bare collector number (strip fractional part and non-digits).
+    collector_number = fingerprint.collector_number or ""
+    bare_num = re.sub(r"[^0-9]", "", collector_number.split("/")[0]) if collector_number else ""
+
+    if not bare_num:
+        return None, failed_slug, correct_slug
+
+    # The failed slug should end with the bare number.
+    # The correct slug should end with {prefix}{bare_num} where prefix != "".
+    # Both should share a common card-name prefix.
+    if not failed_slug.endswith(f"-{bare_num}"):
+        return None, failed_slug, correct_slug
+
+    # The card-name part of both slugs (everything before the number segment).
+    card_slug_part = failed_slug[: -(len(bare_num) + 1)]  # strip "-<num>"
+
+    # The corrected number segment is correct_slug minus the common card-name part.
+    if not correct_slug.startswith(card_slug_part + "-"):
+        return None, failed_slug, correct_slug
+
+    corrected_num_part = correct_slug[len(card_slug_part) + 1:]  # after "-"
+
+    # corrected_num_part should be "{prefix}{bare_num}" where prefix is non-empty.
+    if not corrected_num_part.endswith(bare_num):
+        return None, failed_slug, correct_slug
+
+    prefix = corrected_num_part[: -len(bare_num)]
+    if not prefix or not prefix.isalpha():
+        # Only accept alphabetic prefixes (e.g. "TR", "FO", "BS").
+        return None, failed_slug, correct_slug
+
+    return prefix, failed_slug, correct_slug
+
+
 class ReviewCog(commands.Cog, name="Review"):
     """Handles manual review replies to identify unresolved listings."""
 
@@ -75,19 +169,25 @@ class ReviewCog(commands.Cog, name="Review"):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Listen for Cardmarket URL replies in the review channel."""
+        """Listen for Cardmarket URL replies in the review or log channel."""
         if message.author.bot:
-            return
-
-        review_channel_id = settings.discord_review_channel_id
-        if not review_channel_id or message.channel.id != review_channel_id:
             return
 
         # Must be a reply to another message.
         if message.reference is None:
             return
 
-        referenced_id = str(message.reference.message_id)
+        review_channel_id = settings.discord_review_channel_id
+        log_channel_id = settings.discord_log_channel_id
+
+        if review_channel_id and message.channel.id == review_channel_id:
+            await self._handle_review_reply(message)
+        elif log_channel_id and message.channel.id == log_channel_id:
+            await self._handle_correction_reply(message)
+
+    async def _handle_review_reply(self, message: discord.Message) -> None:
+        """Handle a reply in the review channel (unresolvable listing)."""
+        referenced_id = str(message.reference.message_id)  # type: ignore[union-attr]
 
         # Look up the review queue item associated with this Discord message.
         review_item = await self.db.get_review_item_by_message(referenced_id)
@@ -112,6 +212,33 @@ class ReviewCog(commands.Cog, name="Review"):
         # Process the supplied URL.
         await self._process_review_reply(
             review_item=review_item,
+            cardmarket_url=cm_url,
+            submitted_by=message.author,
+            reply_message=message,
+        )
+
+    async def _handle_correction_reply(self, message: discord.Message) -> None:
+        """Handle a reply in the log channel (correction for a scrape error)."""
+        referenced_id = str(message.reference.message_id)  # type: ignore[union-attr]
+
+        # Look up the error_log entry for this Discord message.
+        error_item = await self.db.get_error_by_message_id(referenced_id)
+        if error_item is None:
+            return  # Not a reply to a known error message.
+
+        # Extract Cardmarket URL from the reply.
+        cm_url = _extract_cardmarket_url(message.content)
+        if not cm_url:
+            await message.reply(
+                "⚠️ No valid Cardmarket product URL found in your message.\n"
+                "Please reply with the correct URL like: "
+                "`https://www.cardmarket.com/en/Pokemon/Products/Singles/...`",
+                mention_author=False,
+            )
+            return
+
+        await self._process_correction_reply(
+            error_item=error_item,
             cardmarket_url=cm_url,
             submitted_by=message.author,
             reply_message=message,
@@ -272,6 +399,197 @@ class ReviewCog(commands.Cog, name="Review"):
         logger.info(
             "ReviewCog: resolved listing '%s' via user review (%s)",
             listing_title[:60], submitted_by.display_name,
+        )
+
+    # ------------------------------------------------------------------
+    # Correction processing (log channel replies)
+    # ------------------------------------------------------------------
+
+    async def _process_correction_reply(
+        self,
+        error_item: dict,
+        cardmarket_url: str,
+        submitted_by: discord.Member | discord.User,
+        reply_message: discord.Message,
+    ) -> None:
+        """Validate a user-supplied correction, scrape it, learn from it, and
+        retry normal processing using the corrected URL."""
+        listing_id = error_item.get("listing_id")
+        listing_title = error_item.get("listing_title") or ""
+        listing_url = error_item.get("listing_url") or ""
+        generated_cm_url = error_item.get("cardmarket_url") or ""
+
+        normalised_url = normalize_cardmarket_url(cardmarket_url)
+
+        logger.info(
+            "ReviewCog: processing correction '%s' for listing '%s' (submitted by %s)",
+            normalised_url, listing_title[:60], submitted_by.display_name,
+        )
+
+        # ── Scrape the corrected Cardmarket URL ───────────────────────────
+        monitor = self._get_monitor()
+        if monitor is None or monitor.cardmarket_scraper is None:
+            await reply_message.reply(
+                "⚠️ The Cardmarket scraper is not available right now. "
+                "Please try again in a moment.",
+                mention_author=False,
+            )
+            return
+
+        try:
+            cm_data = await monitor.cardmarket_scraper.scrape_url(normalised_url)
+        except CardmarketScrapeError as exc:
+            logger.warning(
+                "ReviewCog: Cardmarket scrape of correction failed for '%s': %s",
+                normalised_url, exc,
+            )
+            await self.db.log_error(
+                listing_id=listing_id,
+                listing_title=listing_title,
+                listing_url=listing_url,
+                cardmarket_url=normalised_url,
+                failure_step=exc.step,
+                http_status=exc.http_status,
+                error_message=exc.message,
+                stack_trace=exc.stack_trace,
+            )
+            await reply_message.reply(
+                f"⚠️ Failed to scrape the corrected Cardmarket URL: **{exc.message}**\n"
+                f"Step: `{exc.step}`\n"
+                "Please verify the URL is a valid Cardmarket product page and try again.",
+                mention_author=False,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "ReviewCog: unexpected error scraping correction '%s': %s",
+                normalised_url, exc, exc_info=True,
+            )
+            await reply_message.reply(
+                f"⚠️ An unexpected error occurred while scraping Cardmarket: {exc}",
+                mention_author=False,
+            )
+            return
+
+        # ── Price comparison ──────────────────────────────────────────────
+        from scraper.base import Listing
+        from services.price_comparison import compare_prices
+
+        # Reconstruct a minimal Listing for comparison. We don't have the
+        # price stored in error_log, so use 0.0 as a fallback.
+        listing_price = 0.0
+        listing_currency = "EUR"
+        stub_listing = Listing(
+            listing_id=listing_id or "correction",
+            title=listing_title,
+            price=listing_price,
+            currency=listing_currency,
+            url=listing_url,
+        )
+        comparison = compare_prices(stub_listing, cm_data)
+
+        # ── Identify card fingerprint from the listing title ──────────────
+        fingerprint = identify_card(listing_title)
+
+        # ── Learn prefix pattern from the correction ──────────────────────
+        learned_prefix, failed_slug, correct_slug = _analyze_correction_pattern(
+            generated_url=generated_cm_url,
+            corrected_url=normalised_url,
+            fingerprint=fingerprint,
+        )
+
+        if learned_prefix is not None and fingerprint.set_code and monitor.resolver:
+            await monitor.resolver.store_prefix_rule(
+                set_code=fingerprint.set_code,
+                prefix=learned_prefix,
+                set_name=fingerprint.set_name,
+            )
+            logger.info(
+                "ReviewCog: learned prefix rule set_code=%r prefix=%r from correction by %s",
+                fingerprint.set_code, learned_prefix, submitted_by.display_name,
+            )
+
+        # ── Store correction in the database ─────────────────────────────
+        original_identifier = _extract_product_slug(generated_cm_url)
+        corrected_identifier = _extract_product_slug(normalised_url)
+
+        await self.db.add_correction(
+            listing_id=listing_id,
+            listing_title=listing_title,
+            listing_url=listing_url,
+            generated_cardmarket_url=generated_cm_url,
+            failed_slug=failed_slug or original_identifier,
+            correct_cardmarket_url=normalised_url,
+            correct_slug=corrected_identifier,
+            product_name=cm_data.product_name,
+            set_name=fingerprint.set_name,
+            set_code=fingerprint.set_code,
+            collector_number=fingerprint.collector_number,
+            original_identifier=original_identifier,
+            corrected_identifier=corrected_identifier,
+            learned_prefix=learned_prefix,
+            corrected_by=submitted_by.display_name,
+        )
+
+        # ── Store validated card mapping ──────────────────────────────────
+        if monitor.resolver:
+            await monitor.resolver.store_mapping(
+                fingerprint=fingerprint,
+                raw_title=listing_title,
+                cardmarket_url=cm_data.product_url,
+                product_name=cm_data.product_name,
+                product_id=cm_data.product_id,
+                validated_by=f"correction:{submitted_by.display_name}",
+                confidence=1.0,
+                listing_url=listing_url,
+            )
+
+        # ── Confirm to the user ───────────────────────────────────────────
+        confirm_lines = [
+            f"✅ **Correction accepted!** The mapping has been saved.",
+            f"**Product:** {cm_data.product_name or 'Unknown'}",
+            f"**Corrected URL:** {normalised_url}",
+        ]
+        if learned_prefix is not None:
+            confirm_lines.append(
+                f"🧠 **Learned pattern:** Set `{fingerprint.set_code}` uses prefix "
+                f"`{learned_prefix}` before collector numbers. "
+                "Future cards from this set will use this rule automatically."
+            )
+        if comparison.is_profitable and listing_price > 0:
+            confirm_lines.append(
+                f"🔥 **Profit opportunity:** Vinted €{comparison.vinted_price:.2f} "
+                f"vs Cardmarket €{comparison.cardmarket_from_price:.2f}"
+            )
+
+        try:
+            await reply_message.reply("\n".join(confirm_lines), mention_author=False)
+        except discord.HTTPException as exc:
+            logger.error("ReviewCog: failed to post correction confirmation: %s", exc)
+
+        # ── Post to deals channel if profitable ───────────────────────────
+        if comparison.is_profitable and listing_price > 0:
+            from utils.embed_builder import build_profit_alert_embed
+
+            profit_embed = build_profit_alert_embed(
+                stub_listing,
+                cm_data,
+                comparison,
+                match_confidence=1.0,
+                match_source="correction",
+            )
+            deals_channel = self._get_deals_channel()
+            if deals_channel:
+                try:
+                    await deals_channel.send(embed=profit_embed)
+                except discord.HTTPException as exc:
+                    logger.error(
+                        "ReviewCog: failed to post profit embed for correction: %s", exc
+                    )
+
+        logger.info(
+            "ReviewCog: correction processed for listing '%s' by %s (prefix=%r)",
+            listing_title[:60], submitted_by.display_name, learned_prefix,
         )
 
     # ------------------------------------------------------------------

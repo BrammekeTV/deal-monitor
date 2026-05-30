@@ -271,11 +271,17 @@ def build_cardmarket_url(
     collector_number: str,
     *,
     promo: bool = False,
+    number_prefix: str | None = None,
 ) -> str | None:
     """Build a Cardmarket product URL from card identity fields.
 
     Handles both standard collector numbers (``006/197``) and promo-style
     numbers (``SVP 214``, ``SVP214``).
+
+    *number_prefix* – when provided (e.g. ``"TR"`` for Team Rocket), the
+    prefix is prepended to the bare collector number in the product slug,
+    overriding the default logic.  This is used to apply learned prefix
+    patterns from the correction database.
 
     Returns a normalised Cardmarket URL with ``sellerCountry=23`` and
     ``language=1`` filter params, or ``None`` when the set code is unknown.
@@ -289,6 +295,10 @@ def build_cardmarket_url(
         build_cardmarket_url("Charizard ex", "OBF", "125/197")
         → "https://www.cardmarket.com/en/Pokemon/Products/Singles/
            Obsidian-Flames/Charizard-ex-125?sellerCountry=23&language=1"
+
+        build_cardmarket_url("Dark Raichu", "TR", "83/82", number_prefix="TR")
+        → "https://www.cardmarket.com/en/Pokemon/Products/Singles/
+           Team-Rocket/Dark-Raichu-TR83?sellerCountry=23&language=1"
     """
     set_slug = _SET_CODE_TO_SLUG.get(set_code.upper() if set_code else "")
     if not set_slug:
@@ -301,7 +311,11 @@ def build_cardmarket_url(
     # Promo format:  "SVP 214" or "214"  → suffix = "SVP214" (set_code + bare_number)
     # Standard format: "125/197"          → suffix = "125"    (just the card number)
     bare_num = re.sub(r"[^0-9]", "", collector_number.split("/")[0]) if collector_number else ""
-    if promo or "/" not in (collector_number or ""):
+
+    if number_prefix is not None:
+        # Explicit prefix supplied by caller (learned from correction database).
+        num_suffix = f"{number_prefix}{bare_num}" if bare_num else number_prefix
+    elif promo or "/" not in (collector_number or ""):
         # Promo card: {card-slug}-{set_code}{number}
         num_suffix = f"{set_code.upper()}{bare_num}" if bare_num else set_code.upper()
     else:

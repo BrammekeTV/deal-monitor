@@ -251,7 +251,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 listing.title[:60], exc,
             )
             # Log error and abort – do NOT crash the loop or send to review.
-            await self.db.log_error(
+            error_log_id = await self.db.log_error(
                 listing_id=listing.listing_id,
                 listing_title=listing.title,
                 listing_url=listing.url,
@@ -269,6 +269,8 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 cardmarket_url=resolved.url,
                 http_status=exc.http_status,
                 stack_trace=exc.stack_trace,
+                fingerprint=fingerprint,
+                error_log_id=error_log_id,
             )
             # Mark as seen so we don't retry every cycle.
             await self.db.mark_seen(
@@ -465,8 +467,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
         cardmarket_url: str | None = None,
         http_status: int | None = None,
         stack_trace: str | None = None,
+        fingerprint=None,
+        error_log_id: int | None = None,
     ) -> None:
-        """Post a structured error embed to the log channel."""
+        """Post a structured error embed to the log channel.
+
+        When *error_log_id* is provided, the Discord message ID is written back
+        to the error_log row so that users can reply to the message with the
+        correct Cardmarket URL.
+        """
         embed = build_error_embed(
             listing_title=listing_title,
             listing_url=listing_url,
@@ -475,11 +484,14 @@ class MonitorCog(commands.Cog, name="Monitor"):
             error_message=error_message,
             http_status=http_status,
             stack_trace=stack_trace,
+            fingerprint=fingerprint,
         )
         channel = self._get_log_channel()
         if channel:
             try:
-                await channel.send(embed=embed)
+                msg = await channel.send(embed=embed)
+                if error_log_id is not None:
+                    await self.db.update_error_message_id(error_log_id, str(msg.id))
             except discord.HTTPException as exc:
                 logger.error("MonitorCog: failed to post error embed: %s", exc)
 

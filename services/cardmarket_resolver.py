@@ -61,11 +61,27 @@ class CardmarketResolver:
         self._db = db
         # In-memory cache of all mappings; refreshed on startup and after writes.
         self._mappings: list[dict[str, Any]] = []
+        # In-memory cache of slug prefix rules keyed by set_code (upper-case).
+        self._prefix_rules: dict[str, dict[str, Any]] = {}
 
     async def load(self) -> None:
-        """Load all card mappings from the database into memory."""
+        """Load all card mappings and prefix rules from the database into memory."""
         self._mappings = await self._db.get_all_mappings()
-        logger.info("CardmarketResolver: loaded %d mappings", len(self._mappings))
+        await self._load_prefix_rules()
+        logger.info(
+            "CardmarketResolver: loaded %d mappings, %d prefix rules",
+            len(self._mappings), len(self._prefix_rules),
+        )
+
+    async def _load_prefix_rules(self) -> None:
+        """Reload the in-memory prefix-rule cache from the database."""
+        rules = await self._db.get_all_slug_prefix_rules()
+        # Only use rules with reasonable confidence (>= 0.5).
+        self._prefix_rules = {
+            r["set_code"].upper(): r
+            for r in rules
+            if r.get("confidence", 0.0) >= 0.5
+        }
 
     async def reload(self) -> None:
         """Reload mappings (call after adding a new mapping)."""
@@ -224,6 +240,9 @@ class CardmarketResolver:
         Returns a ResolvedUrl with confidence < 1.0 (since we have not yet
         validated the URL resolves to a real product page).
         Returns None when insufficient data is available.
+
+        When a learned prefix rule exists for the card's set (e.g. Team Rocket
+        → "TR" prefix), the rule is applied before constructing the URL.
         """
         card_name = fingerprint.card_name
         set_code = fingerprint.set_code
@@ -232,23 +251,35 @@ class CardmarketResolver:
         if not card_name:
             return None
 
+        # Helper: look up a learned prefix for a given set_code.
+        def _get_prefix(sc: str) -> str | None:
+            rule = self._prefix_rules.get(sc.upper())
+            if rule:
+                return rule.get("prefix")
+            return None
+
         # Try with explicit set code first.
         if set_code:
+            prefix = _get_prefix(set_code)
             url = build_cardmarket_url(
                 card_name,
                 set_code,
                 collector_number or "",
                 promo=fingerprint.is_promo,
+                number_prefix=prefix,
             )
             if url:
+                conf = 0.75 if prefix else 0.60
                 logger.info(
-                    "CardmarketResolver: constructed URL for '%s %s': %s",
-                    card_name, set_code, url,
+                    "CardmarketResolver: constructed URL for '%s %s'%s: %s",
+                    card_name, set_code,
+                    f" (prefix={prefix!r})" if prefix else "",
+                    url,
                 )
                 return ResolvedUrl(
                     url=url,
                     source="constructed",
-                    confidence=0.60,
+                    confidence=conf,
                     product_name=None,
                 )
 
@@ -256,21 +287,26 @@ class CardmarketResolver:
         if fingerprint.set_name:
             derived_code = _set_name_to_code(fingerprint.set_name)
             if derived_code:
+                prefix = _get_prefix(derived_code)
                 url = build_cardmarket_url(
                     card_name,
                     derived_code,
                     collector_number or "",
                     promo=fingerprint.is_promo,
+                    number_prefix=prefix,
                 )
                 if url:
+                    conf = 0.65 if prefix else 0.50
                     logger.info(
-                        "CardmarketResolver: constructed URL via set-name '%s': %s",
-                        fingerprint.set_name, url,
+                        "CardmarketResolver: constructed URL via set-name '%s'%s: %s",
+                        fingerprint.set_name,
+                        f" (prefix={prefix!r})" if prefix else "",
+                        url,
                     )
                     return ResolvedUrl(
                         url=url,
                         source="constructed",
-                        confidence=0.50,
+                        confidence=conf,
                         product_name=None,
                     )
 
@@ -326,6 +362,38 @@ class CardmarketResolver:
             mapping_id, raw_title[:60], normalised_url,
         )
         return mapping_id
+
+    async def store_prefix_rule(
+        self,
+        *,
+        set_code: str,
+        prefix: str,
+        set_name: str | None = None,
+    ) -> int:
+        """Persist a learned slug-prefix rule and refresh the in-memory cache.
+
+        Returns the rule row ID.
+        """
+        rule_id = await self._db.upsert_slug_prefix_rule(
+            set_code=set_code,
+            prefix=prefix,
+            set_name=set_name,
+        )
+        await self._load_prefix_rules()
+        logger.info(
+            "CardmarketResolver: stored prefix rule – set_code=%r prefix=%r (id=%d)",
+            set_code, prefix, rule_id,
+        )
+        return rule_id
+
+    async def record_prefix_rule_use(
+        self, set_code: str, *, success: bool
+    ) -> None:
+        """Record whether the prefix rule for *set_code* produced a valid URL."""
+        rule = self._prefix_rules.get(set_code.upper())
+        if rule:
+            await self._db.record_slug_prefix_rule_use(rule["id"], success=success)
+            await self._load_prefix_rules()
 
 
 # ---------------------------------------------------------------------------
