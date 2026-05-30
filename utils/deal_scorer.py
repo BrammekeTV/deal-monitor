@@ -159,43 +159,81 @@ class DealScorer:
     ) -> tuple[bool, str]:
         """Check Cardmarket-specific deal conditions and return (should_post, label).
 
-        Evaluates the four deal tiers defined by the pricing requirements:
+        Deal tiers (all relative to the best available market value):
 
-        * **Exceptional Deal** – listing price ≥ 30 % below 30-day average
-        * **Strong Deal**      – listing price ≥ 20 % below price trend
-        * **Trend Deal**       – listing price < price trend
-        * **Market Floor Deal** – listing price < from price
+        * **Major Opportunity** – listing price ≥ 50 % below market value
+        * **Exceptional Deal**  – listing price ≥ 30 % below market value
+        * **Great Deal**        – listing price ≥ 20 % below market value
+        * **Good Deal**         – listing price ≥ 10 % below market value
 
+        The market value used as reference follows the hierarchy:
+        Trend → Market Price → 30-day Avg → other CM values.
+
+        Listings with ``"Low"`` confidence are rejected regardless of discount.
         Multiple conditions can be satisfied simultaneously; all matching
         labels are included in the returned description.  Returns
         ``(True, label)`` when at least one condition is met, otherwise
         ``(False, "")``.
         """
+        # Reject Low-confidence results – we cannot be sure of the match.
+        if listing.confidence == "Low":
+            logger.debug(
+                "Listing %s skipped Cardmarket deal check – confidence is Low",
+                listing.listing_id,
+            )
+            return False, ""
+
         price = listing.price
         labels: list[str] = []
 
-        # Exceptional Deal: ≥ 30 % below 30-day average
-        if cm_result.avg_30_days and cm_result.avg_30_days > 0:
-            discount = (1 - price / cm_result.avg_30_days) * 100
-            if discount >= 30:
-                labels.append(
-                    f"🏆 Exceptional Deal ({discount:.1f}% below 30-day avg)"
-                )
+        # Determine the reference market value using the hierarchy.
+        ref_value: float | None = None
+        ref_label: str = ""
+        for v, lbl in (
+            (cm_result.price_trend, "trend"),
+            (cm_result.market_price, "market price"),
+            (cm_result.avg_30_days, "30-day avg"),
+            (cm_result.avg_price, "avg"),
+            (cm_result.avg_7_days, "7-day avg"),
+            (cm_result.avg_1_day, "1-day avg"),
+            (cm_result.from_price, "from price"),
+            (cm_result.suggested_price, "suggested price"),
+        ):
+            if v and v > 0:
+                ref_value = v
+                ref_label = lbl
+                break
 
-        # Strong Deal / Trend Deal: compare against price trend
-        if cm_result.price_trend and cm_result.price_trend > 0:
-            discount = (1 - price / cm_result.price_trend) * 100
-            if discount >= 20:
-                labels.append(
-                    f"💥 Strong Deal ({discount:.1f}% below trend)"
-                )
-            elif discount > 0:
-                labels.append(
-                    f"📈 Trend Deal ({discount:.1f}% below trend)"
-                )
+        if ref_value is None or ref_value <= 0:
+            return False, ""
+
+        discount = (1 - price / ref_value) * 100
+
+        if discount >= 50:
+            labels.append(
+                f"🚨 Major Opportunity ({discount:.1f}% below {ref_label})"
+            )
+        elif discount >= 30:
+            labels.append(
+                f"🏆 Exceptional Deal ({discount:.1f}% below {ref_label})"
+            )
+        elif discount >= 20:
+            labels.append(
+                f"💥 Great Deal ({discount:.1f}% below {ref_label})"
+            )
+        elif discount >= 10:
+            labels.append(
+                f"👍 Good Deal ({discount:.1f}% below {ref_label})"
+            )
 
         # Market Floor Deal: listing is below the current from-price
-        if cm_result.from_price and cm_result.from_price > 0 and price < cm_result.from_price:
+        # (kept as an additive signal, independent of the main tier check)
+        if (
+            cm_result.from_price
+            and cm_result.from_price > 0
+            and price < cm_result.from_price
+            and not any("from price" in lbl for lbl in labels)
+        ):
             floor_diff = cm_result.from_price - price
             labels.append(
                 f"🔻 Market Floor Deal (€{floor_diff:.2f} below from-price)"

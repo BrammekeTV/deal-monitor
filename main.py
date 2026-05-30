@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from bot.client import create_bot
+from bot.cogs.check_card import CheckCardCog
 from bot.cogs.filters import FiltersCog
 from bot.cogs.maintenance import MaintenanceCog
 from bot.cogs.monitor import MonitorCog
@@ -72,6 +73,7 @@ async def main() -> None:
     await bot.add_cog(MonitorCog(bot, db))
     await bot.add_cog(FiltersCog(bot, db))
     await bot.add_cog(MaintenanceCog(bot))
+    await bot.add_cog(CheckCardCog(bot))
 
     # Graceful shutdown handler.
     loop = asyncio.get_running_loop()

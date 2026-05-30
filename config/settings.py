@@ -116,6 +116,18 @@ class Settings:
         cm_cfg = pl.get("cardmarket", {})
         self.cardmarket_enabled: bool = bool(cm_cfg.get("enabled", True))
         self.cardmarket_sample_size: int = int(cm_cfg.get("sample_size", 5))
+        # When True, fall back to Playwright scraping when TCGGO has no result.
+        self.cardmarket_scraping_fallback: bool = bool(
+            cm_cfg.get("scraping_fallback", False)
+        )
+
+        tcggo_cfg = pl.get("tcggo", {})
+        self.tcggo_enabled: bool = bool(tcggo_cfg.get("enabled", True))
+
+        # --- TCGGO / RapidAPI credentials (always from env) ---
+        self.rapidapi_key: str | None = os.getenv("RAPIDAPI_KEY")
+        self.rapidapi_host: str | None = os.getenv("RAPIDAPI_HOST")
+        self.tcggo_api_url: str | None = os.getenv("TCGGO_API_URL")
 
         # --- Discord presentation ---
         disc = raw.get("discord", {})

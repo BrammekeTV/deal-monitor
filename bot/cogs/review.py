@@ -281,32 +281,63 @@ class ReviewCog(commands.Cog, name="Review"):
         site_prices: dict[str, float] = {}
         if platform == "Cardmarket":
             monitor = self._get_monitor()
-            if monitor is not None and monitor._browser is not None:
-                try:
-                    from scraper.cardmarket import CardmarketPriceScraper, normalize_cardmarket_url
+            if monitor is not None:
+                # Primary: use TCGGO API to fetch prices from the Cardmarket URL.
+                if monitor._tcggo_client is not None and monitor._http is not None:
+                    try:
+                        from utils.tcggo import TcggoClient  # noqa: F401 (type check)
+                        tcggo_result = await monitor._tcggo_client.lookup_by_url(
+                            monitor._http, url
+                        )
+                        if tcggo_result:
+                            # Map TcggoCardResult fields to the price dict format
+                            # expected by the embed builder.
+                            if tcggo_result.price_trend:
+                                site_prices["price_trend"] = tcggo_result.price_trend
+                            if tcggo_result.market_price:
+                                site_prices["market_price"] = tcggo_result.market_price
+                            if tcggo_result.low_price:
+                                site_prices["lowest_price"] = tcggo_result.low_price
+                            if tcggo_result.avg_30_days:
+                                site_prices["avg_30_days"] = tcggo_result.avg_30_days
+                            if tcggo_result.avg_7_days:
+                                site_prices["avg_7_days"] = tcggo_result.avg_7_days
+                            if tcggo_result.avg_1_day:
+                                site_prices["avg_1_day"] = tcggo_result.avg_1_day
+                            if market_value is None:
+                                market_value = (
+                                    site_prices.get("price_trend")
+                                    or site_prices.get("market_price")
+                                    or site_prices.get("avg_30_days")
+                                    or site_prices.get("lowest_price")
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "TCGGO lookup failed for reference URL %s: %s", url, exc
+                        )
 
-                    # Normalise the URL to include standard filter params
-                    # (sellerCountry=23 → NL, language=1 → English) before
-                    # fetching so the prices match what the user will see.
-                    normalized_url = normalize_cardmarket_url(url)
-                    scraper = CardmarketPriceScraper(monitor._browser)
-                    result = await scraper.lookup_url(normalized_url)
-                    if result:
-                        site_prices = result
-                        # Use the trend price (or lowest) as the authoritative
-                        # market value if the user didn't supply one manually.
-                        if market_value is None:
-                            market_value = (
-                                site_prices.get("price_trend")
-                                or site_prices.get("avg_30_days")
-                                or site_prices.get("lowest_price")
-                            )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Could not fetch Cardmarket prices for reference URL %s: %s",
-                        url,
-                        exc,
-                    )
+                # Fallback: Playwright scraper (only when explicitly configured).
+                if not site_prices and monitor._browser is not None:
+                    try:
+                        from scraper.cardmarket import CardmarketPriceScraper, normalize_cardmarket_url
+
+                        normalized_url = normalize_cardmarket_url(url)
+                        scraper = CardmarketPriceScraper(monitor._browser)
+                        result = await scraper.lookup_url(normalized_url)
+                        if result:
+                            site_prices = result
+                            if market_value is None:
+                                market_value = (
+                                    site_prices.get("price_trend")
+                                    or site_prices.get("avg_30_days")
+                                    or site_prices.get("lowest_price")
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Could not fetch Cardmarket prices for reference URL %s: %s",
+                            url,
+                            exc,
+                        )
 
         ref_id = await self.db.add_reference_submission(
             listing_id=unidentified["id"],
