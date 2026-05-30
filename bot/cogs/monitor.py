@@ -61,7 +61,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # aiohttp session for webhook delivery.
         self._http: aiohttp.ClientSession | None = None
 
-        # Playwright browser for Cardmarket scraping.
+        # TCGGO client for Cardmarket API lookups.
+        self._tcggo_client = None
+
+        # Playwright browser for Cardmarket scraper fallback.
         self._playwright = None
         self._browser: Browser | None = None
 
@@ -73,7 +76,26 @@ class MonitorCog(commands.Cog, name="Monitor"):
         logger.info("MonitorCog loading – starting scraper and background task")
         await self.scraper.setup()
         self._http = aiohttp.ClientSession()
-        if settings.cardmarket_enabled:
+
+        # Initialise the TCGGO client (used for all Cardmarket price lookups).
+        if settings.tcggo_enabled:
+            try:
+                from utils.tcggo import TcggoClient
+                self._tcggo_client = TcggoClient.from_settings()
+                if self._tcggo_client.is_configured():
+                    logger.info("TCGGO client ready for Cardmarket API lookups")
+                else:
+                    logger.info(
+                        "TCGGO client not fully configured "
+                        "(set RAPIDAPI_KEY, RAPIDAPI_HOST, TCGGO_API_URL in .env)"
+                    )
+                    self._tcggo_client = None
+            except Exception:
+                logger.warning("Failed to initialise TCGGO client", exc_info=True)
+                self._tcggo_client = None
+
+        # Only launch a Playwright browser when the scraper fallback is enabled.
+        if settings.cardmarket_enabled and settings.cardmarket_scraping_fallback:
             try:
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.chromium.launch(
@@ -86,10 +108,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
                         "--disable-dev-shm-usage",
                     ],
                 )
-                logger.info("Playwright browser launched for Cardmarket scraping")
+                logger.info("Playwright browser launched for Cardmarket scraper fallback")
             except Exception:
                 logger.warning(
-                    "Failed to launch Playwright browser – Cardmarket lookups disabled",
+                    "Failed to launch Playwright browser – Cardmarket scraper fallback disabled",
                     exc_info=True,
                 )
         self._monitor_loop.start()
@@ -229,7 +251,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     memory_value,
                 )
 
-        # Fetch live market prices from eBay / Cardmarket.
+        # Fetch live market prices from eBay / Cardmarket (via TCGGO API or scraper fallback).
         price_results = []
         if self._http:
             price_results = await lookup_prices(
@@ -237,6 +259,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 listing.title,
                 browser=self._browser,
                 cm_direct_url=cm_memory_url,
+                tcggo_client=self._tcggo_client,
             )
 
         live_value = best_market_value(price_results) if price_results else memory_value
