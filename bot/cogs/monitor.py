@@ -355,15 +355,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     "MonitorCog: constructed URL returned 404, sending to review: %s",
                     resolved.url,
                 )
-                await self.db.add_review_item(
-                    listing_id=listing.listing_id,
-                    title=listing.title,
-                    url=listing.url,
-                    price=listing.price,
-                    currency=listing.currency,
-                    seller_name=listing.seller_name,
-                    failure_reason="url_404",
-                    fingerprint=fingerprint.fingerprint_hash(),
+                await self._send_to_review(
+                    listing,
+                    fingerprint,
+                    matching_attempts,
+                    failure_reason=(
+                        f"Constructed Cardmarket URL returned 404/403: {resolved.url}"
+                    ),
                 )
                 await self.db.mark_seen(
                     listing_id=listing.listing_id,
