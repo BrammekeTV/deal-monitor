@@ -49,6 +49,7 @@ class TcggoCardResult:
     set_code: str = ""
     collector_number: str = ""
     language: str = ""
+    rarity: str = ""
     tcggo_id: str = ""
     cardmarket_url: str = ""
 
@@ -450,6 +451,7 @@ class TcggoClient:
     @property
     def _headers(self) -> dict[str, str]:
         return {
+            "Accept": "application/json",
             "Content-Type": "application/json",
             "X-RapidAPI-Key": self._key,
             "X-RapidAPI-Host": self._host,
