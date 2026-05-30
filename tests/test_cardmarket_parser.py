@@ -512,3 +512,204 @@ class TestBuildCardmarketUrl:
         url = build_cardmarket_url("Mewtwo ex", "SVP", "100", promo=True)
         assert url is not None
         assert url.startswith("https://www.cardmarket.com/en/Pokemon/Products/Singles/")
+
+
+# ---------------------------------------------------------------------------
+# contains_psa
+# ---------------------------------------------------------------------------
+
+from scraper.cardmarket import contains_psa, extract_psa_grade, _parse_psa_listing_price  # noqa: E402
+
+
+class TestContainsPsa:
+    def test_uppercase(self) -> None:
+        assert contains_psa("PSA 10 Charizard") is True
+
+    def test_lowercase(self) -> None:
+        assert contains_psa("psa 9 pikachu") is True
+
+    def test_mixed_case(self) -> None:
+        assert contains_psa("Psa 10 Mewtwo") is True
+
+    def test_not_present(self) -> None:
+        assert contains_psa("Charizard ex NM") is False
+
+    def test_empty_string(self) -> None:
+        assert contains_psa("") is False
+
+    def test_partial_word_no_match(self) -> None:
+        # "EPSA" should NOT match – we require word boundary.
+        assert contains_psa("EPSA card") is False
+
+    def test_psa_in_description(self) -> None:
+        assert contains_psa("Nice card PSA graded") is True
+
+
+# ---------------------------------------------------------------------------
+# extract_psa_grade
+# ---------------------------------------------------------------------------
+
+class TestExtractPsaGrade:
+    def test_psa_10(self) -> None:
+        assert extract_psa_grade("PSA 10 Charizard") == 10
+
+    def test_psa_9(self) -> None:
+        assert extract_psa_grade("PSA 9 Pikachu") == 9
+
+    def test_psa_no_space(self) -> None:
+        assert extract_psa_grade("PSA10") == 10
+
+    def test_lowercase_psa(self) -> None:
+        assert extract_psa_grade("psa 9 card") == 9
+
+    def test_mixed_case(self) -> None:
+        assert extract_psa_grade("Psa 10") == 10
+
+    def test_no_grade(self) -> None:
+        assert extract_psa_grade("PSA graded card") is None
+
+    def test_no_psa(self) -> None:
+        assert extract_psa_grade("Charizard NM") is None
+
+    def test_grade_8(self) -> None:
+        assert extract_psa_grade("PSA 8 Charizard") == 8
+
+    def test_first_grade_returned(self) -> None:
+        # Only the first occurrence is returned.
+        assert extract_psa_grade("PSA 9 or PSA 10") == 9
+
+    def test_grade_in_longer_sentence(self) -> None:
+        assert extract_psa_grade("This is a PSA 10 graded Pikachu card") == 10
+
+
+# ---------------------------------------------------------------------------
+# _parse_psa_listing_price
+# ---------------------------------------------------------------------------
+
+# Typical Cardmarket article row with MT badge and PSA 10 in comment.
+_PSA_10_MT_HTML = """
+<html><body>
+<div class="article-row">
+  <div class="col-sellerProductInfo">
+    <div class="product-attributes">
+      <a class="badge badge-slot-condition badge-article-condition-mt" title="Mint">MT</a>
+    </div>
+    <p class="product-comments">PSA 10</p>
+  </div>
+  <div class="col-offer-price">
+    <div class="price-container">
+      <span class="font-weight-bold color-primary">85,00 €</span>
+    </div>
+  </div>
+</div>
+</body></html>
+"""
+
+# Row with MT badge but PSA 9 – should NOT match a PSA 10 search.
+_PSA_9_MT_HTML = """
+<html><body>
+<div class="article-row">
+  <div class="product-attributes">
+    <span class="badge badge-article-condition-mt">MT</span>
+  </div>
+  <p class="product-comments">PSA 9 Pikachu</p>
+  <div class="price-container">
+    <span class="font-weight-bold">45,00 €</span>
+  </div>
+</div>
+</body></html>
+"""
+
+# Row with NM badge (not MT) and PSA 10 – should NOT match.
+_PSA_10_NM_HTML = """
+<html><body>
+<div class="article-row">
+  <div class="product-attributes">
+    <a class="badge badge-article-condition-nm" title="Near Mint">NM</a>
+  </div>
+  <p class="product-comments">PSA 10</p>
+  <div class="price-container">
+    <span>30,00 €</span>
+  </div>
+</div>
+</body></html>
+"""
+
+# Multiple rows: first is PSA 9 MT, second is PSA 10 MT.
+_MULTI_ROW_HTML = """
+<html><body>
+<div class="article-row">
+  <span class="badge badge-article-condition-mt">MT</span>
+  <p class="product-comments">PSA 9</p>
+  <div class="price-container"><span>45,00 €</span></div>
+</div>
+<div class="article-row">
+  <span class="badge badge-article-condition-mt">MT</span>
+  <p class="product-comments">PSA 10</p>
+  <div class="price-container"><span>95,00 €</span></div>
+</div>
+</body></html>
+"""
+
+# Row using title="Mint" attribute on condition badge instead of class.
+_MT_TITLE_ATTR_HTML = """
+<html><body>
+<div class="article-row">
+  <span class="badge" title="Mint">MT</span>
+  <p class="product-comments">PSA 10 Charizard</p>
+  <div class="price-container"><span>120,00 €</span></div>
+</div>
+</body></html>
+"""
+
+# No article rows at all – should return None gracefully.
+_NO_ROWS_HTML = """
+<html><body>
+<dl class="info-list-container">
+  <dt>From</dt><dd><span>10,00 €</span></dd>
+</dl>
+</body></html>
+"""
+
+
+class TestParsePsaListingPrice:
+    def test_mt_psa10_returns_price(self) -> None:
+        price = _parse_psa_listing_price(_PSA_10_MT_HTML, 10)
+        assert price == pytest.approx(85.00)
+
+    def test_mt_psa9_returns_price(self) -> None:
+        price = _parse_psa_listing_price(_PSA_9_MT_HTML, 9)
+        assert price == pytest.approx(45.00)
+
+    def test_psa_grade_mismatch_returns_none(self) -> None:
+        # Searching for PSA 10 but row has PSA 9.
+        price = _parse_psa_listing_price(_PSA_9_MT_HTML, 10)
+        assert price is None
+
+    def test_nm_condition_returns_none(self) -> None:
+        # NM row with PSA 10 description should not match MT search.
+        price = _parse_psa_listing_price(_PSA_10_NM_HTML, 10)
+        assert price is None
+
+    def test_multiple_rows_first_match_returned(self) -> None:
+        # Searching for PSA 10 – should skip PSA 9 row and find PSA 10.
+        price = _parse_psa_listing_price(_MULTI_ROW_HTML, 10)
+        assert price == pytest.approx(95.00)
+
+    def test_multiple_rows_psa9(self) -> None:
+        # Searching for PSA 9 – should return the first row.
+        price = _parse_psa_listing_price(_MULTI_ROW_HTML, 9)
+        assert price == pytest.approx(45.00)
+
+    def test_title_attribute_mint(self) -> None:
+        # MT detected via title="Mint" attribute.
+        price = _parse_psa_listing_price(_MT_TITLE_ATTR_HTML, 10)
+        assert price == pytest.approx(120.00)
+
+    def test_no_rows_returns_none(self) -> None:
+        price = _parse_psa_listing_price(_NO_ROWS_HTML, 10)
+        assert price is None
+
+    def test_empty_html_returns_none(self) -> None:
+        price = _parse_psa_listing_price("", 10)
+        assert price is None

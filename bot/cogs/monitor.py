@@ -34,7 +34,12 @@ from playwright.async_api import async_playwright
 
 from config.settings import settings
 from database.db import Database
-from scraper.cardmarket import CardmarketScrapeError, CardmarketScraper
+from scraper.cardmarket import (
+    CardmarketScrapeError,
+    CardmarketScraper,
+    contains_psa,
+    extract_psa_grade,
+)
 from scraper.vinted import VintedScraper
 from services.card_identifier import identify_card
 from services.cardmarket_resolver import CardmarketResolver
@@ -232,6 +237,23 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # ── 2. Card identification ────────────────────────────────────────
         fingerprint = identify_card(listing.title)
 
+        # ── 2b. PSA detection ─────────────────────────────────────────────
+        # Combine title and description to check for PSA grade.
+        combined_text = listing.title + " " + (listing.description or "")
+        psa_grade: int | None = None
+        if contains_psa(combined_text):
+            psa_grade = extract_psa_grade(combined_text)
+            if psa_grade is not None:
+                logger.info(
+                    "MonitorCog: PSA %d detected in listing '%s'",
+                    psa_grade, listing.title[:60],
+                )
+            else:
+                logger.debug(
+                    "MonitorCog: PSA keyword found but no grade number in '%s'",
+                    listing.title[:60],
+                )
+
         # ── 3. Cardmarket URL resolution ──────────────────────────────────
         matching_attempts: list[dict] = []
 
@@ -294,6 +316,29 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 fingerprint=fingerprint.fingerprint_hash(),
             )
             return
+
+        # ── 4b. PSA-specific listing price ────────────────────────────────
+        # For PSA 9 and PSA 10 listings, attempt to find the price of the
+        # first Cardmarket offer that has an MT (Mint) condition badge and a
+        # description that matches the PSA grade exactly.  This replaces the
+        # generic "From" price for a more accurate comparison.
+        if psa_grade is not None and psa_grade >= 9:
+            psa_price = await self._cardmarket.scrape_psa_listing_price(  # type: ignore[union-attr]
+                resolved.url, psa_grade
+            )
+            if psa_price is not None:
+                from dataclasses import replace as _dc_replace
+                cm_data = _dc_replace(cm_data, from_price=psa_price)
+                logger.info(
+                    "MonitorCog: using PSA %d MT listing price €%.2f for '%s'",
+                    psa_grade, psa_price, listing.title[:60],
+                )
+            else:
+                logger.info(
+                    "MonitorCog: no PSA %d MT listing found on Cardmarket – "
+                    "falling back to standard From price for '%s'",
+                    psa_grade, listing.title[:60],
+                )
 
         # ── 5. Price comparison ───────────────────────────────────────────
         comparison = compare_prices(listing, cm_data)
