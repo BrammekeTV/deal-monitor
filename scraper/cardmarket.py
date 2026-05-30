@@ -633,6 +633,45 @@ def _extract_row_price(row: Any) -> float:
     return 0.0
 
 
+def _is_reverse_holo_url(url: str) -> bool:
+    """Return True when *url* contains the ``isReverseHolo=Y`` query parameter."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    return params.get("isReverseHolo", [""])[0].upper() == "Y"
+
+
+def _parse_first_listing_price(html: str) -> float | None:
+    """Return the price from the very first article row on the page.
+
+    Used for reverse holo pages where the "From" price in the
+    ``info-list-container`` may include non-reverse-holo listings, but the
+    individual article rows are filtered to reverse-holo-only when the page
+    was loaded with ``isReverseHolo=Y``.
+
+    Returns the price (float > 0) of the first article row, or ``None`` when
+    no article rows are found.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    rows: list[Any] = []
+    for sel in _ARTICLE_ROW_SELS:
+        rows = soup.select(sel)
+        if rows:
+            break
+
+    if not rows:
+        logger.debug("_parse_first_listing_price: no article rows found in page HTML")
+        return None
+
+    price = _extract_row_price(rows[0])
+    if price > 0:
+        logger.debug("_parse_first_listing_price: first listing at €%.2f", price)
+        return price
+
+    logger.debug("_parse_first_listing_price: no price found in first row")
+    return None
+
+
 def _parse_psa_listing_price(html: str, psa_grade: int) -> float | None:
     """Scan Cardmarket listing rows for an MT-condition offer matching *psa_grade*.
 
@@ -849,7 +888,20 @@ class CardmarketScraper:
             )
 
         dutch_available = True
-        from_price = prices_dict.get("lowest_price")
+
+        # For reverse holo URLs the "From" price in info-list-container can
+        # include non-reverse-holo listings.  Use the price from the first
+        # article row instead, which is guaranteed to be a reverse-holo offer
+        # because the page was loaded with isReverseHolo=Y.
+        if _is_reverse_holo_url(normalised_url):
+            from_price = prices_dict.get("first_listing_price") or prices_dict.get("lowest_price")
+            if from_price:
+                logger.info(
+                    "Cardmarket: reverse holo – using first listing price €%.2f for %s",
+                    from_price, normalised_url,
+                )
+        else:
+            from_price = prices_dict.get("lowest_price")
 
         # If no From price with Dutch filter, retry without country filter.
         if not from_price and retry_without_country_filter:
@@ -1045,7 +1097,15 @@ class CardmarketScraper:
     async def _fetch_product_page(
         self, page: Page, url: str
     ) -> dict[str, Any] | None:
-        """Navigate to *url*, wait for dynamic content, and parse prices."""
+        """Navigate to *url*, wait for dynamic content, and parse prices.
+
+        When *url* contains ``isReverseHolo=Y`` the method additionally waits
+        for the individual article/offer rows to be rendered and records the
+        price from the first row as ``first_listing_price`` in the returned
+        dict.  This is needed because the summary "From" price in the
+        ``info-list-container`` includes non-reverse-holo listings, whereas the
+        article rows are already filtered to reverse-holo-only.
+        """
         await page.goto(url, wait_until="load", timeout=30_000)
         await self._accept_cookies(page)
 
@@ -1065,9 +1125,29 @@ class CardmarketScraper:
             )
             await asyncio.sleep(random.uniform(2.0, 3.5))
 
+        # For reverse holo pages, also wait for individual article rows so that
+        # _parse_first_listing_price can read the actual RH offer price.
+        if _is_reverse_holo_url(url):
+            for sel in _ARTICLE_ROW_SELS:
+                try:
+                    await page.wait_for_selector(sel, timeout=8_000, state="visible")
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            else:
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+
         html = await page.content()
         prices_dict = _parse_product_page(html)
-        return prices_dict if prices_dict else None
+        if not prices_dict:
+            return None
+
+        if _is_reverse_holo_url(url):
+            first_listing = _parse_first_listing_price(html)
+            if first_listing is not None:
+                prices_dict["first_listing_price"] = first_listing
+
+        return prices_dict
 
     async def _find_first_product_url(self, page: Page) -> str | None:
         """Return the href of the first product link on the search results page."""

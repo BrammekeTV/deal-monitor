@@ -713,3 +713,96 @@ class TestParsePsaListingPrice:
     def test_empty_html_returns_none(self) -> None:
         price = _parse_psa_listing_price("", 10)
         assert price is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_first_listing_price
+# ---------------------------------------------------------------------------
+
+from scraper.cardmarket import _parse_first_listing_price, _is_reverse_holo_url  # noqa: E402
+
+_RH_SINGLE_ROW_HTML = """
+<html><body>
+<div class="article-row">
+  <div class="col-sellerProductInfo">
+    <p class="product-comments">Reverse Holo NM</p>
+  </div>
+  <div class="col-offer-price">
+    <div class="price-container">
+      <span class="font-weight-bold color-primary">4,50 €</span>
+    </div>
+  </div>
+</div>
+</body></html>
+"""
+
+_RH_MULTI_ROW_HTML = """
+<html><body>
+<div class="article-row">
+  <div class="price-container"><span>4,50 €</span></div>
+</div>
+<div class="article-row">
+  <div class="price-container"><span>5,00 €</span></div>
+</div>
+<div class="article-row">
+  <div class="price-container"><span>6,00 €</span></div>
+</div>
+</body></html>
+"""
+
+_RH_NO_ROWS_HTML = """
+<html><body>
+<dl class="info-list-container">
+  <dt>From</dt><dd><span>3,00 €</span></dd>
+</dl>
+</body></html>
+"""
+
+
+class TestParseFirstListingPrice:
+    def test_single_row_returns_price(self) -> None:
+        price = _parse_first_listing_price(_RH_SINGLE_ROW_HTML)
+        assert price == pytest.approx(4.50)
+
+    def test_multi_row_returns_first(self) -> None:
+        price = _parse_first_listing_price(_RH_MULTI_ROW_HTML)
+        assert price == pytest.approx(4.50)
+
+    def test_no_rows_returns_none(self) -> None:
+        price = _parse_first_listing_price(_RH_NO_ROWS_HTML)
+        assert price is None
+
+    def test_empty_html_returns_none(self) -> None:
+        price = _parse_first_listing_price("")
+        assert price is None
+
+
+# ---------------------------------------------------------------------------
+# _is_reverse_holo_url
+# ---------------------------------------------------------------------------
+
+_CM_BASE_URL = (
+    "https://www.cardmarket.com/en/Pokemon/Products/Singles"
+    "/Scarlet-Violet/Charizard-ex-125"
+)
+
+
+class TestIsReverseHoloUrl:
+    def test_with_reverse_holo_y(self) -> None:
+        url = _CM_BASE_URL + "?sellerCountry=23&language=1&isReverseHolo=Y"
+        assert _is_reverse_holo_url(url) is True
+
+    def test_without_reverse_holo(self) -> None:
+        url = _CM_BASE_URL + "?sellerCountry=23&language=1"
+        assert _is_reverse_holo_url(url) is False
+
+    def test_reverse_holo_n(self) -> None:
+        url = _CM_BASE_URL + "?isReverseHolo=N"
+        assert _is_reverse_holo_url(url) is False
+
+    def test_reverse_holo_lowercase_value(self) -> None:
+        url = _CM_BASE_URL + "?isReverseHolo=y"
+        assert _is_reverse_holo_url(url) is True
+
+    def test_empty_url(self) -> None:
+        assert _is_reverse_holo_url("") is False
