@@ -54,9 +54,9 @@ price_lookup:
     # eBay global site ID: 0=US, 3=UK, 77=DE, 71=FR, 71=NL, 101=IT, 186=ES
     site_id: 3   # UK – change to match your country
 
-  # Cardmarket – prices are fetched via the TCGGO API (no credentials required for
-  # basic lookups; set RAPIDAPI_KEY / RAPIDAPI_HOST for full access).
-  # When scraping_fallback is true, the Playwright scraper is used when TCGGO
+  # Cardmarket – prices are fetched via the cardmarket-api-tcg RapidAPI (set
+  # RAPIDAPI_KEY / RAPIDAPI_HOST / TCGGO_API_URL for full access).
+  # When scraping_fallback is true, the Playwright scraper is used when the API
   # cannot identify a card.  Requires playwright to be installed.
   cardmarket:
     enabled: true
@@ -67,7 +67,8 @@ price_lookup:
     scraping_fallback: false
 
   # TCGGO API via RapidAPI – primary source for Cardmarket pricing.
-  # Set RAPIDAPI_KEY, RAPIDAPI_HOST, and TCGGO_API_URL in your .env to enable.
+  # Set RAPIDAPI_KEY, RAPIDAPI_HOST (cardmarket-api-tcg.p.rapidapi.com), and
+  # TCGGO_API_URL (https://cardmarket-api-tcg.p.rapidapi.com) in your .env to enable.
   tcggo:
     enabled: true
 
