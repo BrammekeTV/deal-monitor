@@ -49,9 +49,8 @@ class CheckCardCog(commands.Cog, name="check_card"):
         monitor = self._get_monitor()
         if monitor is None or monitor._tcggo_client is None or monitor._http is None:
             await interaction.followup.send(
-                "⚠️ The TCGGO client is not available right now.  "
-                "Make sure `RAPIDAPI_KEY`, `RAPIDAPI_HOST`, and `TCGGO_API_URL` "
-                "are set in the bot configuration.",
+                "⚠️ The Cardmarket API client is not available right now.  "
+                "Make sure `RAPIDAPI_KEY` is set in the bot configuration.",
                 ephemeral=True,
             )
             return
