@@ -101,118 +101,176 @@ _CM_FILTER_PARAMS: dict[str, str] = {"sellerCountry": "23", "language": "1"}
 # in Cardmarket product URLs under /en/Pokemon/Products/Singles/{slug}/...
 # Covers Scarlet & Violet era, Sword & Shield era, and older series.
 _SET_CODE_TO_SLUG: dict[str, str] = {
-    # Scarlet & Violet promos / special sets
+    # ---------------------------------------------------------------------------
+    # Promos
+    # ---------------------------------------------------------------------------
+    "WP": "Wizards-Black-Star-Promos",
+    "NP": "Nintendo-Black-Star-Promos",
+    "DPPR": "DP-Black-Star-Promos",
+    "HGSS": "HGSS-Black-Star-Promos",
+    "BWP": "BW-Black-Star-Promos",
+    "BW": "BW-Black-Star-Promos",
+    "XYP": "XY-Black-Star-Promos",
+    "XYPR": "XY-Black-Star-Promos",
+    "SMP": "SM-Black-Star-Promos",
+    "SM": "SM-Black-Star-Promos",
+    "SWSHP": "SWSH-Black-Star-Promos",
+    "SWSH": "SWSH-Black-Star-Promos",
     "SVP": "SV-Black-Star-Promos",
+    "MEP": "MEP-Black-Star-Promos",
+    # ---------------------------------------------------------------------------
+    # Misc / special sets
+    # ---------------------------------------------------------------------------
+    "SI": "Southern-Islands",
+    "RM": "Pokemon-Rumble",
     "SVE": "SV-Energies",
-    # Scarlet & Violet main sets (official codes + numeric aliases)
+    # ---------------------------------------------------------------------------
+    # Mega Evolution Era (Japanese / special XY-era sets)
+    # ---------------------------------------------------------------------------
+    "MEG": "Mega-Evolution",
+    "PFL": "Phantasmal-Flames",
+    "ASC": "Ascended-Heroes",
+    "POR": "Perfect-Order",
+    "CRI": "Chaos-Rising",
+    "PBL": "Pitch-Black",
+    # ---------------------------------------------------------------------------
+    # Scarlet & Violet Era
+    # ---------------------------------------------------------------------------
     "SVI": "Scarlet-Violet",
-    "SV1": "Scarlet-Violet",       # numeric alias
+    "SV1": "Scarlet-Violet",           # numeric alias
     "PAL": "Paldea-Evolved",
-    "SV2": "Paldea-Evolved",       # numeric alias
+    "SV2": "Paldea-Evolved",           # numeric alias
     "OBF": "Obsidian-Flames",
-    "SV3": "Obsidian-Flames",      # numeric alias
+    "SV3": "Obsidian-Flames",          # numeric alias
     "MEW": "151",
-    "SV3PT5": "151",               # numeric alias
+    "SV3PT5": "151",                   # numeric alias
     "PAR": "Paradox-Rift",
-    "SV4": "Paradox-Rift",         # numeric alias
+    "SV4": "Paradox-Rift",             # numeric alias
     "PAF": "Paldean-Fates",
-    "SV4PT5": "Paldean-Fates",     # numeric alias
+    "SV4PT5": "Paldean-Fates",         # numeric alias
     "TEF": "Temporal-Forces",
-    "SV5": "Temporal-Forces",      # numeric alias
+    "SV5": "Temporal-Forces",          # numeric alias
     "TWM": "Twilight-Masquerade",
-    "SV6": "Twilight-Masquerade",  # numeric alias
+    "SV6": "Twilight-Masquerade",      # numeric alias
     "SFA": "Shrouded-Fable",
-    "SV6PT5": "Shrouded-Fable",    # numeric alias
+    "SV6PT5": "Shrouded-Fable",        # numeric alias
     "SCR": "Stellar-Crown",
-    "SV7": "Stellar-Crown",        # numeric alias
+    "SV7": "Stellar-Crown",            # numeric alias
     "SSP": "Surging-Sparks",
-    "SV8": "Surging-Sparks",       # numeric alias
+    "SV8": "Surging-Sparks",           # numeric alias
     "PRE": "Prismatic-Evolutions",
     "SV8PT5": "Prismatic-Evolutions",  # numeric alias
     "JTG": "Journey-Together",
-    "SV9": "Journey-Together",     # numeric alias
-    # Sword & Shield promos / special sets
-    "SWSHP": "SWSH-Black-Star-Promos",
-    "CEL25": "Celebrations",
+    "SV9": "Journey-Together",         # numeric alias
+    "DRI": "Destined-Rivals",
+    "SV10": "Destined-Rivals",         # numeric alias
+    "BLK": "Black-Bolt",
+    "WHT": "White-Flare",
+    # ---------------------------------------------------------------------------
+    # Sword & Shield Era
+    # ---------------------------------------------------------------------------
+    "SSH": "Sword-Shield",
+    "SWSH1": "Sword-Shield",           # numeric alias
+    "RCL": "Rebel-Clash",
+    "SWSH2": "Rebel-Clash",            # numeric alias
+    "DAA": "Darkness-Ablaze",
+    "SWSH3": "Darkness-Ablaze",        # numeric alias
     "CPA": "Champions-Path",
-    "SWSH45": "Shining-Fates",
-    "CRZ": "Crown-Zenith",
+    "VIV": "Vivid-Voltage",
+    "SWSH4": "Vivid-Voltage",          # numeric alias
+    "SHF": "Shining-Fates",
+    "SWSH45": "Shining-Fates",         # numeric alias
+    "BST": "Battle-Styles",
+    "SWSH5": "Battle-Styles",          # numeric alias
+    "CRE": "Chilling-Reign",
+    "SWSH6": "Chilling-Reign",         # numeric alias
+    "EVS": "Evolving-Skies",
+    "SWSH7": "Evolving-Skies",         # numeric alias
+    "CEL": "Celebrations",
+    "CEL25": "Celebrations",           # numeric alias
+    "FST": "Fusion-Strike",
+    "SWSH8": "Fusion-Strike",          # numeric alias
+    "BRS": "Brilliant-Stars",
+    "SWSH9": "Brilliant-Stars",        # numeric alias
+    "ASR": "Astral-Radiance",
+    "SWSH10": "Astral-Radiance",       # numeric alias
     "PGO": "Pokemon-GO",
-    # Sword & Shield main sets (SWSH1–SWSH12)
-    "SWSH1": "Sword-Shield",
-    "SWSH2": "Rebel-Clash",
-    "SWSH3": "Darkness-Ablaze",
-    "SWSH4": "Vivid-Voltage",
-    "SWSH5": "Battle-Styles",
-    "SWSH6": "Chilling-Reign",
-    "SWSH7": "Evolving-Skies",
-    "SWSH8": "Fusion-Strike",
-    "SWSH9": "Brilliant-Stars",
-    "SWSH10": "Astral-Radiance",
-    "SWSH11": "Lost-Origin",
-    "SWSH12": "Silver-Tempest",
-    # Sun & Moon promos / special sets
-    "SMP": "SM-Black-Star-Promos",
+    "GO": "Pokemon-GO",                # alias
+    "LOR": "Lost-Origin",
+    "SWSH11": "Lost-Origin",           # numeric alias
+    "SIT": "Silver-Tempest",
+    "SWSH12": "Silver-Tempest",        # numeric alias
+    "CRZ": "Crown-Zenith",
+    # ---------------------------------------------------------------------------
+    # Sun & Moon Era
+    # ---------------------------------------------------------------------------
+    "SUM": "Sun-Moon",
+    "SM1": "Sun-Moon",                 # numeric alias
+    "GRI": "Guardians-Rising",
+    "SM2": "Guardians-Rising",         # numeric alias
+    "BUS": "Burning-Shadows",
+    "SM3": "Burning-Shadows",          # numeric alias
+    "SLG": "Shining-Legends",
+    "CIN": "Crimson-Invasion",
+    "SM4": "Crimson-Invasion",         # numeric alias
+    "UPR": "Ultra-Prism",
+    "SM5": "Ultra-Prism",              # numeric alias
+    "FLI": "Forbidden-Light",
+    "SM6": "Forbidden-Light",          # numeric alias
+    "CES": "Celestial-Storm",
+    "SM7": "Celestial-Storm",          # numeric alias
     "DRM": "Dragon-Majesty",
+    "LOT": "Lost-Thunder",
+    "SM8": "Lost-Thunder",             # numeric alias
+    "TEU": "Team-Up",
+    "SM9": "Team-Up",                  # numeric alias
+    "DET": "Detective-Pikachu",
+    "UNB": "Unbroken-Bonds",
+    "SM10": "Unbroken-Bonds",          # numeric alias
+    "UNM": "Unified-Minds",
+    "SM11": "Unified-Minds",           # numeric alias
     "HIF": "Hidden-Fates",
     "CEC": "Cosmic-Eclipse",
-    # Sun & Moon main sets
-    "SM1": "Sun-Moon",
-    "SM2": "Guardians-Rising",
-    "SM3": "Burning-Shadows",
-    "SM4": "Crimson-Invasion",
-    "SM5": "Ultra-Prism",
-    "SM6": "Forbidden-Light",
-    "SM7": "Celestial-Storm",
-    "SM8": "Lost-Thunder",
-    "SM9": "Team-Up",
-    "SM10": "Unbroken-Bonds",
-    "SM11": "Unified-Minds",
-    "SM12": "Cosmic-Eclipse",
-    # XY promos / special sets
-    "XYP": "XY-Black-Star-Promos",
-    "GEN": "Generations",
-    "EVO": "Evolutions",
-    "FCO": "Fates-Collide",
-    "STE": "Steam-Siege",
-    "BKP": "Breakpoint",
-    "BKT": "Breakthrough",
-    "AOR": "Ancient-Origins",
-    "ROS": "Roaring-Skies",
-    "DCR": "Double-Crisis",
-    "PRC": "Primal-Clash",
-    "PHF": "Phantom-Forces",
+    "SM12": "Cosmic-Eclipse",          # numeric alias
+    # ---------------------------------------------------------------------------
+    # XY Era
+    # ---------------------------------------------------------------------------
+    "XY": "XY",
+    "XY1": "XY",                       # numeric alias
+    "KSS": "Kalos-Starter-Set",
     "FLF": "Flashfire",
     "FFI": "Furious-Fists",
-    "XY1": "XY",
-    # Black & White promos / special sets
-    "BWP": "BW-Black-Star-Promos",
+    "PHF": "Phantom-Forces",
+    "PRC": "Primal-Clash",
+    "DCR": "Double-Crisis",
+    "ROS": "Roaring-Skies",
+    "AOR": "Ancient-Origins",
+    "BKT": "Breakthrough",
+    "BKP": "Breakpoint",
+    "GEN": "Generations",
+    "FCO": "Fates-Collide",
+    "STS": "Steam-Siege",
+    "STE": "Steam-Siege",              # alternate alias
+    "EVO": "Evolutions",
+    # ---------------------------------------------------------------------------
+    # Black & White Era
+    # ---------------------------------------------------------------------------
+    "BLW": "Black-White",
+    "EPO": "Emerging-Powers",
+    "NVI": "Noble-Victories",
     "NXD": "Next-Destinies",
     "DEX": "Dark-Explorers",
+    "DEX2": "Dark-Explorers",          # alternate alias
     "DRX": "Dragons-Exalted",
+    "DRV": "Dragon-Vault",
     "BCR": "Boundaries-Crossed",
     "PLS": "Plasma-Storm",
     "PLF": "Plasma-Freeze",
     "PLB": "Plasma-Blast",
     "LTR": "Legendary-Treasures",
-    "KSS": "Kalos-Starter-Set",
-    # Black & White main sets
-    "BLW": "Black-White",
-    "EPO": "Emerging-Powers",
-    "NVI": "Noble-Victories",
-    "DEX2": "Dark-Explorers",
-    # HeartGold / SoulSilver
-    "HS": "HeartGold-SoulSilver",
-    "UL": "Unleashed",
-    "UD": "Undaunted",
-    "TM": "Triumphant",
-    "CL": "Call-of-Legends",
-    # Platinum
-    "PL": "Platinum",
-    "RR": "Rising-Rivals",
-    "SV": "Supreme-Victors",
-    "AR": "Arceus",
-    # Diamond & Pearl
+    # ---------------------------------------------------------------------------
+    # Diamond & Pearl Era
+    # ---------------------------------------------------------------------------
     "DP": "Diamond-Pearl",
     "MT": "Mysterious-Treasures",
     "SW": "Secret-Wonders",
@@ -220,13 +278,27 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "MD": "Majestic-Dawn",
     "LA": "Legends-Awakened",
     "SF": "Stormfront",
-    # EX era
+    "PL": "Platinum",
+    "PLA": "Platinum",                 # alternate alias
+    "PLAT": "Platinum",                # alternate alias
+    "RR": "Rising-Rivals",
+    "SV": "Supreme-Victors",
+    "AR": "Arceus",
+    "HS": "HeartGold-SoulSilver",
+    "UL": "Unleashed",
+    "UD": "Undaunted",
+    "TM": "Triumphant",
+    "CL": "Call-of-Legends",
+    # ---------------------------------------------------------------------------
+    # EX Era
+    # ---------------------------------------------------------------------------
     "RS": "Ruby-Sapphire",
     "SS": "Sandstorm",
     "DR": "Dragon",
     "MA": "Team-Magma-vs-Team-Aqua",
     "HL": "Hidden-Legends",
-    "FR": "FireRed-LeafGreen",
+    "RG": "FireRed-LeafGreen",
+    "FR": "FireRed-LeafGreen",         # alternate alias
     "TRR": "Team-Rocket-Returns",
     "DX": "Deoxys",
     "EM": "Emerald",
@@ -237,14 +309,9 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "CG": "Crystal-Guardians",
     "DF": "Dragon-Frontiers",
     "PK": "Power-Keepers",
-    # Classic (Base Set era)
-    "BS": "Base-Set",
-    "JU": "Jungle",
-    "FO": "Fossil",
-    "B2": "Base-Set-2",
-    "TR": "Team-Rocket",
-    "G1": "Gym-Heroes",
-    "G2": "Gym-Challenge",
+    # ---------------------------------------------------------------------------
+    # Neo Era
+    # ---------------------------------------------------------------------------
     "N1": "Neo-Genesis",
     "N2": "Neo-Discovery",
     "N3": "Neo-Revelation",
@@ -253,13 +320,27 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "EX": "Expedition-Base-Set",
     "AQ": "Aquapolis",
     "SK": "Skyridge",
+    # ---------------------------------------------------------------------------
+    # Base Set Era
+    # ---------------------------------------------------------------------------
+    "BS": "Base-Set",
+    "JU": "Jungle",
+    "FO": "Fossil",
+    "B2": "Base-Set-2",
+    "TR": "Team-Rocket",
+    "G1": "Gym-Heroes",
+    "G2": "Gym-Challenge",
+    # ---------------------------------------------------------------------------
     # Japanese sets (partial)
+    # ---------------------------------------------------------------------------
     "S12a": "VSTAR-Universe",
-    "sv2a": "151",               # Japanese 151 / Pokémon Card 151
+    "sv2a": "151",                     # Japanese 151 / Pokémon Card 151
     "S9": "Star-Birth",
     "S8b": "VMAX-Climax",
     "S8a": "Incandescent-Arcana",
+    # ---------------------------------------------------------------------------
     # French Scarlet & Violet aliases
+    # ---------------------------------------------------------------------------
     "EV1": "Scarlet-Violet",
     "EV2": "Paldea-Evolved",
     "EV3": "Obsidian-Flames",
@@ -272,18 +353,19 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "EV7": "Stellar-Crown",
     "EV8": "Surging-Sparks",
     "EV8PT5": "Prismatic-Evolutions",
-    # HeartGold / SoulSilver aliases
-    "HGSS": "HeartGold-SoulSilver",
-    # Platinum aliases
-    "PLA": "Platinum",
-    "PLAT": "Platinum",
-    "STS": "Supreme-Victors",
-    # McDonald's promos
+    # ---------------------------------------------------------------------------
+    # McDonald's Collections (year-based codes used on Cardmarket)
+    # ---------------------------------------------------------------------------
     "MCD": "McDonalds-Collection",
     "MCDO": "McDonalds-Collection",
     "MCDP": "McDonalds-Collection",
-    # Pokémon GO alias
-    "GO": "Pokemon-GO",
+    "M19": "McDonalds-Collection-2019",
+    "M20": "McDonalds-Collection-2020",
+    "M21": "McDonalds-Collection-2021",
+    "M22": "McDonalds-Collection-2022",
+    "M23": "McDonalds-Collection-2023",
+    "M24": "McDonalds-Collection-2024",
+    "M25": "McDonalds-Collection-2025",
 }
 
 
