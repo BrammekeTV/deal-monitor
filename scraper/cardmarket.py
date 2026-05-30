@@ -3,26 +3,26 @@ scraper/cardmarket.py
 ~~~~~~~~~~~~~~~~~~~~~
 Playwright-based price scraper for Cardmarket (cardmarket.com).
 
-Cardmarket does not provide a public API, so we scrape their pages
-directly using a Playwright browser (needed to pass Cloudflare).
+Architecture (new):
+  The primary entry point is ``CardmarketScraper.scrape_url()``, which
+  accepts a resolved Cardmarket product URL and scrapes its pricing data
+  directly.  No search step is performed – the caller must provide the
+  exact product URL.
 
-Approach (inspired by DrankRock/AutoScrape cardmarket_parser plugin):
-  1. Navigate to the Pokémon product search page.
-  2. Find the URL of the first matching product.
-  3. Navigate to that product page.
-  4. Wait for dynamic content (the price info block) to render.
-  5. Parse the structured price info block (``.info-list-container``) with
-     BeautifulSoup to extract: price trend, lowest price, 30-day / 7-day /
-     1-day averages.
-  6. Fall back to embedded JSON data in ``<script>`` tags if the HTML block
-     is absent.
+  The Dutch-seller filter (``sellerCountry=23``) and English-language filter
+  (``language=1``) are always applied via ``normalize_cardmarket_url()``.
 
-This two-step approach gives richer, more reliable price data than trying
-to scrape prices from the summary search-results table.
+Legacy search-based flow (``CardmarketScraper.lookup()``) is retained for
+backwards compatibility with tests that still exercise the search-results
+approach.
 
-A page is considered successfully parsed only when at least one pricing
-metric has been extracted.  Search pages, category pages, and error pages
-are rejected by the product-URL filter and the empty-prices guard.
+HTML parsing helpers are kept public so they can be unit-tested in isolation
+without a browser:
+  - ``_clean_price_string``
+  - ``_parse_price_to_float``
+  - ``_parse_product_page``
+  - ``_extract_card_metadata``
+  - ``normalize_cardmarket_url``
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ import asyncio
 import json
 import random
 import re
+import traceback
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote_plus, urlparse, urlunparse, urlencode, parse_qs
 
@@ -199,42 +201,69 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "EPO": "Emerging-Powers",
     "NVI": "Noble-Victories",
     "DEX2": "Dark-Explorers",
-    "DRV": "Dragon-Vault",
-    # HeartGold SoulSilver era
-    "HGSS1": "HeartGold-SoulSilver",
-    "UD": "Undaunted",
+    # HeartGold / SoulSilver
+    "HS": "HeartGold-SoulSilver",
     "UL": "Unleashed",
+    "UD": "Undaunted",
     "TM": "Triumphant",
-    # Platinum era
+    "CL": "Call-of-Legends",
+    # Platinum
     "PL": "Platinum",
     "RR": "Rising-Rivals",
-    "SF": "Supreme-Victors",
+    "SV": "Supreme-Victors",
     "AR": "Arceus",
-    # Diamond & Pearl era
+    # Diamond & Pearl
     "DP": "Diamond-Pearl",
     "MT": "Mysterious-Treasures",
     "SW": "Secret-Wonders",
     "GE": "Great-Encounters",
     "MD": "Majestic-Dawn",
     "LA": "Legends-Awakened",
-    "SF2": "Stormfront",
-    # Japanese set codes used in some listings
+    "SF": "Stormfront",
+    # EX era
+    "RS": "Ruby-Sapphire",
+    "SS": "Sandstorm",
+    "DR": "Dragon",
+    "MA": "Team-Magma-vs-Team-Aqua",
+    "HL": "Hidden-Legends",
+    "FR": "FireRed-LeafGreen",
+    "TRR": "Team-Rocket-Returns",
+    "DX": "Deoxys",
+    "EM": "Emerald",
+    "UF": "Unseen-Forces",
+    "DS": "Delta-Species",
+    "LM": "Legend-Maker",
+    "HP": "Holon-Phantoms",
+    "CG": "Crystal-Guardians",
+    "DF": "Dragon-Frontiers",
+    "PK": "Power-Keepers",
+    # Classic (Base Set era)
+    "BS": "Base-Set",
+    "JU": "Jungle",
+    "FO": "Fossil",
+    "B2": "Base-Set-2",
+    "TR": "Team-Rocket",
+    "G1": "Gym-Heroes",
+    "G2": "Gym-Challenge",
+    "N1": "Neo-Genesis",
+    "N2": "Neo-Discovery",
+    "N3": "Neo-Revelation",
+    "N4": "Neo-Destiny",
+    "LC": "Legendary-Collection",
+    "EX": "Expedition-Base-Set",
+    "AQ": "Aquapolis",
+    "SK": "Skyridge",
+    # Japanese sets (partial)
     "S12a": "VSTAR-Universe",
-    "S12": "Silver-Tempest",
-    "S11a": "Lost-Origin",
-    "S11": "Astral-Radiance",
-    "S10b": "Pokemon-GO",
-    "S10a": "Brilliant-Stars",
-    "S10": "Fusion-Strike",
-    "S9a": "Celebrations",
-    "S9": "Evolving-Skies",
-    "S8b": "Chilling-Reign",
-    "S8a": "Battle-Styles",
-    "S8": "Darkness-Ablaze",
-    "S7R": "Rebel-Clash",
-    "S6a": "Vivid-Voltage",
+    "S9": "Star-Birth",
+    "S8b": "VMAX-Climax",
+    "S8a": "Incandescent-Arcana",
 }
 
+
+# ---------------------------------------------------------------------------
+# Public URL helpers
+# ---------------------------------------------------------------------------
 
 def build_cardmarket_url(
     card_name: str,
@@ -284,10 +313,6 @@ def build_cardmarket_url(
     url = f"{_CM_BASE}/en/Pokemon/Products/Singles/{set_slug}/{product_slug}"
     return normalize_cardmarket_url(url)
 
-
-# ---------------------------------------------------------------------------
-# URL helpers
-# ---------------------------------------------------------------------------
 
 def normalize_cardmarket_url(url: str) -> str:
     """Return *url* with the standard Cardmarket filter params appended.
@@ -452,7 +477,6 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
         # 1-day average
         for key, value in price_data.items():
             k_lower = key.lower()
-            # Must have "1" as a standalone token (not part of "30" or "7") and a day word.
             if (
                 re.search(r"\b1\b", key)
                 and any(t in k_lower for t in ("day", "jour", "tage", "dag", "dias", "giorni"))
@@ -465,7 +489,6 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
                 break
 
     if prices:
-        # ── Also extract card metadata ────────────────────────────────────
         _extract_card_metadata(soup, prices)
         return prices
 
@@ -491,8 +514,6 @@ def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
             prices["card_name"] = card_name
 
     # ── Set name from breadcrumb ──────────────────────────────────────────
-    # Cardmarket breadcrumbs use a list of <a> tags; the second-to-last is
-    # the set (e.g. "Scarlet & Violet"), the last is the card name.
     breadcrumb_links = soup.select("ol.breadcrumb li a, .breadcrumb a")
     if len(breadcrumb_links) >= 2:
         set_link = breadcrumb_links[-2]
@@ -500,8 +521,7 @@ def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
         if set_name and set_name.lower() not in ("pokemon", "pokémon", "singles", "products"):
             prices["set_name"] = set_name
 
-    # ── Card number from page title or product details ────────────────────
-    # Pattern: "123/456" or "SV01 EN 086/198" style number in headings or title.
+    # ── Card number from page ─────────────────────────────────────────────
     full_text = soup.get_text(" ", strip=True)
     number_match = re.search(r"\b(\d{1,3}/\d{2,4})\b", full_text)
     if number_match:
@@ -509,15 +529,9 @@ def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
 
 
 def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
-    """Attempt to extract price metrics from embedded ``<script>`` JSON blobs.
-
-    Cardmarket (and other SPAs) sometimes embed product data as a JSON object
-    assigned to a global variable (e.g. ``window.__cm_state`` or similar).
-    We scan every ``<script>`` tag for recognisable price keys.
-    """
+    """Attempt to extract price metrics from embedded ``<script>`` JSON blobs."""
     prices: dict[str, Any] = {}
 
-    # Key mappings: JSON field name patterns → our canonical keys.
     _JSON_KEY_MAP: list[tuple[tuple[str, ...], str]] = [
         (("lowPrice", "lowestPrice", "fromPrice", "minPrice"), "lowest_price"),
         (("trendPrice", "priceTrend", "trend"), "price_trend"),
@@ -531,11 +545,8 @@ def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
         if not text or len(text) < 20:
             continue
 
-        # Look for JSON objects that contain price-like keys.
-        # Extract all {...} blocks and try to parse them.
         for match in re.finditer(r"\{[^{}]{20,}\}", text):
             candidate = match.group(0)
-            # Quick pre-filter: skip if no recognisable price key is present.
             if not any(
                 k in candidate
                 for keys, _ in _JSON_KEY_MAP
@@ -563,45 +574,190 @@ def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
                         break
 
             if len(prices) >= 3:
-                # Enough data found; stop scanning.
                 return prices
 
     return prices
 
 
 # ---------------------------------------------------------------------------
+# Scrape result dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CardmarketPriceData:
+    """Scraped pricing data from a Cardmarket product page."""
+
+    product_url: str
+    product_name: str | None = None
+    product_id: str | None = None
+
+    # Core price metrics
+    from_price: float | None = None        # "From" / lowest available price
+    price_trend: float | None = None       # Reference price trend
+    avg_30_days: float | None = None       # 30-day average
+    avg_7_days: float | None = None        # 7-day average
+    avg_1_day: float | None = None         # 1-day average
+
+    # Dutch-seller availability
+    dutch_sellers_available: bool = True   # False when sellerCountry=23 returns no results
+
+    # Metadata
+    set_name: str | None = None
+    card_number: str | None = None
+
+    def is_valid(self) -> bool:
+        """True if the from_price was successfully scraped."""
+        return self.from_price is not None and self.from_price > 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "product_url": self.product_url,
+            "product_name": self.product_name,
+            "product_id": self.product_id,
+            "from_price": self.from_price,
+            "price_trend": self.price_trend,
+            "avg_30_days": self.avg_30_days,
+            "avg_7_days": self.avg_7_days,
+            "avg_1_day": self.avg_1_day,
+            "dutch_sellers_available": self.dutch_sellers_available,
+            "set_name": self.set_name,
+            "card_number": self.card_number,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Main scraper class
 # ---------------------------------------------------------------------------
 
-class CardmarketPriceScraper:
+class CardmarketScraper:
     """Scrapes Cardmarket product pages for Pokémon prices.
 
-    Reuses an existing Playwright ``Browser`` instance (managed externally)
-    so only one browser process is needed for the whole application.
+    Reuses an existing Playwright ``Browser`` instance (managed externally).
 
-    Flow per ``lookup()`` call:
-    1. Open search results page for *query*.
-    2. Find the first product link (category/search pages are filtered out).
-    3. Open that product page.
-    4. Wait for the price info block to be rendered (dynamic content).
-    5. Parse the price info block (HTML + JSON fallback).
-    6. Return the collected prices dict or ``None`` if no metrics found.
+    Primary entry point:
+        ``scrape_url(url)`` – scrape a specific product page by its URL.
+
+    Legacy entry point (search-based, kept for backwards compatibility):
+        ``lookup(query)`` – search for a card and scrape the first result.
     """
 
     def __init__(self, browser: Browser) -> None:
         self._browser = browser
 
+    # ------------------------------------------------------------------
+    # Primary API: scrape by product URL
+    # ------------------------------------------------------------------
+
+    async def scrape_url(
+        self,
+        url: str,
+        *,
+        retry_without_country_filter: bool = True,
+    ) -> CardmarketPriceData:
+        """Scrape price data from a specific Cardmarket product URL.
+
+        Always adds ``?sellerCountry=23&language=1`` before fetching.
+        If the From price cannot be extracted (Dutch sellers unavailable),
+        and ``retry_without_country_filter`` is True, retries without the
+        seller-country filter and sets ``dutch_sellers_available=False``.
+
+        Raises ``CardmarketScrapeError`` on unrecoverable failure.
+        """
+        normalised_url = normalize_cardmarket_url(url)
+        product_id = _extract_product_id(normalised_url)
+
+        logger.info("Cardmarket: scraping product page %s", normalised_url)
+
+        context = await self._new_context()
+        page = await context.new_page()
+        await page.add_init_script(_STEALTH_SCRIPT)
+        try:
+            prices_dict = await self._fetch_product_page(page, normalised_url)
+        except Exception as exc:  # noqa: BLE001
+            await context.close()
+            tb = traceback.format_exc()
+            raise CardmarketScrapeError(
+                url=normalised_url,
+                step="page_fetch",
+                message=str(exc),
+                stack_trace=tb,
+            ) from exc
+        finally:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not prices_dict:
+            raise CardmarketScrapeError(
+                url=normalised_url,
+                step="price_parse",
+                message="No pricing data found on page (structure may have changed).",
+            )
+
+        dutch_available = True
+        from_price = prices_dict.get("lowest_price")
+
+        # If no From price with Dutch filter, retry without country filter.
+        if not from_price and retry_without_country_filter:
+            logger.info(
+                "Cardmarket: no From price with Dutch filter – retrying without country filter"
+            )
+            url_no_country = _remove_country_filter(normalised_url)
+            context2 = await self._new_context()
+            page2 = await context2.new_page()
+            await page2.add_init_script(_STEALTH_SCRIPT)
+            try:
+                prices_dict2 = await self._fetch_product_page(page2, url_no_country)
+            except Exception:  # noqa: BLE001
+                prices_dict2 = None
+            finally:
+                try:
+                    await context2.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if prices_dict2 and prices_dict2.get("lowest_price"):
+                dutch_available = False
+                prices_dict = prices_dict2
+                from_price = prices_dict2.get("lowest_price")
+                logger.info(
+                    "Cardmarket: prices found without Dutch filter (from_price=%.2f)",
+                    from_price,
+                )
+
+        if not from_price:
+            raise CardmarketScrapeError(
+                url=normalised_url,
+                step="from_price_missing",
+                message="From Price element not found on product page.",
+            )
+
+        return CardmarketPriceData(
+            product_url=normalised_url,
+            product_name=prices_dict.get("card_name"),
+            product_id=product_id,
+            from_price=from_price,
+            price_trend=prices_dict.get("price_trend"),
+            avg_30_days=prices_dict.get("avg_30_days"),
+            avg_7_days=prices_dict.get("avg_7_days"),
+            avg_1_day=prices_dict.get("avg_1_day"),
+            dutch_sellers_available=dutch_available,
+            set_name=prices_dict.get("set_name"),
+            card_number=prices_dict.get("card_number"),
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy search-based API (kept for backwards compatibility)
+    # ------------------------------------------------------------------
+
     async def lookup(self, query: str, sample_size: int = 5) -> dict[str, Any] | None:
         """Return price data for *query* scraped from Cardmarket.
 
-        *sample_size* is accepted for API compatibility but is unused; the
-        product-page approach returns up to 5 named price points regardless
-        (``price_trend``, ``avg_30_days``, ``avg_7_days``, ``avg_1_day``,
-        ``lowest_price``).
+        Performs a two-step search: searches Cardmarket, finds the first
+        product link, then scrapes the product page.
 
-        Returns a non-empty ``dict`` on success, ``None`` on failure.  The
-        page is not considered successfully parsed unless at least one pricing
-        metric is extracted.
+        Returns a non-empty ``dict`` on success, ``None`` on failure.
         """
         search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
         logger.info("Cardmarket: searching '%s'", query)
@@ -610,7 +766,6 @@ class CardmarketPriceScraper:
         page = await context.new_page()
         await page.add_init_script(_STEALTH_SCRIPT)
         try:
-            # ── Step 1: search page ──────────────────────────────────────────
             await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
             await self._accept_cookies(page)
             await asyncio.sleep(random.uniform(1.5, 3.0))
@@ -620,7 +775,6 @@ class CardmarketPriceScraper:
                 logger.warning("Cardmarket: no product link found for '%s'", query)
                 return None
 
-            # ── Step 2: product page ─────────────────────────────────────────
             logger.debug("Cardmarket: navigating to product page %s", product_url)
             prices_dict = await self._fetch_product_page(page, product_url)
 
@@ -640,11 +794,7 @@ class CardmarketPriceScraper:
     async def lookup_url(self, url: str) -> dict[str, Any] | None:
         """Fetch price data directly from a Cardmarket product page URL.
 
-        The URL is normalised to include standard filter params
-        (``sellerCountry=23``, ``language=1``) before fetching.
-
-        Returns the raw prices dict (``lowest_price``, ``price_trend``,
-        ``avg_30_days``, …) on success, or ``None`` on failure.
+        Returns the raw prices dict on success, or ``None`` on failure.
         """
         url = normalize_cardmarket_url(url)
         logger.info("Cardmarket: fetching prices from URL %s", url)
@@ -653,7 +803,6 @@ class CardmarketPriceScraper:
         await page.add_init_script(_STEALTH_SCRIPT)
         try:
             prices_dict = await self._fetch_product_page(page, url)
-            # Accept cookies after the first page load (the banner is now visible).
             await self._accept_cookies(page)
 
             if not prices_dict:
@@ -669,16 +818,14 @@ class CardmarketPriceScraper:
         finally:
             await context.close()
 
+    # ------------------------------------------------------------------
+    # Internal browser helpers
+    # ------------------------------------------------------------------
+
     async def _fetch_product_page(
         self, page: Page, url: str
     ) -> dict[str, Any] | None:
-        """Navigate to *url*, wait for dynamic content, and parse prices.
-
-        Waits for ``.info-list-container`` to appear in the DOM so that
-        JavaScript-rendered pricing data has a chance to load before we
-        snapshot the HTML.  Falls back to a timed delay if the element
-        never appears (some pages render differently).
-        """
+        """Navigate to *url*, wait for dynamic content, and parse prices."""
         await page.goto(url, wait_until="load", timeout=30_000)
         await self._accept_cookies(page)
 
@@ -703,13 +850,8 @@ class CardmarketPriceScraper:
         return prices_dict if prices_dict else None
 
     async def _find_first_product_url(self, page: Page) -> str | None:
-        """Return the href of the first product link on the search results page.
-
-        Filters out category and search pages: a valid individual product URL
-        must have at least ``_MIN_PRODUCT_PATH_DEPTH`` path segments.
-        """
+        """Return the href of the first product link on the search results page."""
         try:
-            # Wait briefly for at least one product link to appear.
             await page.wait_for_selector(_PRODUCT_LINK_SEL, timeout=12_000)
         except Exception:  # noqa: BLE001
             return None
@@ -719,7 +861,6 @@ class CardmarketPriceScraper:
             href = await link.get_attribute("href")
             if not href:
                 continue
-            # Filter out category/search links – we want individual product pages.
             if href.count("/") >= _MIN_PRODUCT_PATH_DEPTH:
                 full_url = href if href.startswith("http") else _CM_BASE + href
                 return full_url
@@ -739,7 +880,6 @@ class CardmarketPriceScraper:
     async def _new_context(self) -> BrowserContext:
         widths = [1280, 1366, 1440, 1920]
         w = random.choice(widths)
-        # Rotate through recent Chrome stable versions to reduce fingerprinting.
         chrome_versions = ["124.0.0.0", "125.0.0.0", "131.0.0.0", "132.0.0.0", "136.0.0.0"]
         chrome_ver = random.choice(chrome_versions)
         return await self._browser.new_context(
@@ -763,3 +903,47 @@ class CardmarketPriceScraper:
                 "Sec-Fetch-Dest": "document",
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Error class
+# ---------------------------------------------------------------------------
+
+class CardmarketScrapeError(Exception):
+    """Raised when Cardmarket scraping fails with structured context."""
+
+    def __init__(
+        self,
+        url: str,
+        step: str,
+        message: str,
+        http_status: int | None = None,
+        stack_trace: str | None = None,
+    ) -> None:
+        self.url = url
+        self.step = step
+        self.message = message
+        self.http_status = http_status
+        self.stack_trace = stack_trace
+        super().__init__(f"Cardmarket scrape aborted [{step}]: {message}")
+
+
+# ---------------------------------------------------------------------------
+# URL utility helpers
+# ---------------------------------------------------------------------------
+
+def _extract_product_id(url: str) -> str | None:
+    """Extract a product identifier from a Cardmarket product URL path."""
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.split("/") if p]
+    # Product slug is the last path component.
+    return path_parts[-1] if path_parts else None
+
+
+def _remove_country_filter(url: str) -> str:
+    """Return *url* with the sellerCountry parameter removed."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params.pop("sellerCountry", None)
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=new_query))

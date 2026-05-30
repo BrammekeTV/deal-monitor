@@ -1,18 +1,20 @@
 """
 main.py
 ~~~~~~~
-Entry point for the Pokémon deal-monitor Discord bot.
+Entry point for the deal-monitor Discord bot.
 
 Usage::
 
     python main.py
 
 Environment variables (see .env.example):
-    DISCORD_BOT_TOKEN      – Required. Your bot token from Discord Developer Portal.
-    DISCORD_CHANNEL_ID     – Required. Channel ID to post deals into.
-    DISCORD_WEBHOOK_URL    – Optional. Fallback webhook URL.
-    LOG_LEVEL              – Optional. Logging level (DEBUG/INFO/WARNING). Default: INFO.
-    DATABASE_PATH          – Optional. Path to the SQLite database file.
+    DISCORD_BOT_TOKEN           – Required. Your bot token from Discord Developer Portal.
+    DISCORD_CHANNEL_ID          – Required. Channel ID to post profit alerts.
+    DISCORD_REVIEW_CHANNEL_ID   – Required. Channel ID for manual review queue.
+    DISCORD_LOG_CHANNEL_ID      – Required. Channel ID for error/scraping logs.
+    DISCORD_GUILD_ID            – Optional. Enables instant slash-command sync.
+    DATABASE_PATH               – Optional. Path to SQLite database (default: data/deals.db).
+    LOG_LEVEL                   – Optional. Logging level (DEBUG/INFO/WARNING). Default: INFO.
 """
 
 from __future__ import annotations
@@ -24,12 +26,9 @@ import sys
 from pathlib import Path
 
 from bot.client import create_bot
-from bot.cogs.check_card import CheckCardCog
-from bot.cogs.filters import FiltersCog
-from bot.cogs.maintenance import MaintenanceCog
+from bot.cogs.admin import AdminCog
 from bot.cogs.monitor import MonitorCog
 from bot.cogs.review import ReviewCog
-from bot.cogs.test_cardmarket import TestCardmarketCog
 from config.settings import settings
 from database.db import Database
 from utils.logger import configure_logging, get_logger
@@ -49,8 +48,16 @@ async def main() -> None:
         sys.exit(1)
 
     if not settings.discord_channel_id:
+        logger.warning("DISCORD_CHANNEL_ID is not set – profit alerts will not be posted.")
+
+    if not settings.discord_review_channel_id:
         logger.warning(
-            "DISCORD_CHANNEL_ID is not set – deals will only be posted via webhook."
+            "DISCORD_REVIEW_CHANNEL_ID is not set – unresolved listings will not be posted."
+        )
+
+    if not settings.discord_log_channel_id:
+        logger.warning(
+            "DISCORD_LOG_CHANNEL_ID is not set – scraping errors will only be logged locally."
         )
 
     # Open database.
@@ -69,13 +76,12 @@ async def main() -> None:
             pass
 
     # Create bot and register cogs.
+    # ReviewCog must be added before MonitorCog so the on_message listener
+    # is registered before the monitor starts posting review messages.
     bot = create_bot()
     await bot.add_cog(ReviewCog(bot, db))
     await bot.add_cog(MonitorCog(bot, db))
-    await bot.add_cog(FiltersCog(bot, db))
-    await bot.add_cog(MaintenanceCog(bot))
-    await bot.add_cog(CheckCardCog(bot))
-    await bot.add_cog(TestCardmarketCog(bot))
+    await bot.add_cog(AdminCog(bot, db))
 
     # Graceful shutdown handler.
     loop = asyncio.get_running_loop()
