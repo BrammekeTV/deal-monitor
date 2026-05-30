@@ -18,6 +18,7 @@ import asyncio
 import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -201,10 +202,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
         cm_memory_url: str | None = None
         if memory_matches:
             for match in memory_matches:
-                ref = (match.get("reference_url") or "").lower()
-                if "cardmarket.com" in ref:
-                    cm_memory_url = match["reference_url"]
-                    break
+                ref = match.get("reference_url") or ""
+                try:
+                    # Check netloc specifically so we don't match URLs that
+                    # merely contain "cardmarket.com" as a path or query param.
+                    if urlparse(ref).netloc.lower().endswith("cardmarket.com"):
+                        cm_memory_url = ref
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
             best = next((m for m in memory_matches if m.get("market_value")), None)
             if best:
                 memory_value = best["market_value"]
