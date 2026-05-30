@@ -277,12 +277,20 @@ async def _tcggo_lookup(
     query: str,
     cm_url: str | None = None,
     tcggo_client: "TcggoClient | None" = None,
+    card_name: str | None = None,
+    collector_number: str | None = None,
+    set_code: str | None = None,
+    set_name: str | None = None,
 ) -> PriceResult | None:
     """Fetch Cardmarket prices for *query* via the TCGGO API.
 
     When *cm_url* is provided the client resolves the URL directly to a TCGGO
     product instead of performing a text search.  When *tcggo_client* is not
     supplied a new ``TcggoClient`` is constructed from settings.
+
+    *card_name*, *collector_number*, *set_code*, and *set_name* are optional
+    structured identifiers extracted from the listing title.  When provided
+    they improve match accuracy and confidence scoring.
     """
     from utils.tcggo import TcggoClient
 
@@ -302,7 +310,14 @@ async def _tcggo_lookup(
         if cm_url:
             tcggo_result = await client.lookup_by_url(session, cm_url)
         else:
-            tcggo_result = await client.search_card(session, listing_title=query)
+            tcggo_result = await client.search_card(
+                session,
+                card_name=card_name,
+                set_name=set_name,
+                set_code=set_code,
+                collector_number=collector_number,
+                listing_title=query,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("TCGGO lookup failed for '%s': %s", query, exc)
         return None
@@ -399,6 +414,10 @@ async def lookup_prices(
     browser: "Browser | None" = None,
     cm_direct_url: str | None = None,
     tcggo_client: "TcggoClient | None" = None,
+    card_name: str | None = None,
+    collector_number: str | None = None,
+    set_code: str | None = None,
+    set_name: str | None = None,
 ) -> list[PriceResult]:
     """Return live price results for *query* from all enabled platforms.
 
@@ -409,6 +428,9 @@ async def lookup_prices(
     identification memory.
     *tcggo_client* is an optional pre-constructed ``TcggoClient``; when
     ``None`` a new client is constructed from settings on each call.
+    *card_name*, *collector_number*, *set_code*, and *set_name* are optional
+    structured identifiers extracted from the listing title by
+    ``CardAnalyzer``.  When provided they improve TCGGO match accuracy.
 
     Lookup order for Cardmarket:
     1. TCGGO API (when enabled and configured).
@@ -446,7 +468,14 @@ async def lookup_prices(
         # --- Primary: TCGGO API ---
         if settings.tcggo_enabled:
             cm_result = await _tcggo_lookup(
-                session, query, cm_url=cm_direct_url, tcggo_client=tcggo_client
+                session,
+                query,
+                cm_url=cm_direct_url,
+                tcggo_client=tcggo_client,
+                card_name=card_name,
+                collector_number=collector_number,
+                set_code=set_code,
+                set_name=set_name,
             )
 
         # --- Fallback: Playwright scraper ---
