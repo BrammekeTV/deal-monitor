@@ -204,9 +204,12 @@ class MonitorCog(commands.Cog, name="Monitor"):
             for match in memory_matches:
                 ref = match.get("reference_url") or ""
                 try:
-                    # Check netloc specifically so we don't match URLs that
-                    # merely contain "cardmarket.com" as a path or query param.
-                    if urlparse(ref).netloc.lower().endswith("cardmarket.com"):
+                    # Check netloc specifically to avoid matching URLs that
+                    # merely contain "cardmarket.com" in the path or query.
+                    # Accept "cardmarket.com" and subdomains ("www.cardmarket.com")
+                    # but reject spoofs like "evil-cardmarket.com".
+                    netloc = urlparse(ref).netloc.lower()
+                    if netloc == "cardmarket.com" or netloc.endswith(".cardmarket.com"):
                         cm_memory_url = ref
                         break
                 except Exception:  # noqa: BLE001

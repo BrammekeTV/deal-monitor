@@ -105,7 +105,8 @@ def normalize_cardmarket_url(url: str) -> str:
     returned unchanged.
     """
     parsed = urlparse(url)
-    if "cardmarket.com" not in parsed.netloc:
+    netloc = parsed.netloc.lower()
+    if netloc != "cardmarket.com" and not netloc.endswith(".cardmarket.com"):
         return url
     params = parse_qs(parsed.query, keep_blank_values=True)
     changed = False
