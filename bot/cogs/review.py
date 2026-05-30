@@ -283,10 +283,14 @@ class ReviewCog(commands.Cog, name="Review"):
             monitor = self._get_monitor()
             if monitor is not None and monitor._browser is not None:
                 try:
-                    from scraper.cardmarket import CardmarketPriceScraper
+                    from scraper.cardmarket import CardmarketPriceScraper, normalize_cardmarket_url
 
+                    # Normalise the URL to include standard filter params
+                    # (sellerCountry=23 → NL, language=1 → English) before
+                    # fetching so the prices match what the user will see.
+                    normalized_url = normalize_cardmarket_url(url)
                     scraper = CardmarketPriceScraper(monitor._browser)
-                    result = await scraper.lookup_url(url)
+                    result = await scraper.lookup_url(normalized_url)
                     if result:
                         site_prices = result
                         # Use the trend price (or lowest) as the authoritative
@@ -395,10 +399,17 @@ class ReviewCog(commands.Cog, name="Review"):
             return
 
         # --- Store in identification memory ---
+        # Normalise Cardmarket URLs to include standard filter params so that
+        # future direct-URL lookups use the correct seller/language filters.
+        stored_url = reference_url
+        if platform == "Cardmarket":
+            from scraper.cardmarket import normalize_cardmarket_url
+            stored_url = normalize_cardmarket_url(reference_url)
+
         await self.db.add_to_memory(
             title_pattern=unidentified["title"],
             card_name=unidentified["title"],
-            reference_url=reference_url,
+            reference_url=stored_url,
             market_value=market_value,
             source_listing_id=listing_id,
             approved_by=approved_by,
