@@ -68,6 +68,8 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         # Pause / resume
         self._paused: bool = False
+        self._resume_event: asyncio.Event = asyncio.Event()
+        self._resume_event.set()  # starts unpaused
 
         # Services (initialised in cog_load)
         self._vinted: VintedScraper | None = None
@@ -145,8 +147,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         while not self.bot.is_closed():
             if self._paused:
-                logger.debug("MonitorCog: paused – skipping cycle")
-                await asyncio.sleep(30)
+                logger.debug("MonitorCog: paused – waiting for resume")
+                self._resume_event.clear()
+                await self._resume_event.wait()
                 continue
 
             try:
@@ -178,6 +181,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
         logger.info("MonitorCog: starting scrape cycle")
 
         for term in settings.search_terms:
+            if self._paused:
+                logger.info("MonitorCog: paused mid-cycle – aborting remaining search terms")
+                return
             try:
                 await self._process_search_term(term)
             except asyncio.CancelledError:
@@ -192,6 +198,11 @@ class MonitorCog(commands.Cog, name="Monitor"):
         """Search Vinted for *term* and process each listing found."""
         logger.info("MonitorCog: searching Vinted for '%s'", term)
         async for listing in self._vinted.search(term, settings.results_per_term):  # type: ignore[union-attr]
+            if self._paused:
+                logger.info(
+                    "MonitorCog: paused – stopping listing processing for term '%s'", term
+                )
+                return
             try:
                 await self._process_listing(listing)
             except asyncio.CancelledError:
@@ -561,6 +572,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
         else:
             self._paused = True
+            self._resume_event.clear()
             logger.info("MonitorCog: monitoring paused by %s", interaction.user)
             await interaction.response.send_message(
                 "⏸️ Monitoring **paused**. Use `/resume` to start searches again.",
@@ -576,6 +588,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
         else:
             self._paused = False
+            self._resume_event.set()
             logger.info("MonitorCog: monitoring resumed by %s", interaction.user)
             await interaction.response.send_message(
                 "▶️ Monitoring **resumed**. Searches will continue on the next cycle.",
