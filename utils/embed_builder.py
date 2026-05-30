@@ -95,10 +95,14 @@ def build_profit_alert_embed(
     embed.add_field(
         name="📊 Price Comparison",
         value=(
-            f"**Vinted Price:** €{comparison.vinted_price:.2f}\n"
+            f"**Vinted Item Price:** €{comparison.vinted_price:.2f}\n"
+            f"**Protection Fee:** €{comparison.protection_fee:.2f} "
+            f"(5% + €0.70)\n"
+            f"**Shipping:** €{comparison.shipping_min:.2f} – €{comparison.shipping_max:.2f}\n"
+            f"**Total Cost:** €{comparison.total_cost_min:.2f} – €{comparison.total_cost_max:.2f}\n"
             f"**Cardmarket From:** €{comparison.cardmarket_from_price:.2f}\n"
-            f"**Profit Difference:** €{comparison.absolute_difference:.2f}\n"
-            f"**Profit Percentage:** {comparison.percentage_difference:.1f}%"
+            f"**Profit (worst case):** €{comparison.absolute_difference:.2f} "
+            f"({comparison.percentage_difference:.1f}%)"
         ),
         inline=False,
     )
@@ -154,7 +158,10 @@ def build_not_profitable_embed(
     embed.add_field(
         name="💰 Prices",
         value=(
-            f"**Vinted Price:** €{comparison.vinted_price:.2f}\n"
+            f"**Vinted Item Price:** €{comparison.vinted_price:.2f}\n"
+            f"**Protection Fee:** €{comparison.protection_fee:.2f} (5% + €0.70)\n"
+            f"**Shipping:** €{comparison.shipping_min:.2f} – €{comparison.shipping_max:.2f}\n"
+            f"**Total Cost:** €{comparison.total_cost_min:.2f} – €{comparison.total_cost_max:.2f}\n"
             f"**Cardmarket From:** €{comparison.cardmarket_from_price:.2f}"
         ),
         inline=True,
@@ -358,9 +365,12 @@ def build_review_resolved_embed(
     embed.add_field(
         name="📊 Comparison",
         value=(
-            f"**Vinted:** €{comparison.vinted_price:.2f}\n"
+            f"**Vinted Item Price:** €{comparison.vinted_price:.2f}\n"
+            f"**Protection Fee:** €{comparison.protection_fee:.2f} (5% + €0.70)\n"
+            f"**Shipping:** €{comparison.shipping_min:.2f} – €{comparison.shipping_max:.2f}\n"
+            f"**Total Cost:** €{comparison.total_cost_min:.2f} – €{comparison.total_cost_max:.2f}\n"
             f"**Cardmarket From:** €{comparison.cardmarket_from_price:.2f}\n"
-            f"**Difference:** €{comparison.absolute_difference:.2f} "
+            f"**Difference (worst case):** €{comparison.absolute_difference:.2f} "
             f"({'saving' if comparison.is_profitable else 'overpaying'} "
             f"{comparison.percentage_difference:.1f}%)"
         ),
