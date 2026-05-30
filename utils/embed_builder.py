@@ -305,16 +305,24 @@ def build_reference_confirmation_embed(
     reference_url: str,
     platform: str,
     submitted_by: discord.User | discord.Member,
+    site_prices: dict[str, float] | None = None,
+    market_value: float | None = None,
 ) -> discord.Embed:
-    """Embed posted by the bot when a user submits a reference URL."""
+    """Embed posted by the bot when a user submits a reference URL.
+
+    The submission is auto-approved immediately; this embed confirms the
+    approval and shows any scraped Cardmarket prices for the card.
+    """
     embed = discord.Embed(
-        title=f"🔗 Reference Submitted: {platform}",
-        colour=0x5865F2,
+        title=f"✅ Reference Auto-Approved: {platform}",
+        colour=0x57F287,  # green
         timestamp=datetime.now(timezone.utc),
         description=(
             f"**{submitted_by.display_name}** submitted a reference for:\n"
             f"**{unidentified['title']}**\n\n"
-            f"React ✅ to **approve** this match or ❌ to **reject** it."
+            "This reference has been **automatically approved** and saved to "
+            "the bot's identification memory. Future listings matching this "
+            "card will be priced using this reference."
         ),
     )
     embed.add_field(name="📎 Reference URL", value=reference_url[:1024], inline=False)
@@ -324,6 +332,35 @@ def build_reference_confirmation_embed(
         inline=True,
     )
     embed.add_field(name="🏪 Platform", value=platform, inline=True)
+
+    # Show scraped prices from the reference URL.
+    if site_prices:
+        label_map = {
+            "price_trend": "Price Trend",
+            "market_price": "Market Price",
+            "lowest_price": "Lowest",
+            "avg_30_days": "Avg 30 days",
+            "avg_7_days": "Avg 7 days",
+            "avg_1_day": "Avg today",
+        }
+        price_lines: list[str] = []
+        for key in ("price_trend", "market_price", "lowest_price", "avg_30_days", "avg_7_days", "avg_1_day"):
+            val = site_prices.get(key)
+            if val is not None and val > 0:
+                price_lines.append(f"{label_map[key]}: **€{val:.2f}**")
+        if price_lines:
+            embed.add_field(
+                name="🏷️ Cardmarket Prices",
+                value="\n".join(price_lines),
+                inline=False,
+            )
+    elif market_value is not None:
+        embed.add_field(
+            name="💶 Submitted Market Value",
+            value=f"€{market_value:.2f}",
+            inline=True,
+        )
+
     embed.set_footer(text=f"Listing ID: {unidentified['id']}")
     return embed
 

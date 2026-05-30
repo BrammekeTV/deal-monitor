@@ -102,18 +102,33 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     # Scarlet & Violet promos / special sets
     "SVP": "SV-Black-Star-Promos",
     "SVE": "SV-Energies",
-    # Scarlet & Violet main sets
+    # Scarlet & Violet main sets (official codes + numeric aliases)
     "SVI": "Scarlet-Violet",
+    "SV1": "Scarlet-Violet",       # numeric alias
     "PAL": "Paldea-Evolved",
+    "SV2": "Paldea-Evolved",       # numeric alias
     "OBF": "Obsidian-Flames",
+    "SV3": "Obsidian-Flames",      # numeric alias
     "MEW": "151",
+    "SV3PT5": "151",               # numeric alias
     "PAR": "Paradox-Rift",
+    "SV4": "Paradox-Rift",         # numeric alias
+    "PAF": "Paldean-Fates",
+    "SV4PT5": "Paldean-Fates",     # numeric alias
     "TEF": "Temporal-Forces",
+    "SV5": "Temporal-Forces",      # numeric alias
     "TWM": "Twilight-Masquerade",
+    "SV6": "Twilight-Masquerade",  # numeric alias
     "SFA": "Shrouded-Fable",
+    "SV6PT5": "Shrouded-Fable",    # numeric alias
     "SCR": "Stellar-Crown",
+    "SV7": "Stellar-Crown",        # numeric alias
     "SSP": "Surging-Sparks",
+    "SV8": "Surging-Sparks",       # numeric alias
     "PRE": "Prismatic-Evolutions",
+    "SV8PT5": "Prismatic-Evolutions",  # numeric alias
+    "JTG": "Journey-Together",
+    "SV9": "Journey-Together",     # numeric alias
     # Sword & Shield promos / special sets
     "SWSHP": "SWSH-Black-Star-Promos",
     "CEL25": "Celebrations",
@@ -179,6 +194,30 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "PLB": "Plasma-Blast",
     "LTR": "Legendary-Treasures",
     "KSS": "Kalos-Starter-Set",
+    # Black & White main sets
+    "BLW": "Black-White",
+    "EPO": "Emerging-Powers",
+    "NVI": "Noble-Victories",
+    "DEX2": "Dark-Explorers",
+    "DRV": "Dragon-Vault",
+    # HeartGold SoulSilver era
+    "HGSS1": "HeartGold-SoulSilver",
+    "UD": "Undaunted",
+    "UL": "Unleashed",
+    "TM": "Triumphant",
+    # Platinum era
+    "PL": "Platinum",
+    "RR": "Rising-Rivals",
+    "SF": "Supreme-Victors",
+    "AR": "Arceus",
+    # Diamond & Pearl era
+    "DP": "Diamond-Pearl",
+    "MT": "Mysterious-Treasures",
+    "SW": "Secret-Wonders",
+    "GE": "Great-Encounters",
+    "MD": "Majestic-Dawn",
+    "LA": "Legends-Awakened",
+    "SF2": "Stormfront",
     # Japanese set codes used in some listings
     "S12a": "VSTAR-Universe",
     "S12": "Silver-Tempest",
