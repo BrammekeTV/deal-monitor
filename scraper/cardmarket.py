@@ -255,10 +255,90 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     "SK": "Skyridge",
     # Japanese sets (partial)
     "S12a": "VSTAR-Universe",
+    "sv2a": "151",               # Japanese 151 / Pokémon Card 151
     "S9": "Star-Birth",
     "S8b": "VMAX-Climax",
     "S8a": "Incandescent-Arcana",
+    # French Scarlet & Violet aliases
+    "EV1": "Scarlet-Violet",
+    "EV2": "Paldea-Evolved",
+    "EV3": "Obsidian-Flames",
+    "EV3PT5": "151",
+    "EV4": "Paradox-Rift",
+    "EV4PT5": "Paldean-Fates",
+    "EV5": "Temporal-Forces",
+    "EV6": "Twilight-Masquerade",
+    "EV6PT5": "Shrouded-Fable",
+    "EV7": "Stellar-Crown",
+    "EV8": "Surging-Sparks",
+    "EV8PT5": "Prismatic-Evolutions",
+    # HeartGold / SoulSilver aliases
+    "HGSS": "HeartGold-SoulSilver",
+    # Platinum aliases
+    "PLA": "Platinum",
+    "PLAT": "Platinum",
+    "STS": "Supreme-Victors",
+    # McDonald's promos
+    "MCD": "McDonalds-Collection",
+    "MCDO": "McDonalds-Collection",
+    "MCDP": "McDonalds-Collection",
+    # Pokémon GO alias
+    "GO": "Pokemon-GO",
 }
+
+
+# ---------------------------------------------------------------------------
+# Language → Cardmarket language-code mapping
+# ---------------------------------------------------------------------------
+# Cardmarket uses numeric language codes in the ``language`` query parameter.
+# 1=English (default), 2=French, 3=German, 4=Spanish, 5=Italian, 7=Japanese,
+# 8=Korean, 9=Russian, 10=Portuguese, 11=Dutch.
+_LANGUAGE_TO_CM_CODE: dict[str, str] = {
+    "English": "1",
+    "Dutch": "11",
+    "French": "2",
+    "German": "3",
+    "Spanish": "4",
+    "Italian": "5",
+    "Japanese": "7",
+    "Korean": "8",
+    "Russian": "9",
+    "Portuguese": "10",
+}
+
+# ---------------------------------------------------------------------------
+# Variant hints — per-card preferred product slugs
+# ---------------------------------------------------------------------------
+# When multiple Cardmarket product variants exist for the same collector
+# number, this dict maps ``(card_name_slug, set_code_upper, bare_number)``
+# to the preferred full product slug (e.g. "Bulbasaur-V2-MEW166").
+# Populated at startup from corrections and by register_variant_hint().
+_VARIANT_HINTS: dict[tuple[str, str, str], str] = {}
+
+
+def register_variant_hint(
+    card_name: str,
+    set_code: str,
+    collector_number: str,
+    preferred_slug: str,
+) -> None:
+    """Register a preferred product slug for a specific card variant.
+
+    Overwrites any existing hint for the same ``(card_name, set_code,
+    collector_number)`` triple.  Callers should pass the bare collector number
+    (digits only, no total, no prefix), e.g. ``"166"`` for ``"166/165"``.
+
+    Example::
+
+        register_variant_hint("Bulbasaur", "MEW", "166", "Bulbasaur-V2-MEW166")
+    """
+    card_slug = re.sub(r"[^A-Za-z0-9]+", "-", card_name).strip("-")
+    bare_num = re.sub(r"[^0-9]", "", collector_number.split("/")[0])
+    key = (card_slug, set_code.upper(), bare_num)
+    _VARIANT_HINTS[key] = preferred_slug
+    logger.debug(
+        "Registered variant hint %r → %r", key, preferred_slug
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -324,35 +404,91 @@ def build_cardmarket_url(
 
     product_slug = f"{card_slug}-{num_suffix}" if num_suffix else card_slug
 
+    # Check variant hints: if a preferred slug is registered for this exact
+    # card/set/number combination, use it instead of the auto-generated one.
+    hint_key = (card_slug, set_code.upper(), bare_num)
+    if hint_key in _VARIANT_HINTS:
+        product_slug = _VARIANT_HINTS[hint_key]
+        logger.debug(
+            "build_cardmarket_url: applied variant hint %r → %r", hint_key, product_slug
+        )
+
     url = f"{_CM_BASE}/en/Pokemon/Products/Singles/{set_slug}/{product_slug}"
     return normalize_cardmarket_url(url)
 
 
-def normalize_cardmarket_url(url: str) -> str:
+def normalize_cardmarket_url(
+    url: str,
+    *,
+    language: str | None = None,
+    is_reverse_holo: bool = False,
+) -> str:
     """Return *url* with the standard Cardmarket filter params appended.
 
     Adds ``sellerCountry=23`` (Netherlands) and ``language=1`` (English) if
     they are not already present in the query string.  Non-Cardmarket URLs are
     returned unchanged.
+
+    *language* – when provided as a Cardmarket language code string (e.g.
+    ``"7"`` for Japanese), overrides the default ``language=1`` param.
+
+    *is_reverse_holo* – when ``True``, appends ``isReverseHolo=Y``.
     """
     parsed = urlparse(url)
     netloc = parsed.netloc.lower()
     if netloc != "cardmarket.com" and not netloc.endswith(".cardmarket.com"):
         return url
     params = parse_qs(parsed.query, keep_blank_values=True)
-    changed = False
+    # Apply base filter params (sellerCountry + default language).
     for key, value in _CM_FILTER_PARAMS.items():
         if key not in params:
             params[key] = [value]
-            changed = True
-    if not changed:
-        return url
+    # Override language when a specific code was requested.
+    if language is not None:
+        params["language"] = [language]
+    # Append reverse-holo flag when applicable.
+    if is_reverse_holo:
+        params["isReverseHolo"] = ["Y"]
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
 
 
-# ---------------------------------------------------------------------------
-# HTML parsing helpers  (AutoScrape / cardmarket_parser inspired)
+async def validate_cardmarket_url(url: str) -> bool:
+    """Perform a lightweight HEAD request to check that *url* resolves on Cardmarket.
+
+    Returns ``True`` if the URL returns a 2xx/3xx status, or ``False`` when a
+    4xx (typically 404) is received.  Network errors are treated as *not*
+    resolved (returns ``False``) and are logged at WARNING level rather than
+    raising.
+
+    Uses ``aiohttp`` with a short timeout (10 s) so that a bad URL does not
+    stall the processing pipeline for long.
+    """
+    import aiohttp  # noqa: PLC0415  (lazy import to avoid hard dep at module level)
+
+    timeout = aiohttp.ClientTimeout(total=10)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; DealMonitor/1.0; "
+            "+https://github.com/BrammekeTV/deal-monitor)"
+        )
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.head(url, allow_redirects=True) as resp:
+                if resp.status == 404:
+                    logger.warning("validate_cardmarket_url: 404 for %s", url)
+                    return False
+                if resp.status >= 400:
+                    logger.warning(
+                        "validate_cardmarket_url: unexpected status %d for %s",
+                        resp.status, url,
+                    )
+                    return False
+                return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("validate_cardmarket_url: request error for %s — %s", url, exc)
+        return False
 # ---------------------------------------------------------------------------
 
 def _clean_price_string(price_string: str) -> str:

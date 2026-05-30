@@ -77,6 +77,7 @@ class Settings:
         self.interval_min: int = int(s.get("interval_min", 60))
         self.interval_max: int = int(s.get("interval_max", 300))
         self.results_per_term: int = int(s.get("results_per_term", 30))
+        self.review_queue_expiry_days: int = int(s.get("review_queue_expiry_days", 30))
         self.headless: bool = bool(s.get("headless", True))
         self.browser: str = s.get("browser", "chromium")
         self.page_delay_min: float = float(s.get("page_delay_min", 2.0))

@@ -84,6 +84,36 @@ def _extract_product_slug(url: str) -> str | None:
     return path.split("/")[-1]
 
 
+def _derive_set_code_from_url(url: str) -> str | None:
+    """Attempt to derive a set code from a Cardmarket Singles URL path.
+
+    Cardmarket set slug (e.g. ``Team-Rocket``) is the segment immediately after
+    ``/Singles/``.  We reverse-map the slug back to a set code using the
+    ``_SET_CODE_TO_SLUG`` table from ``scraper.cardmarket``.
+
+    Returns a set code string (e.g. ``"TR"``) or ``None`` when no match found.
+    """
+    try:
+        from scraper.cardmarket import _SET_CODE_TO_SLUG  # noqa: PLC0415
+
+        path = urlparse(url).path
+        parts = path.split("/")
+        # Path structure: /en/Pokemon/Products/Singles/{set-slug}/{product-slug}
+        try:
+            singles_idx = parts.index("Singles")
+            set_slug = parts[singles_idx + 1]
+        except (ValueError, IndexError):
+            return None
+        if not set_slug:
+            return None
+        # Build reverse mapping (slug → code).  Only do this once per call;
+        # it's fast enough for correction processing frequency.
+        slug_to_code = {v: k for k, v in _SET_CODE_TO_SLUG.items()}
+        return slug_to_code.get(set_slug)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _analyze_correction_pattern(
     generated_url: str,
     corrected_url: str,
@@ -519,6 +549,23 @@ class ReviewCog(commands.Cog, name="Review"):
                 effective_set_code, learned_prefix, submitted_by.display_name,
             )
 
+        # ── P3.2: derive set_code from corrected URL path when fingerprint ─
+        # has none.  Attempt a reverse-slug-to-code lookup so the prefix rule
+        # is still stored even when the listing title had no set token.
+        if learned_prefix is not None and not effective_set_code and monitor.resolver:
+            derived_from_url = _derive_set_code_from_url(normalised_url)
+            if derived_from_url:
+                effective_set_code = derived_from_url
+                await monitor.resolver.store_prefix_rule(
+                    set_code=effective_set_code,
+                    prefix=learned_prefix,
+                    set_name=fingerprint.set_name,
+                )
+                logger.info(
+                    "ReviewCog: P3.2 derived set_code=%r from URL, stored prefix=%r",
+                    effective_set_code, learned_prefix,
+                )
+
         # ── Store correction in the database ─────────────────────────────
         original_identifier = _extract_product_slug(generated_cm_url)
         corrected_identifier = _extract_product_slug(normalised_url)
@@ -553,6 +600,18 @@ class ReviewCog(commands.Cog, name="Review"):
                 confidence=1.0,
                 listing_url=listing_url,
             )
+            # ── P1.2: Store slug override for direct future lookups ───────────
+            corrected_slug = _extract_product_slug(normalised_url)
+            if corrected_slug:
+                await monitor.resolver.store_slug_override(
+                    fingerprint=fingerprint,
+                    preferred_slug=corrected_slug,
+                    cardmarket_url=normalised_url,
+                )
+                logger.info(
+                    "ReviewCog: stored slug override fingerprint=%r slug=%r",
+                    fingerprint.fingerprint_hash(), corrected_slug,
+                )
 
         # ── Confirm to the user ───────────────────────────────────────────
         result_embed = build_review_resolved_embed(

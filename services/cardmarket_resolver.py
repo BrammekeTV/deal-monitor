@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING, Any
 
 from rapidfuzz import fuzz, process
 
-from scraper.cardmarket import build_cardmarket_url, normalize_cardmarket_url
+from scraper.cardmarket import (
+    _LANGUAGE_TO_CM_CODE,
+    build_cardmarket_url,
+    normalize_cardmarket_url,
+    register_variant_hint,
+)
 from services.card_identifier import CardFingerprint
 from utils.logger import get_logger
 
@@ -52,6 +57,7 @@ class ResolvedUrl:
     confidence: float                 # 0.0 – 1.0
     mapping_id: int | None = None     # DB row ID when source='database'
     product_name: str | None = None   # From stored mapping, if available
+    needs_validation: bool = False    # True when URL was constructed (not from DB) and should be HEAD-checked
 
 
 class CardmarketResolver:
@@ -63,33 +69,83 @@ class CardmarketResolver:
         self._mappings: list[dict[str, Any]] = []
         # In-memory cache of slug prefix rules keyed by set_code (upper-case).
         self._prefix_rules: dict[str, dict[str, Any]] = {}
+        # In-memory cache of slug overrides keyed by fingerprint hash.
+        self._slug_overrides: dict[str, dict[str, Any]] = {}
 
     async def load(self) -> None:
-        """Load all card mappings and prefix rules from the database into memory."""
+        """Load all card mappings, prefix rules, and slug overrides from the database."""
         self._mappings = await self._db.get_all_mappings()
         await self._load_prefix_rules()
+        await self._load_slug_overrides()
         logger.info(
-            "CardmarketResolver: loaded %d mappings, %d prefix rules",
-            len(self._mappings), len(self._prefix_rules),
+            "CardmarketResolver: loaded %d mappings, %d prefix rules, %d slug overrides",
+            len(self._mappings), len(self._prefix_rules), len(self._slug_overrides),
         )
 
     async def _load_prefix_rules(self) -> None:
-        """Reload the in-memory prefix-rule cache from the database."""
+        """Reload the in-memory prefix-rule cache from the database.
+
+        SQLite returns rows ordered by ``confidence DESC, uses_successful DESC``, so the
+        first row per set_code is the best-scoring one.  We keep only the first entry
+        per set_code to avoid lower-scored duplicates overwriting a better rule.
+        """
         rules = await self._db.get_all_slug_prefix_rules()
-        # Only use rules with reasonable confidence (>= 0.5).
-        self._prefix_rules = {
-            r["set_code"].upper(): r
-            for r in rules
-            if r.get("confidence", 0.0) >= 0.5
-        }
+        new_rules: dict[str, dict[str, Any]] = {}
+        for r in rules:
+            if r.get("confidence", 0.0) < 0.5:
+                continue
+            sc = r["set_code"].upper()
+            if sc not in new_rules:  # Keep the first (highest-scored) entry only.
+                new_rules[sc] = r
+        self._prefix_rules = new_rules
+
+    async def _load_slug_overrides(self) -> None:
+        """Load all slug overrides from the database into memory."""
+        rows = await self._db.get_all_slug_overrides() if hasattr(self._db, "get_all_slug_overrides") else []
+        self._slug_overrides = {r["fingerprint"]: r for r in rows}
 
     async def reload(self) -> None:
         """Reload mappings (call after adding a new mapping)."""
         await self.load()
 
-    # ------------------------------------------------------------------
-    # Primary resolution
-    # ------------------------------------------------------------------
+    async def store_slug_override(
+        self,
+        fingerprint: CardFingerprint,
+        preferred_slug: str,
+        cardmarket_url: str,
+    ) -> None:
+        """Persist a slug override learned from a correction and update the in-memory cache.
+
+        Also registers a variant hint so build_cardmarket_url() will produce the
+        correct slug for future listings with the same card/set/number combination.
+        """
+        fp_hash = fingerprint.fingerprint_hash()
+        if not fp_hash:
+            return
+        await self._db.add_slug_override(
+            fingerprint=fp_hash,
+            preferred_slug=preferred_slug,
+            cardmarket_url=cardmarket_url,
+        )
+        # Update in-memory cache immediately.
+        self._slug_overrides[fp_hash] = {
+            "fingerprint": fp_hash,
+            "preferred_slug": preferred_slug,
+            "cardmarket_url": cardmarket_url,
+        }
+        # Also register a variant hint for build_cardmarket_url() so the same
+        # card gets the right slug even when constructing from first principles.
+        if fingerprint.card_name and fingerprint.set_code and fingerprint.collector_number:
+            register_variant_hint(
+                fingerprint.card_name,
+                fingerprint.set_code,
+                fingerprint.collector_number,
+                preferred_slug,
+            )
+        logger.info(
+            "CardmarketResolver: stored slug override for fingerprint %s → %s",
+            fp_hash, cardmarket_url,
+        )
 
     async def resolve(
         self,
@@ -237,12 +293,14 @@ class CardmarketResolver:
     def _construct_url(self, fingerprint: CardFingerprint) -> ResolvedUrl | None:
         """Try to build a Cardmarket URL from the fingerprint.
 
-        Returns a ResolvedUrl with confidence < 1.0 (since we have not yet
-        validated the URL resolves to a real product page).
-        Returns None when insufficient data is available.
+        Resolution order within construction:
+        1. Slug override from the learning database (highest confidence).
+        2. Direct URL build using set code or derived set code.
 
-        When a learned prefix rule exists for the card's set (e.g. Team Rocket
-        → "TR" prefix), the rule is applied before constructing the URL.
+        Returns a ``ResolvedUrl`` with ``needs_validation=True`` for
+        constructed URLs (not from DB overrides) so the caller can optionally
+        perform a HEAD-request check.  Returns ``None`` when insufficient data
+        is available.
         """
         card_name = fingerprint.card_name
         set_code = fingerprint.set_code
@@ -251,6 +309,31 @@ class CardmarketResolver:
         if not card_name:
             return None
 
+        # ── 0: Slug override from correction learning ─────────────────────
+        fp_hash = fingerprint.fingerprint_hash()
+        if fp_hash and fp_hash in self._slug_overrides:
+            override = self._slug_overrides[fp_hash]
+            url = override["cardmarket_url"]
+            logger.info(
+                "CardmarketResolver: slug override match for fingerprint %s → %s",
+                fp_hash, url,
+            )
+            return ResolvedUrl(
+                url=url,
+                source="constructed",
+                confidence=0.95,
+                product_name=override.get("preferred_slug"),
+                needs_validation=False,
+            )
+
+        # Determine language code override (non-English, non-Dutch cards).
+        lang_code: str | None = None
+        if fingerprint.language:
+            lc = _LANGUAGE_TO_CM_CODE.get(fingerprint.language)
+            # Only override when it differs from the defaults (1=English, 11=Dutch).
+            if lc and lc not in ("1", "11"):
+                lang_code = lc
+
         # Helper: look up a learned prefix for a given set_code.
         def _get_prefix(sc: str) -> str | None:
             rule = self._prefix_rules.get(sc.upper())
@@ -258,16 +341,27 @@ class CardmarketResolver:
                 return rule.get("prefix")
             return None
 
-        # Try with explicit set code first.
-        if set_code:
-            prefix = _get_prefix(set_code)
+        def _build(sc: str, prefix: str | None) -> str | None:
+            """Build and normalise the Cardmarket URL for this card."""
             url = build_cardmarket_url(
                 card_name,
-                set_code,
+                sc,
                 collector_number or "",
                 promo=fingerprint.is_promo,
                 number_prefix=prefix,
             )
+            if url is None:
+                return None
+            return normalize_cardmarket_url(
+                url,
+                language=lang_code,
+                is_reverse_holo=bool(fingerprint.is_reverse_holo),
+            )
+
+        # ── 1: Try with explicit set code ─────────────────────────────────
+        if set_code:
+            prefix = _get_prefix(set_code)
+            url = _build(set_code, prefix)
             if url:
                 conf = 0.75 if prefix else 0.60
                 logger.info(
@@ -281,20 +375,15 @@ class CardmarketResolver:
                     source="constructed",
                     confidence=conf,
                     product_name=None,
+                    needs_validation=True,
                 )
 
-        # Try deriving set code from set name.
+        # ── 2: Derive set code from set name ──────────────────────────────
         if fingerprint.set_name:
             derived_code = set_name_to_code(fingerprint.set_name)
             if derived_code:
                 prefix = _get_prefix(derived_code)
-                url = build_cardmarket_url(
-                    card_name,
-                    derived_code,
-                    collector_number or "",
-                    promo=fingerprint.is_promo,
-                    number_prefix=prefix,
-                )
+                url = _build(derived_code, prefix)
                 if url:
                     conf = 0.65 if prefix else 0.50
                     logger.info(
@@ -308,6 +397,7 @@ class CardmarketResolver:
                         source="constructed",
                         confidence=conf,
                         product_name=None,
+                        needs_validation=True,
                     )
 
         return None
@@ -452,6 +542,28 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "evolutions": "EVO",
     "xy": "XY1",
     "pokemon go": "PGO",
+    # French Scarlet & Violet aliases
+    "ecarlate et violet": "SVI",
+    "écarlate et violet": "SVI",
+    "failles paradoxes": "PAR",
+    "destinées de paldea": "PAF",
+    "forces temporelles": "TEF",
+    "mascarade crépusculaire": "TWM",
+    # HeartGold & SoulSilver
+    "heartgold soulsilver": "HGSS",
+    "heart gold soul silver": "HGSS",
+    # Platinum era
+    "platinum": "PLA",
+    "supreme victors": "STS",
+    "stormfront": "SF",
+    # McDonald's promos
+    "mcdonald": "MCD",
+    "mcdonalds": "MCD",
+    # Jungle / Fossil / Base aliases already present above as BS/JU/FO
+    "jungle": "JU",
+    "fossil": "FO",
+    # GO
+    "pokemon go": "GO",
 }
 
 

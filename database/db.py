@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     matching_attempts       TEXT,   -- JSON
     discord_message_id      TEXT,
     discord_channel_id      TEXT,
-    status                  TEXT    DEFAULT 'pending',  -- pending | resolved | expired
+    status                  TEXT    DEFAULT 'pending',  -- pending | resolved | expired | skipped
     created_at              TEXT,
     resolved_at             TEXT,
     resolved_cardmarket_url TEXT,
@@ -166,6 +166,16 @@ CREATE TABLE IF NOT EXISTS slug_prefix_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_slug_prefix_rules_set_code ON slug_prefix_rules(set_code);
+
+CREATE TABLE IF NOT EXISTS slug_overrides (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint     TEXT    NOT NULL UNIQUE,
+    preferred_slug  TEXT    NOT NULL,
+    cardmarket_url  TEXT    NOT NULL,
+    date_learned    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_slug_overrides_fingerprint ON slug_overrides(fingerprint);
 
 CREATE TABLE IF NOT EXISTS filter_settings (
     key   TEXT PRIMARY KEY,
@@ -359,8 +369,13 @@ class Database:
         fingerprint: str | None = None,
         failure_reason: str | None = None,
         matching_attempts: list[dict] | None = None,
+        status: str = "pending",
     ) -> int:
-        """Insert a listing into the review queue.  Returns the row ID."""
+        """Insert a listing into the review queue.  Returns the row ID.
+
+        *status* defaults to ``'pending'``; pass ``'skipped'`` for pre-filtered
+        non-card listings that should be observable but not actively reviewed.
+        """
         now = datetime.now(timezone.utc).isoformat()
         images_json = json.dumps(images or [])
         attempts_json = json.dumps(matching_attempts or [])
@@ -371,12 +386,12 @@ class Database:
                     (listing_id, title, url, price, currency, seller_name,
                      seller_id, description, images, fingerprint,
                      failure_reason, matching_attempts, status, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     listing_id, title, url, price, currency, seller_name,
                     seller_id, description, images_json, fingerprint,
-                    failure_reason, attempts_json, now,
+                    failure_reason, attempts_json, status, now,
                 ),
             )
             await self._conn.commit()  # type: ignore[union-attr]
@@ -451,9 +466,29 @@ class Database:
         error_message: str | None = None,
         stack_trace: str | None = None,
     ) -> int | None:
-        """Persist a structured processing error.  Returns the new row ID."""
+        """Persist a structured processing error.  Returns the new row ID.
+
+        De-duplication: if an entry already exists for the same
+        ``(listing_id, failure_step)`` pair, the existing row ID is returned
+        and no new row is inserted.  This prevents repeated runs from
+        generating duplicate error entries for the same listing.
+        """
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
+            # Check for an existing entry with the same listing_id + failure_step.
+            if listing_id and failure_step:
+                async with self._conn.execute(  # type: ignore[union-attr]
+                    "SELECT id FROM error_log WHERE listing_id = ? AND failure_step = ? LIMIT 1",
+                    (listing_id, failure_step),
+                ) as dedup_cur:
+                    existing = await dedup_cur.fetchone()
+                if existing:
+                    logger.debug(
+                        "Database: skipping duplicate error_log for listing_id=%r step=%r",
+                        listing_id, failure_step,
+                    )
+                    return existing["id"]
+
             cur = await self._conn.execute(  # type: ignore[union-attr]
                 """
                 INSERT INTO error_log
@@ -672,3 +707,116 @@ class Database:
                 "DELETE FROM filter_settings WHERE key = ?", (key,)
             )
             await self._conn.commit()  # type: ignore[union-attr]
+
+    # ------------------------------------------------------------------
+    # Slug overrides (per-fingerprint preferred URL learned from corrections)
+    # ------------------------------------------------------------------
+
+    async def add_slug_override(
+        self,
+        *,
+        fingerprint: str,
+        preferred_slug: str,
+        cardmarket_url: str,
+    ) -> int:
+        """Upsert a slug override for the given card fingerprint.
+
+        When a user correction supplies a URL for a card whose auto-generated
+        URL was wrong, the corrected URL is stored here so future resolutions
+        return it directly without re-running slug construction.
+
+        Returns the row ID.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            try:
+                cur = await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO slug_overrides
+                        (fingerprint, preferred_slug, cardmarket_url, date_learned)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (fingerprint, preferred_slug, cardmarket_url, now),
+                )
+                await self._conn.commit()  # type: ignore[union-attr]
+                return cur.lastrowid  # type: ignore[return-value]
+            except Exception:  # noqa: BLE001
+                # Row already exists – update in place.
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    UPDATE slug_overrides
+                    SET preferred_slug = ?, cardmarket_url = ?, date_learned = ?
+                    WHERE fingerprint = ?
+                    """,
+                    (preferred_slug, cardmarket_url, now, fingerprint),
+                )
+                await self._conn.commit()  # type: ignore[union-attr]
+                async with self._conn.execute(  # type: ignore[union-attr]
+                    "SELECT id FROM slug_overrides WHERE fingerprint = ?",
+                    (fingerprint,),
+                ) as cur2:
+                    row = await cur2.fetchone()
+                return row["id"] if row else 0
+
+    async def get_slug_override(self, fingerprint: str) -> dict[str, Any] | None:
+        """Return the slug override for the given fingerprint, or None."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM slug_overrides WHERE fingerprint = ?",
+            (fingerprint,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_all_slug_overrides(self) -> list[dict[str, Any]]:
+        """Return all slug overrides for in-memory caching."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM slug_overrides ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Review queue maintenance
+    # ------------------------------------------------------------------
+
+    async def expire_old_review_items(self, days: int) -> int:
+        """Mark pending review queue items older than *days* days as 'expired'.
+
+        Returns the number of rows updated.
+        """
+        async with self._lock:
+            cur = await self._conn.execute(  # type: ignore[union-attr]
+                """
+                UPDATE review_queue
+                SET status = 'expired'
+                WHERE status = 'pending'
+                  AND created_at < datetime('now', ? || ' days')
+                """,
+                (f"-{days}",),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Error log aggregation
+    # ------------------------------------------------------------------
+
+    async def get_error_summary(self) -> list[dict[str, Any]]:
+        """Return aggregate failure counts grouped by step and error message.
+
+        Returns rows ordered by count descending, limited to 50.
+        Each row has keys: ``failure_step``, ``error_message``, ``count``.
+        """
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT failure_step,
+                   error_message,
+                   COUNT(*) AS count
+            FROM error_log
+            GROUP BY failure_step, error_message
+            ORDER BY count DESC
+            LIMIT 50
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]

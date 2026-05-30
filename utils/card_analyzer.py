@@ -32,6 +32,45 @@ logger = get_logger(__name__)
 # Average weight of a single trading card in grams.
 _GRAMS_PER_CARD: float = 1.8
 
+# Keywords that indicate the listing is a non-TCG item (merchandise, storage,
+# display items) and should be skipped before card identification.
+# Note: "toploader" and "sleeve" are intentionally excluded because sellers
+# often bundle them with cards; filtering them would cause false negatives.
+NON_CARD_KEYWORDS: tuple[str, ...] = (
+    "peluche",
+    "plush",
+    "t-shirt",
+    "tshirt",
+    "classeur",
+    "binder",
+    "etb",
+    "elite trainer box",
+    "booster box",
+    "figure",
+    "playmat",
+    "deck box",
+    "deckbox",
+    "tin",
+    "album",
+    "display box",
+    "blister pack",
+    "promo pack",
+    "poster",
+    "sticker sheet",
+    "pin badge",
+    "statue",
+)
+
+def is_non_card_item(title: str, description: str | None = None) -> bool:
+    """Return True when *title* (or *description*) clearly indicates a non-TCG item.
+
+    Checks against :data:`NON_CARD_KEYWORDS`.  ``toploader`` and ``sleeve`` are
+    deliberately excluded so that card+accessory combo listings are not filtered.
+    """
+    combined = (title + " " + (description or "")).lower()
+    return any(kw in combined for kw in NON_CARD_KEYWORDS)
+
+
 # Title/description substrings that indicate the listing is trading cards.
 _CARD_KEYWORDS: tuple[str, ...] = (
     "pokemon",

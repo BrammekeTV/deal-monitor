@@ -47,7 +47,7 @@ _RARITY_KEYWORDS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\brainbow\s*rare\b", re.I), "Rainbow Rare"),
 ]
 
-_REVERSE_HOLO_RE = re.compile(r"\breverse\s*holo\b", re.I)
+_REVERSE_HOLO_RE = re.compile(r"\breverse\s*holo\b|\breverse\b|\bRH\b", re.I)
 _FIRST_EDITION_RE = re.compile(r"\b(1st\s*ed(?:ition)?|first\s*edition)\b", re.I)
 
 # ---------------------------------------------------------------------------
