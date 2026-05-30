@@ -542,6 +542,142 @@ def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
         prices["card_number"] = number_match.group(1)
 
 
+# ---------------------------------------------------------------------------
+# PSA detection helpers  (public so they can be used by the monitor cog)
+# ---------------------------------------------------------------------------
+
+# Compiled once for performance.
+_PSA_GRADE_RE = re.compile(r"\bPSA\s*(\d{1,2})\b", re.IGNORECASE)
+
+
+def contains_psa(text: str) -> bool:
+    """Return True if *text* contains the word "PSA" (case-insensitive)."""
+    return bool(re.search(r"\bPSA\b", text, re.IGNORECASE))
+
+
+def extract_psa_grade(text: str) -> int | None:
+    """Extract the PSA grade number from *text* (e.g. "PSA 9" → 9, "PSA10" → 10).
+
+    Returns the grade as an integer, or ``None`` when no grade can be parsed.
+    Only the *first* PSA grade token found is returned.
+    """
+    match = _PSA_GRADE_RE.search(text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# PSA listing-row helpers (used by _parse_psa_listing_price)
+# ---------------------------------------------------------------------------
+
+# Selectors tried (in order) to locate individual offer/article rows on a
+# Cardmarket product page.
+_ARTICLE_ROW_SELS = [
+    ".article-row",
+    "article.article-row",
+    "[class*='article-row']",
+]
+
+# Selectors tried (in order) to extract the offer price from a row.
+_ROW_PRICE_SELS = [
+    ".price-container",
+    ".col-offer-price",
+    ".col-price",
+]
+
+
+def _row_has_mint_condition(row: Any) -> bool:
+    """Return True when the listing row carries a Mint (MT) condition badge.
+
+    Tries three strategies:
+    1. A class containing ``condition-mt`` (e.g. ``badge-article-condition-mt``).
+    2. A ``title`` / ``data-original-title`` attribute equal to "Mint" or "MT".
+    3. A ``<span>`` / ``<a>`` / ``<abbr>`` whose *text* is exactly "MT".
+    """
+    for el in row.find_all(True):
+        classes = " ".join(el.get("class") or []).lower()
+        if "condition-mt" in classes:
+            return True
+        title = (el.get("title") or el.get("data-original-title") or "").strip().lower()
+        if title in ("mint", "mt"):
+            return True
+    # Fallback: any badge-like inline element whose text is "MT".
+    for el in row.find_all(["span", "a", "abbr"]):
+        if el.get_text(strip=True).upper() == "MT":
+            return True
+    return False
+
+
+def _extract_row_price(row: Any) -> float:
+    """Return the first positive price found in a Cardmarket listing row.
+
+    Uses *_ROW_PRICE_SELS* containers first, then falls back to scanning all
+    ``<span>`` elements for anything that looks like a currency amount.
+    """
+    for sel in _ROW_PRICE_SELS:
+        container = row.select_one(sel)
+        if container:
+            text = _extract_price_from_dd(container)
+            if text:
+                price = _parse_price_to_float(text)
+                if price > 0:
+                    return price
+    # Fallback: scan all spans for a price-like value (digit + currency sign).
+    for el in row.find_all("span"):
+        text = el.get_text(" ", strip=True)
+        if any(c.isdigit() for c in text) and any(s in text for s in ("€", "£", "$")):
+            price = _parse_price_to_float(_clean_price_string(text))
+            if price > 0:
+                return price
+    return 0.0
+
+
+def _parse_psa_listing_price(html: str, psa_grade: int) -> float | None:
+    """Scan Cardmarket listing rows for an MT-condition offer matching *psa_grade*.
+
+    For each article row on the product page the function checks:
+    1. The row has an MT (Mint) condition badge.
+    2. The row text contains a PSA grade that matches *psa_grade* exactly.
+
+    When both conditions are met the price from that row is returned and the
+    search stops.  Returns ``None`` when no match is found.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    rows: list[Any] = []
+    for sel in _ARTICLE_ROW_SELS:
+        rows = soup.select(sel)
+        if rows:
+            break
+
+    if not rows:
+        logger.debug("_parse_psa_listing_price: no article rows found in page HTML")
+        return None
+
+    for row in rows:
+        if not _row_has_mint_condition(row):
+            continue
+
+        row_text = row.get_text(" ", strip=True)
+        grade = extract_psa_grade(row_text)
+        if grade != psa_grade:
+            continue
+
+        price = _extract_row_price(row)
+        if price > 0:
+            logger.debug(
+                "_parse_psa_listing_price: found PSA %d MT listing at €%.2f",
+                psa_grade, price,
+            )
+            return price
+
+    logger.debug(
+        "_parse_psa_listing_price: no MT listing found for PSA %d", psa_grade
+    )
+    return None
+
+
 def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
     """Attempt to extract price metrics from embedded ``<script>`` JSON blobs."""
     prices: dict[str, Any] = {}
@@ -614,6 +750,9 @@ class CardmarketPriceData:
 
     # Dutch-seller availability
     dutch_sellers_available: bool = True   # False when sellerCountry=23 returns no results
+
+    # PSA-specific listing price (populated when a matching MT + PSA-grade offer is found)
+    psa_listing_price: float | None = None  # price from the first MT listing matching the PSA grade
 
     # Metadata
     set_name: str | None = None
@@ -760,6 +899,73 @@ class CardmarketScraper:
             set_name=prices_dict.get("set_name"),
             card_number=prices_dict.get("card_number"),
         )
+
+    # ------------------------------------------------------------------
+    # PSA listing price  (searches individual seller offers)
+    # ------------------------------------------------------------------
+
+    async def scrape_psa_listing_price(
+        self,
+        url: str,
+        psa_grade: int,
+    ) -> float | None:
+        """Fetch the Cardmarket product page and find the first MT listing with *psa_grade*.
+
+        Scans the individual seller offer rows on the product page for a row
+        that simultaneously has a Mint (MT) condition badge *and* a PSA grade
+        in its description that matches *psa_grade* exactly.
+
+        Returns the price (float > 0) when a match is found, or ``None`` when
+        no matching listing is available (caller should fall back to the
+        standard From price).
+        """
+        normalised_url = normalize_cardmarket_url(url)
+        logger.info(
+            "Cardmarket: searching for PSA %d MT listing at %s", psa_grade, normalised_url
+        )
+
+        context = await self._new_context()
+        page = await context.new_page()
+        await page.add_init_script(_STEALTH_SCRIPT)
+        try:
+            await page.goto(normalised_url, wait_until="load", timeout=30_000)
+            await self._accept_cookies(page)
+
+            # Wait for article/offer rows to be rendered.
+            for sel in _ARTICLE_ROW_SELS:
+                try:
+                    await page.wait_for_selector(sel, timeout=8_000, state="visible")
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            else:
+                # Rows not found via selectors – give JS a moment and continue.
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+
+            html = await page.content()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Cardmarket: failed to load page for PSA listing search: %s", exc
+            )
+            return None
+        finally:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        price = _parse_psa_listing_price(html, psa_grade)
+        if price:
+            logger.info(
+                "Cardmarket: PSA %d MT listing found at €%.2f for %s",
+                psa_grade, price, normalised_url,
+            )
+        else:
+            logger.info(
+                "Cardmarket: no PSA %d MT listing found at %s",
+                psa_grade, normalised_url,
+            )
+        return price
 
     # ------------------------------------------------------------------
     # Legacy search-based API (kept for backwards compatibility)
