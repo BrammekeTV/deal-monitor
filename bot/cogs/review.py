@@ -545,25 +545,28 @@ class ReviewCog(commands.Cog, name="Review"):
             )
 
         # ── Confirm to the user ───────────────────────────────────────────
-        confirm_lines = [
-            f"✅ **Correction accepted!** The mapping has been saved.",
-            f"**Product:** {cm_data.product_name or 'Unknown'}",
-            f"**Corrected URL:** {normalised_url}",
-        ]
+        result_embed = build_review_resolved_embed(
+            listing_title=listing_title,
+            listing_url=listing_url,
+            listing_price=listing_price,
+            listing_currency=listing_currency,
+            cm_data=cm_data,
+            comparison=comparison,
+            resolved_by=submitted_by.display_name,
+        )
         if learned_prefix is not None:
-            confirm_lines.append(
-                f"🧠 **Learned pattern:** Set `{fingerprint.set_code}` uses prefix "
-                f"`{learned_prefix}` before collector numbers. "
-                "Future cards from this set will use this rule automatically."
-            )
-        if comparison.is_profitable and listing_price > 0:
-            confirm_lines.append(
-                f"🔥 **Profit opportunity:** Vinted €{comparison.vinted_price:.2f} "
-                f"vs Cardmarket €{comparison.cardmarket_from_price:.2f}"
+            result_embed.add_field(
+                name="🧠 Learned Pattern",
+                value=(
+                    f"Set `{fingerprint.set_code}` uses prefix `{learned_prefix}` "
+                    "before collector numbers. "
+                    "Future cards from this set will use this rule automatically."
+                ),
+                inline=False,
             )
 
         try:
-            await reply_message.reply("\n".join(confirm_lines), mention_author=False)
+            await reply_message.reply(embed=result_embed, mention_author=False)
         except discord.HTTPException as exc:
             logger.error("ReviewCog: failed to post correction confirmation: %s", exc)
 
