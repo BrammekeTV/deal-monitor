@@ -30,7 +30,7 @@ class CheckCardCog(commands.Cog, name="check_card"):
 
     def _get_monitor(self):
         """Return the MonitorCog instance so we can reuse its TCGGO client."""
-        return self.bot.cogs.get("monitor")
+        return self.bot.cogs.get("Monitor")
 
     # ------------------------------------------------------------------
     # Command
@@ -67,7 +67,7 @@ class CheckCardCog(commands.Cog, name="check_card"):
             if is_url:
                 result = await tcggo.lookup_by_url(http, query)
             else:
-                result = await tcggo.search_card(http, query)
+                result = await tcggo.search_card(http, listing_title=query)
         except Exception as exc:  # noqa: BLE001
             logger.warning("check_card: TCGGO lookup failed for %r: %s", query, exc)
 
