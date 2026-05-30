@@ -38,73 +38,11 @@ search_terms:
   - "Pokemon"
 
 # ---------------------------------------------------------------------------
-# Price lookup (live market comparison)
-# ---------------------------------------------------------------------------
-price_lookup:
-  # Maximum age of cached price lookups (seconds) before re-fetching.
-  cache_ttl: 3600
-
-  # eBay Finding API – free App ID from https://developer.ebay.com/
-  # Looks up recently *sold* listings so you get real transaction prices.
-  # Set EBAY_APP_ID in your .env to enable.
-  ebay:
-    enabled: true
-    # Number of recent sold listings to average.
-    sample_size: 10
-    # eBay global site ID: 0=US, 3=UK, 77=DE, 71=FR, 71=NL, 101=IT, 186=ES
-    site_id: 3   # UK – change to match your country
-
-  # Cardmarket – prices are fetched via the cardmarket-api-tcg RapidAPI (set
-  # RAPIDAPI_KEY / RAPIDAPI_HOST / TCGGO_API_URL for full access).
-  # When scraping_fallback is true, the Playwright scraper is used when the API
-  # cannot identify a card.  Requires playwright to be installed.
-  cardmarket:
-    enabled: true
-    # Number of product rows to sample for average price (only used by scraper fallback).
-    sample_size: 5
-    # Set to true to enable the legacy Playwright scraper as a fallback when
-    # TCGGO returns no result.  Requires playwright + chromium to be installed.
-    scraping_fallback: true
-
-  # TCGGO API via RapidAPI – primary source for Cardmarket pricing.
-  # Set RAPIDAPI_KEY, RAPIDAPI_HOST (cardmarket-api-tcg.p.rapidapi.com), and
-  # TCGGO_API_URL (https://cardmarket-api-tcg.p.rapidapi.com) in your .env to enable.
-  tcggo:
-    enabled: true
-
-# ---------------------------------------------------------------------------
 # Deal detection
 # ---------------------------------------------------------------------------
 deal:
   # Maximum price (EUR) to consider a listing at all.
   max_price: 500.0
-
-  # Minimum deal score (0-100) to trigger a Discord post.
-  min_score: 30
-
-  # Percentage below estimated market value to flag as a good deal.
-  # E.g. 20 means 20 % below market value earns extra score points.
-  discount_threshold_pct: 20
-
-  # Keywords that raise the deal score (case-insensitive).
-  positive_keywords:
-    - "sealed"
-    - "mint"
-    - "PSA"
-    - "graded"
-    - "complete set"
-    - "booster box"
-    - "ETB"
-    - "elite trainer"
-    - "first edition"
-    - "1st edition"
-    - "holo"
-    - "charizard"
-    - "pikachu"
-    - "umbreon"
-    - "espeon"
-    - "vmax"
-    - "vstar"
 
   # Keywords that disqualify a listing entirely (case-insensitive).
   blacklist_keywords:
@@ -115,50 +53,33 @@ deal:
     - "lot of stickers"
 
   # Minimum seller star rating (Vinted shows 1–5).  Set to 0 to disable.
-  min_seller_rating: 3.0
+  min_seller_rating: 0.0
 
-  # Treat listings with multiple items as a bundle bonus.
-  bundle_keywords:
-    - "lot"
-    - "bundle"
-    - "collection"
-    - "bulk"
-    - "set"
+# ---------------------------------------------------------------------------
+# Cardmarket
+# ---------------------------------------------------------------------------
+cardmarket:
+  # Set to false to disable Cardmarket lookups entirely.
+  enabled: true
 
-  # When true, listings with no live market data (Low confidence) are still
-  # posted to Discord.  When false (default) they are silently discarded.
-  allow_low_confidence: false
+  # Fuzzy match confidence threshold (0–100) for learning database lookups.
+  # Matches below this score are sent to the review queue.
+  fuzzy_threshold: 80.0
 
 # ---------------------------------------------------------------------------
 # Discord
 # ---------------------------------------------------------------------------
 discord:
-  # Discord channel ID to post deals into (can also be set via DISCORD_CHANNEL_ID env var).
+  # Discord channel ID to post profit alerts (can also be set via DISCORD_CHANNEL_ID env var).
   channel_id: 0
 
-  # Discord channel ID for community review of unidentified listings.
-  # Right-click the channel → "Copy Channel ID" (Developer Mode must be on).
+  # Discord channel ID for community review of unidentified listings (e.g. #card-review).
   # Can also be set via DISCORD_REVIEW_CHANNEL_ID env var.
   review_channel_id: 0
 
-  # Colour (hex) used for "good deal" embeds.
+  # Discord channel ID for error and scraping failure reports.
+  # Can also be set via DISCORD_LOG_CHANNEL_ID env var.
+  log_channel_id: 0
+
+  # Colour (hex) used for embed accents.
   embed_colour: 0x00FF7F
-
-  # Whether to also post via webhook (DISCORD_WEBHOOK_URL must be set in .env).
-  use_webhook: false
-
-# ---------------------------------------------------------------------------
-# Estimated market values
-# Used when no live price source is configured.
-# Keys are case-insensitive substrings matched against the listing title.
-# ---------------------------------------------------------------------------
-market_values:
-  "booster box scarlet violet": 140.0
-  "booster box": 120.0
-  "etb": 55.0
-  "elite trainer box": 55.0
-  "psa 10 charizard": 300.0
-  "psa 10": 150.0
-  "psa 9": 80.0
-  "151": 45.0
-  "default": 30.0

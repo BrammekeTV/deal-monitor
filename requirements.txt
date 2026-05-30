@@ -20,9 +20,10 @@ python-dotenv>=1.0.0
 aiohttp>=3.9.0
 
 # Browser automation for Cardmarket scraping (Cloudflare bypass)
-# Only required when cardmarket.scraping_fallback is enabled in config/config.yaml
 playwright>=1.40.0
 
 # HTML parsing for Cardmarket product pages
-# Only required when cardmarket.scraping_fallback is enabled in config/config.yaml
 beautifulsoup4>=4.12.0
+
+# Fuzzy string matching for learning database lookup
+rapidfuzz>=3.0.0

@@ -59,11 +59,14 @@ class Settings:
             os.getenv("DISCORD_REVIEW_CHANNEL_ID")
             or _deep_get(raw, "discord", "review_channel_id", default=0)
         )
+        self.discord_log_channel_id: int = int(
+            os.getenv("DISCORD_LOG_CHANNEL_ID")
+            or _deep_get(raw, "discord", "log_channel_id", default=0)
+        )
         self.discord_guild_id: int = int(
             os.getenv("DISCORD_GUILD_ID")
             or _deep_get(raw, "discord", "guild_id", default=0)
         )
-        self.discord_webhook_url: str | None = os.getenv("DISCORD_WEBHOOK_URL")
 
         # --- Scraper ---
         s = raw.get("scraper", {})
@@ -84,55 +87,19 @@ class Settings:
         # --- Deal detection ---
         d = raw.get("deal", {})
         self.max_price: float = float(d.get("max_price", 500.0))
-        self.min_score: int = int(d.get("min_score", 30))
-        self.discount_threshold_pct: float = float(d.get("discount_threshold_pct", 20))
-        self.positive_keywords: list[str] = [
-            kw.lower() for kw in d.get("positive_keywords", [])
-        ]
         self.blacklist_keywords: list[str] = [
             kw.lower() for kw in d.get("blacklist_keywords", [])
         ]
         self.min_seller_rating: float = float(d.get("min_seller_rating", 0.0))
-        self.bundle_keywords: list[str] = [
-            kw.lower() for kw in d.get("bundle_keywords", [])
-        ]
-        self.allow_low_confidence: bool = bool(d.get("allow_low_confidence", False))
 
-        # --- Market values (title substring → float EUR) ---
-        self.market_values: dict[str, float] = {
-            k.lower(): float(v) for k, v in raw.get("market_values", {}).items()
-        }
-
-        # --- Price lookup ---
-        pl = raw.get("price_lookup", {})
-        self.price_lookup_cache_ttl: int = int(pl.get("cache_ttl", 3600))
-
-        ebay_cfg = pl.get("ebay", {})
-        self.ebay_enabled: bool = bool(ebay_cfg.get("enabled", True))
-        self.ebay_sample_size: int = int(ebay_cfg.get("sample_size", 10))
-        self.ebay_site_id: int = int(ebay_cfg.get("site_id", 3))
-        self.ebay_app_id: str | None = os.getenv("EBAY_APP_ID")
-
-        cm_cfg = pl.get("cardmarket", {})
-        self.cardmarket_enabled: bool = bool(cm_cfg.get("enabled", True))
-        self.cardmarket_sample_size: int = int(cm_cfg.get("sample_size", 5))
-        # When True, fall back to Playwright scraping when TCGGO has no result.
-        self.cardmarket_scraping_fallback: bool = bool(
-            cm_cfg.get("scraping_fallback", False)
-        )
-
-        tcggo_cfg = pl.get("tcggo", {})
-        self.tcggo_enabled: bool = bool(tcggo_cfg.get("enabled", True))
-
-        # --- TCGGO / RapidAPI credentials (always from env) ---
-        self.rapidapi_key: str | None = os.getenv("RAPIDAPI_KEY")
-        self.rapidapi_host: str | None = os.getenv("RAPIDAPI_HOST")
-        self.tcggo_api_url: str | None = os.getenv("TCGGO_API_URL")
+        # --- Cardmarket ---
+        cm = raw.get("cardmarket", {})
+        self.cardmarket_enabled: bool = bool(cm.get("enabled", True))
+        self.cardmarket_fuzzy_threshold: float = float(cm.get("fuzzy_threshold", 80.0))
 
         # --- Discord presentation ---
         disc = raw.get("discord", {})
         self.embed_colour: int = int(disc.get("embed_colour", 0x00FF7F))
-        self.use_webhook: bool = bool(disc.get("use_webhook", False))
 
     def reload(self) -> None:
         """Reload settings from disk (useful for hot-reloading config)."""

@@ -1,30 +1,137 @@
 """
 database/db.py
 ~~~~~~~~~~~~~~
-Async SQLite helper using aiosqlite.
+Async SQLite database for the deal-monitor bot.
 
-All public methods are coroutines so they can be awaited inside the async
-bot event-loop without blocking.
+Tables:
+  seen_listings       – track processed Vinted listing IDs (deduplication)
+  card_mappings       – learning database: Vinted title/fingerprint → Cardmarket URL
+  review_queue        – listings pending manual Discord review
+  error_log           – structured Cardmarket scraping / processing errors
+  filter_settings     – runtime-adjustable bot settings
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-_SCHEMA_PATH = Path(__file__).parent / "schema.sql"
-_DEFAULT_DB_PATH = Path("data") / "deals.db"
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+_SCHEMA = """
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS seen_listings (
+    listing_id   TEXT PRIMARY KEY,
+    title        TEXT,
+    url          TEXT,
+    price        REAL,
+    currency     TEXT,
+    seller_name  TEXT,
+    fingerprint  TEXT,
+    processed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS card_mappings (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Original Vinted data
+    vinted_title             TEXT    NOT NULL,
+    vinted_url               TEXT,
+    vinted_description       TEXT,
+    seller_name              TEXT,
+    category                 TEXT,
+    price                    REAL,
+    -- Extracted card data
+    card_name                TEXT,
+    set_name                 TEXT,
+    set_code                 TEXT,
+    collector_number         TEXT,
+    rarity                   TEXT,
+    language                 TEXT,
+    edition                  TEXT,
+    fingerprint              TEXT,
+    -- Cardmarket data
+    cardmarket_url           TEXT    NOT NULL,
+    cardmarket_product_id    TEXT,
+    cardmarket_product_name  TEXT,
+    -- Matching metadata
+    tokens                   TEXT,       -- JSON list of keywords
+    confidence               REAL    DEFAULT 1.0,
+    validated_by             TEXT,       -- 'auto' | 'user:username'
+    date_added               TEXT,
+    date_updated             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_card_mappings_title ON card_mappings(vinted_title);
+CREATE INDEX IF NOT EXISTS idx_card_mappings_fingerprint ON card_mappings(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_card_mappings_card_name ON card_mappings(card_name);
+CREATE INDEX IF NOT EXISTS idx_card_mappings_set_code ON card_mappings(set_code);
+CREATE INDEX IF NOT EXISTS idx_card_mappings_collector_number ON card_mappings(collector_number);
+
+CREATE TABLE IF NOT EXISTS review_queue (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id              TEXT    NOT NULL UNIQUE,
+    title                   TEXT    NOT NULL,
+    url                     TEXT    NOT NULL,
+    price                   REAL,
+    currency                TEXT,
+    seller_name             TEXT,
+    seller_id               TEXT,
+    description             TEXT,
+    images                  TEXT,   -- JSON
+    fingerprint             TEXT,
+    failure_reason          TEXT,
+    matching_attempts       TEXT,   -- JSON
+    discord_message_id      TEXT,
+    discord_channel_id      TEXT,
+    status                  TEXT    DEFAULT 'pending',  -- pending | resolved | expired
+    created_at              TEXT,
+    resolved_at             TEXT,
+    resolved_cardmarket_url TEXT,
+    resolved_by             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
+CREATE INDEX IF NOT EXISTS idx_review_queue_discord_msg ON review_queue(discord_message_id);
+
+CREATE TABLE IF NOT EXISTS error_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id     TEXT,
+    listing_title  TEXT,
+    listing_url    TEXT,
+    cardmarket_url TEXT,
+    failure_step   TEXT,
+    http_status    INTEGER,
+    error_message  TEXT,
+    stack_trace    TEXT,
+    created_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS filter_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+"""
 
 
 class Database:
-    """Thin async wrapper around an aiosqlite connection."""
+    """Async SQLite database wrapper."""
 
-    def __init__(self, db_path: Path | str | None = None) -> None:
-        self._path = Path(db_path) if db_path else _DEFAULT_DB_PATH
+    def __init__(self, db_path: Path | str = "data/deals.db") -> None:
+        self._path = Path(db_path)
         self._conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
 
@@ -33,34 +140,29 @@ class Database:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        """Open the database and run the schema migrations."""
+        """Open the database and apply the schema."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self._path)
+        self._conn = await aiosqlite.connect(str(self._path))
         self._conn.row_factory = aiosqlite.Row
-        # Enable WAL mode for better concurrent read performance.
-        await self._conn.execute("PRAGMA journal_mode=WAL;")
-        await self._conn.execute("PRAGMA foreign_keys=ON;")
-        await self._apply_schema()
+        # Apply schema (idempotent – uses CREATE TABLE IF NOT EXISTS).
+        await self._conn.executescript(_SCHEMA)
+        await self._conn.commit()
+        logger.info("Database opened: %s", self._path)
 
     async def close(self) -> None:
+        """Close the database connection."""
         if self._conn:
             await self._conn.close()
             self._conn = None
 
-    async def _apply_schema(self) -> None:
-        schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
-        async with self._lock:
-            await self._conn.executescript(schema_sql)  # type: ignore[union-attr]
-            await self._conn.commit()  # type: ignore[union-attr]
-
     # ------------------------------------------------------------------
-    # Listings
+    # Seen listings (deduplication)
     # ------------------------------------------------------------------
 
     async def is_seen(self, listing_id: str) -> bool:
-        """Return True if the listing has already been recorded."""
+        """Return True if this listing ID has already been processed."""
         async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT 1 FROM seen_listings WHERE id = ?", (listing_id,)
+            "SELECT 1 FROM seen_listings WHERE listing_id = ?", (listing_id,)
         ) as cur:
             return await cur.fetchone() is not None
 
@@ -71,324 +173,247 @@ class Database:
         title: str,
         url: str,
         price: float,
-        seller: str | None,
-        currency: str = "EUR",
-        score: int = 0,
-        posted_to_discord: bool = False,
-        terms: list[str] | None = None,
+        currency: str,
+        seller_name: str | None,
+        fingerprint: str | None,
     ) -> None:
-        """Insert a new listing into the seen table."""
+        """Record that a listing has been processed."""
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
             await self._conn.execute(  # type: ignore[union-attr]
                 """
                 INSERT OR IGNORE INTO seen_listings
-                    (id, title, url, price, seller, currency, posted_at, score, posted_to_discord)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (listing_id, title, url, price, currency, seller_name,
+                     fingerprint, processed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (listing_id, title, url, price, currency, seller_name,
+                 fingerprint, now),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    # ------------------------------------------------------------------
+    # Card mappings (learning database)
+    # ------------------------------------------------------------------
+
+    async def get_all_mappings(self) -> list[dict[str, Any]]:
+        """Return all card mapping records."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM card_mappings ORDER BY confidence DESC, date_added DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def add_mapping(
+        self,
+        *,
+        vinted_title: str,
+        vinted_url: str | None = None,
+        vinted_description: str | None = None,
+        seller_name: str | None = None,
+        category: str | None = None,
+        price: float | None = None,
+        card_name: str | None = None,
+        set_name: str | None = None,
+        set_code: str | None = None,
+        collector_number: str | None = None,
+        rarity: str | None = None,
+        language: str | None = None,
+        edition: str | None = None,
+        fingerprint: str | None = None,
+        cardmarket_url: str,
+        cardmarket_product_id: str | None = None,
+        cardmarket_product_name: str | None = None,
+        tokens: list[str] | None = None,
+        confidence: float = 1.0,
+        validated_by: str = "auto",
+    ) -> int:
+        """Insert a new card mapping.  Returns the new row ID."""
+        now = datetime.now(timezone.utc).isoformat()
+        tokens_json = json.dumps(tokens or [])
+        async with self._lock:
+            cur = await self._conn.execute(  # type: ignore[union-attr]
+                """
+                INSERT INTO card_mappings
+                    (vinted_title, vinted_url, vinted_description, seller_name,
+                     category, price, card_name, set_name, set_code,
+                     collector_number, rarity, language, edition, fingerprint,
+                     cardmarket_url, cardmarket_product_id, cardmarket_product_name,
+                     tokens, confidence, validated_by, date_added, date_updated)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    listing_id,
-                    title,
-                    url,
-                    price,
-                    seller,
-                    currency,
-                    now,
-                    score,
-                    int(posted_to_discord),
+                    vinted_title, vinted_url, vinted_description, seller_name,
+                    category, price, card_name, set_name, set_code,
+                    collector_number, rarity, language, edition, fingerprint,
+                    cardmarket_url, cardmarket_product_id, cardmarket_product_name,
+                    tokens_json, confidence, validated_by, now, now,
                 ),
             )
-            if terms:
-                await self._conn.executemany(  # type: ignore[union-attr]
-                    "INSERT OR IGNORE INTO listing_terms (listing_id, term) VALUES (?, ?)",
-                    [(listing_id, t) for t in terms],
-                )
             await self._conn.commit()  # type: ignore[union-attr]
+            return cur.lastrowid  # type: ignore[return-value]
 
-    async def mark_posted(self, listing_id: str) -> None:
-        """Flag a listing as having been posted to Discord."""
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE seen_listings SET posted_to_discord = 1 WHERE id = ?",
-                (listing_id,),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    async def get_recent_listings(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return the most recently seen listings."""
-        async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT * FROM seen_listings ORDER BY posted_at DESC LIMIT ?", (limit,)
-        ) as cur:
-            rows = await cur.fetchall()
-            return [dict(row) for row in rows]
-
-    async def prune_old(self, days: int = 30) -> int:
-        """Remove listings older than *days* days.  Returns deleted row count."""
+    async def delete_mapping(self, mapping_id: int) -> bool:
+        """Delete a mapping by ID.  Returns True if a row was deleted."""
         async with self._lock:
             cur = await self._conn.execute(  # type: ignore[union-attr]
-                """
-                DELETE FROM seen_listings
-                WHERE posted_at < datetime('now', ? || ' days')
-                """,
-                (f"-{days}",),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-            return cur.rowcount
-
-    # ------------------------------------------------------------------
-    # Filter overrides (set via slash commands)
-    # ------------------------------------------------------------------
-
-    async def set_filter(self, key: str, value: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                """
-                INSERT INTO filter_overrides (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-                """,
-                (key, value, now),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    async def get_filter(self, key: str) -> str | None:
-        async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT value FROM filter_overrides WHERE key = ?", (key,)
-        ) as cur:
-            row = await cur.fetchone()
-            return row["value"] if row else None
-
-    async def get_all_filters(self) -> dict[str, str]:
-        async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT key, value FROM filter_overrides"
-        ) as cur:
-            rows = await cur.fetchall()
-            return {row["key"]: row["value"] for row in rows}
-
-    async def delete_filter(self, key: str) -> bool:
-        async with self._lock:
-            cur = await self._conn.execute(  # type: ignore[union-attr]
-                "DELETE FROM filter_overrides WHERE key = ?", (key,)
+                "DELETE FROM card_mappings WHERE id = ?", (mapping_id,)
             )
             await self._conn.commit()  # type: ignore[union-attr]
             return cur.rowcount > 0
 
     # ------------------------------------------------------------------
-    # Unidentified listings (community review queue)
+    # Review queue
     # ------------------------------------------------------------------
 
-    async def add_unidentified_listing(
+    async def add_review_item(
         self,
         *,
         listing_id: str,
         title: str,
         url: str,
-        price: float,
-        currency: str = "EUR",
+        price: float | None = None,
+        currency: str | None = None,
+        seller_name: str | None = None,
+        seller_id: str | None = None,
         description: str | None = None,
         images: list[str] | None = None,
-        confidence: str = "Low",
+        fingerprint: str | None = None,
         failure_reason: str | None = None,
-        ocr_text: str | None = None,
-        review_message_id: str | None = None,
-    ) -> None:
-        """Insert an unidentified listing into the review queue."""
-        import json
-
+        matching_attempts: list[dict] | None = None,
+    ) -> int:
+        """Insert a listing into the review queue.  Returns the row ID."""
         now = datetime.now(timezone.utc).isoformat()
         images_json = json.dumps(images or [])
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                """
-                INSERT OR IGNORE INTO unidentified_listings
-                    (id, title, url, price, currency, description, images,
-                     confidence, failure_reason, ocr_text, review_message_id,
-                     status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                """,
-                (
-                    listing_id,
-                    title,
-                    url,
-                    price,
-                    currency,
-                    description,
-                    images_json,
-                    confidence,
-                    failure_reason,
-                    ocr_text,
-                    review_message_id,
-                    now,
-                    now,
-                ),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    async def set_review_message_id(self, listing_id: str, message_id: str) -> None:
-        """Store the Discord review message ID for an unidentified listing."""
-        now = datetime.now(timezone.utc).isoformat()
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE unidentified_listings SET review_message_id = ?, updated_at = ? WHERE id = ?",
-                (message_id, now, listing_id),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    async def get_unidentified_listing(self, listing_id: str) -> dict[str, Any] | None:
-        """Return an unidentified listing by its listing ID."""
-        async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT * FROM unidentified_listings WHERE id = ?", (listing_id,)
-        ) as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else None
-
-    async def get_unidentified_by_message_id(
-        self, message_id: str
-    ) -> dict[str, Any] | None:
-        """Return the unidentified listing associated with a Discord message ID."""
-        async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT * FROM unidentified_listings WHERE review_message_id = ?",
-            (message_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else None
-
-    async def update_unidentified_status(self, listing_id: str, status: str) -> None:
-        """Update the review status of an unidentified listing."""
-        now = datetime.now(timezone.utc).isoformat()
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE unidentified_listings SET status = ?, updated_at = ? WHERE id = ?",
-                (status, now, listing_id),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    # ------------------------------------------------------------------
-    # Reference submissions
-    # ------------------------------------------------------------------
-
-    async def add_reference_submission(
-        self,
-        *,
-        listing_id: str,
-        submitted_by: str,
-        reference_url: str,
-        platform: str | None = None,
-        market_value: float | None = None,
-    ) -> int:
-        """Insert a new reference URL submission.  Returns the row ID."""
-        now = datetime.now(timezone.utc).isoformat()
+        attempts_json = json.dumps(matching_attempts or [])
         async with self._lock:
             cur = await self._conn.execute(  # type: ignore[union-attr]
                 """
-                INSERT INTO reference_submissions
-                    (listing_id, submitted_by, reference_url, platform,
-                     market_value, validated, created_at)
-                VALUES (?, ?, ?, ?, ?, 0, ?)
+                INSERT OR IGNORE INTO review_queue
+                    (listing_id, title, url, price, currency, seller_name,
+                     seller_id, description, images, fingerprint,
+                     failure_reason, matching_attempts, status, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)
                 """,
-                (listing_id, submitted_by, reference_url, platform, market_value, now),
+                (
+                    listing_id, title, url, price, currency, seller_name,
+                    seller_id, description, images_json, fingerprint,
+                    failure_reason, attempts_json, now,
+                ),
             )
             await self._conn.commit()  # type: ignore[union-attr]
             return cur.lastrowid  # type: ignore[return-value]
 
-    async def set_confirm_message_id(self, ref_id: int, message_id: str) -> None:
-        """Store the Discord confirmation message ID for a reference submission."""
+    async def set_review_discord_message(
+        self, listing_id: str, message_id: str, channel_id: str
+    ) -> None:
+        """Store the Discord message ID for a review queue item."""
         async with self._lock:
             await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE reference_submissions SET confirm_message_id = ? WHERE id = ?",
-                (message_id, ref_id),
+                """UPDATE review_queue
+                   SET discord_message_id = ?, discord_channel_id = ?
+                   WHERE listing_id = ?""",
+                (message_id, channel_id, listing_id),
             )
             await self._conn.commit()  # type: ignore[union-attr]
 
-    async def get_reference_by_confirm_message(
+    async def get_review_item_by_message(
         self, message_id: str
     ) -> dict[str, Any] | None:
-        """Return the reference submission linked to a confirmation message."""
+        """Return a review queue item by its Discord message ID."""
         async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT * FROM reference_submissions WHERE confirm_message_id = ?",
+            "SELECT * FROM review_queue WHERE discord_message_id = ?",
             (message_id,),
         ) as cur:
             row = await cur.fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None
 
-    async def update_reference_validated(self, ref_id: int, validated: int) -> None:
-        """Set validated flag: 1 = approved, -1 = rejected, 0 = pending."""
-        async with self._lock:
-            await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE reference_submissions SET validated = ? WHERE id = ?",
-                (validated, ref_id),
-            )
-            await self._conn.commit()  # type: ignore[union-attr]
-
-    async def update_reference_market_value(
-        self, ref_id: int, market_value: float
+    async def resolve_review_item(
+        self,
+        listing_id: str,
+        *,
+        cardmarket_url: str,
+        resolved_by: str,
     ) -> None:
-        """Store the market value extracted for a reference submission."""
+        """Mark a review queue item as resolved."""
+        now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
             await self._conn.execute(  # type: ignore[union-attr]
-                "UPDATE reference_submissions SET market_value = ? WHERE id = ?",
-                (market_value, ref_id),
+                """UPDATE review_queue
+                   SET status = 'resolved', resolved_at = ?,
+                       resolved_cardmarket_url = ?, resolved_by = ?
+                   WHERE listing_id = ?""",
+                (now, cardmarket_url, resolved_by, listing_id),
             )
             await self._conn.commit()  # type: ignore[union-attr]
 
+    async def get_pending_review_items(self) -> list[dict[str, Any]]:
+        """Return all pending review queue items."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM review_queue WHERE status = 'pending' ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
-    # Identification memory (learning system)
+    # Error log
     # ------------------------------------------------------------------
 
-    async def add_to_memory(
+    async def log_error(
         self,
         *,
-        title_pattern: str,
-        card_name: str,
-        card_set: str | None = None,
-        card_number: str | None = None,
-        language: str | None = None,
-        reference_url: str | None = None,
-        market_value: float | None = None,
-        source_listing_id: str | None = None,
-        approved_by: str,
+        listing_id: str | None = None,
+        listing_title: str | None = None,
+        listing_url: str | None = None,
+        cardmarket_url: str | None = None,
+        failure_step: str | None = None,
+        http_status: int | None = None,
+        error_message: str | None = None,
+        stack_trace: str | None = None,
     ) -> None:
-        """Store a human-approved identification in memory for future matching."""
+        """Persist a structured processing error."""
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
             await self._conn.execute(  # type: ignore[union-attr]
                 """
-                INSERT INTO identification_memory
-                    (title_pattern, card_name, card_set, card_number, language,
-                     reference_url, market_value, source_listing_id, approved_by,
+                INSERT INTO error_log
+                    (listing_id, listing_title, listing_url, cardmarket_url,
+                     failure_step, http_status, error_message, stack_trace,
                      created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    title_pattern.lower().strip(),
-                    card_name,
-                    card_set,
-                    card_number,
-                    language,
-                    reference_url,
-                    market_value,
-                    source_listing_id,
-                    approved_by,
-                    now,
+                    listing_id, listing_title, listing_url, cardmarket_url,
+                    failure_step, http_status, error_message, stack_trace, now,
                 ),
             )
             await self._conn.commit()  # type: ignore[union-attr]
 
-    async def find_in_memory(self, title: str) -> list[dict[str, Any]]:
-        """Return memory entries whose title_pattern appears in *title* or vice versa."""
-        title_lower = title.lower().strip()
+    # ------------------------------------------------------------------
+    # Filter settings (runtime config overrides)
+    # ------------------------------------------------------------------
+
+    async def get_all_filters(self) -> dict[str, str]:
+        """Return all stored filter overrides as a key→value dict."""
         async with self._conn.execute(  # type: ignore[union-attr]
-            "SELECT * FROM identification_memory ORDER BY created_at DESC"
+            "SELECT key, value FROM filter_settings"
         ) as cur:
             rows = await cur.fetchall()
+        return {r["key"]: r["value"] for r in rows}
 
-        matches: list[dict[str, Any]] = []
-        for row in rows:
-            pattern = (row["title_pattern"] or "").lower().strip()
-            if not pattern:
-                continue
-            # Match if the stored pattern is a substring of the new title or vice versa.
-            if pattern in title_lower or title_lower in pattern:
-                matches.append(dict(row))
-        return matches
+    async def set_filter(self, key: str, value: str) -> None:
+        """Upsert a filter override."""
+        async with self._lock:
+            await self._conn.execute(  # type: ignore[union-attr]
+                "INSERT OR REPLACE INTO filter_settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    async def delete_filter(self, key: str) -> None:
+        """Remove a filter override."""
+        async with self._lock:
+            await self._conn.execute(  # type: ignore[union-attr]
+                "DELETE FROM filter_settings WHERE key = ?", (key,)
+            )
+            await self._conn.commit()  # type: ignore[union-attr]

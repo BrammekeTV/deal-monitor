@@ -3,503 +3,495 @@ bot/cogs/monitor.py
 ~~~~~~~~~~~~~~~~~~~
 Background monitoring cog.
 
-Every cycle (random interval between interval_min and interval_max):
-  1. Iterate over all configured search terms.
-  2. For each term, call VintedScraper.search().
-  3. Score each listing with DealScorer.
-  4. Skip listings already in the database.
-  5. Post qualifying listings as Discord embeds.
-  6. Mark listings as seen in the database.
+Every cycle (random interval between interval_min and interval_max seconds):
+  1. For each configured search term, call VintedScraper.search().
+  2. For each new listing:
+     a. Check if already processed – skip if seen.
+     b. Extract a card fingerprint from the title.
+     c. Look up a Cardmarket product URL via CardmarketResolver:
+        - DB lookup (learned mapping)
+        - Constructed URL from fingerprint
+        - If neither works → send to review queue
+     d. Scrape the Cardmarket product page.
+     e. Compare Vinted price against Cardmarket From price.
+     f. If profitable → send profit alert to deals channel.
+     g. If not profitable → skip silently.
+     h. Mark listing as seen.
+  3. On Cardmarket scraping error → log to error channel, mark seen, continue.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
+import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
-import aiohttp
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from playwright.async_api import async_playwright
 
 from config.settings import settings
 from database.db import Database
+from scraper.cardmarket import CardmarketScrapeError, CardmarketScraper
 from scraper.vinted import VintedScraper
-from utils.card_analyzer import CardAnalyzer
-from utils.deal_scorer import DealScorer
-from utils.embed_builder import build_listing_embed
+from services.card_identifier import identify_card
+from services.cardmarket_resolver import CardmarketResolver
+from services.price_comparison import compare_prices
+from utils.embed_builder import (
+    build_error_embed,
+    build_profit_alert_embed,
+    build_status_embed,
+)
 from utils.logger import get_logger
-from utils.price_lookup import best_market_value, lookup_prices
 
 if TYPE_CHECKING:
-    from bot.cogs.review import ReviewCog
-    from playwright.async_api import Browser
     from scraper.base import Listing
 
 logger = get_logger(__name__)
 
 
 class MonitorCog(commands.Cog, name="Monitor"):
-    """Background task that polls Vinted and posts deals to Discord."""
+    """Background Vinted monitoring with Cardmarket price comparison."""
 
     def __init__(self, bot: commands.Bot, db: Database) -> None:
         self.bot = bot
         self.db = db
-        self.scraper = VintedScraper()
-        self.scorer = DealScorer()
-        self.card_analyzer = CardAnalyzer()
 
-        # Runtime statistics (exposed to the status slash command).
-        self.listings_checked: int = 0
-        self.listings_posted: int = 0
-        self.last_run: datetime | None = None
-        self.next_run: datetime | None = None
+        # Run-time stats
+        self._listings_checked = 0
+        self._listings_profitable = 0
+        self._listings_reviewed = 0
+        self._last_run: datetime | None = None
+        self._next_run: datetime | None = None
 
-        # aiohttp session for webhook delivery.
-        self._http: aiohttp.ClientSession | None = None
-
-        # TCGGO client for Cardmarket API lookups.
-        self._tcggo_client = None
-
-        # Playwright browser for Cardmarket scraper fallback.
+        # Services (initialised in cog_load)
+        self._vinted: VintedScraper | None = None
+        self._cardmarket: CardmarketScraper | None = None
+        self._resolver: CardmarketResolver | None = None
         self._playwright = None
-        self._browser: Browser | None = None
+        self._browser = None
+
+        # Background task handle
+        self._task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
-    # Cog lifecycle
+    # Lifecycle
     # ------------------------------------------------------------------
 
     async def cog_load(self) -> None:
-        logger.info("MonitorCog loading – starting scraper and background task")
-        await self.scraper.setup()
-        self._http = aiohttp.ClientSession()
+        """Start the monitoring loop when the cog is loaded."""
+        # Initialise Vinted scraper.
+        self._vinted = VintedScraper()
+        await self._vinted.setup()
 
-        # Initialise the TCGGO client (used for all Cardmarket price lookups).
-        if settings.tcggo_enabled:
-            try:
-                from utils.tcggo import TcggoClient
-                self._tcggo_client = TcggoClient.from_settings()
-                if self._tcggo_client.is_configured():
-                    logger.info("TCGGO client ready for Cardmarket API lookups")
-                else:
-                    logger.info(
-                        "TCGGO client not configured – set RAPIDAPI_KEY in .env"
-                    )
-                    self._tcggo_client = None
-            except ValueError as exc:
-                logger.info("TCGGO client not configured: %s", exc)
-                self._tcggo_client = None
-            except Exception:
-                logger.warning("Failed to initialise TCGGO client", exc_info=True)
-                self._tcggo_client = None
+        # Initialise Playwright browser for Cardmarket scraping.
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=settings.headless
+        )
+        self._cardmarket = CardmarketScraper(self._browser)
 
-        # Only launch a Playwright browser when the scraper fallback is enabled.
-        if settings.cardmarket_enabled and settings.cardmarket_scraping_fallback:
-            try:
-                self._playwright = await async_playwright().start()
-                self._browser = await self._playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--disable-dev-shm-usage",
-                    ],
-                )
-                logger.info("Playwright browser launched for Cardmarket scraper fallback")
-            except Exception:
-                logger.warning(
-                    "Failed to launch Playwright browser – Cardmarket scraper fallback disabled",
-                    exc_info=True,
-                )
-        self._monitor_loop.start()
+        # Initialise resolver with DB.
+        self._resolver = CardmarketResolver(self.db)
+        await self._resolver.load()
+
+        # Start background loop.
+        self._task = asyncio.create_task(self._monitor_loop(), name="monitor_loop")
+        logger.info("MonitorCog: started")
 
     async def cog_unload(self) -> None:
-        logger.info("MonitorCog unloading")
-        self._monitor_loop.cancel()
-        await self.scraper.teardown()
-        if self._http:
-            await self._http.close()
+        """Clean up resources when the cog is unloaded."""
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+        if self._vinted:
+            await self._vinted.teardown()
         if self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
 
+        logger.info("MonitorCog: stopped")
+
     # ------------------------------------------------------------------
-    # Background loop
+    # Public accessor (used by review cog and slash commands)
     # ------------------------------------------------------------------
 
-    @tasks.loop(seconds=1)
+    @property
+    def resolver(self) -> CardmarketResolver | None:
+        return self._resolver
+
+    @property
+    def cardmarket_scraper(self) -> CardmarketScraper | None:
+        return self._cardmarket
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
     async def _monitor_loop(self) -> None:
-        """Entry point called by discord.ext.tasks every second.
-
-        The actual work is guarded by a random sleep so the effective
-        interval is between interval_min and interval_max seconds.
-        """
-        interval = random.randint(settings.interval_min, settings.interval_max)
-        self.next_run = datetime.now(timezone.utc).replace(
-            second=0, microsecond=0
-        )
-        logger.debug("Next scrape cycle in %d seconds", interval)
-        await asyncio.sleep(interval)
-        await self._run_cycle()
-
-    @_monitor_loop.before_loop
-    async def _before_loop(self) -> None:
+        """Run the Vinted → Cardmarket monitoring loop indefinitely."""
         await self.bot.wait_until_ready()
-        logger.info("Bot ready – running immediate startup scrape cycle")
-        await self._run_cycle()
-        logger.info("Startup scrape cycle complete – regular interval loop begins")
+        logger.info("MonitorCog: monitoring loop started")
 
-    @_monitor_loop.error
-    async def _loop_error(self, error: Exception) -> None:
-        logger.error("Monitor loop raised an exception: %s", error, exc_info=True)
-        # The loop auto-resumes after an error in discord.ext.tasks.
+        while not self.bot.is_closed():
+            try:
+                await self._run_cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MonitorCog: unexpected error in monitoring loop: %s",
+                    exc, exc_info=True,
+                )
+                await self._send_error(
+                    failure_step="monitor_loop",
+                    error_message=str(exc),
+                    stack_trace=traceback.format_exc(),
+                )
 
-    # ------------------------------------------------------------------
-    # Core cycle
-    # ------------------------------------------------------------------
+            # Random sleep between cycles.
+            delay = random.randint(settings.interval_min, settings.interval_max)
+            self._next_run = datetime.now(timezone.utc).replace(
+                second=datetime.now(timezone.utc).second + delay % 60
+            )
+            logger.debug("MonitorCog: sleeping %d seconds before next cycle", delay)
+            await asyncio.sleep(delay)
 
     async def _run_cycle(self) -> None:
-        """One full scrape cycle across all search terms."""
-        self.last_run = datetime.now(timezone.utc)
-        logger.info("=== Scrape cycle started ===")
-
-        channel = self._get_channel()
+        """Execute one full scrape cycle over all configured search terms."""
+        self._last_run = datetime.now(timezone.utc)
+        logger.info("MonitorCog: starting scrape cycle")
 
         for term in settings.search_terms:
             try:
-                await self._process_term(term, channel)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Error processing term '%s': %s", term, exc, exc_info=True)
-            # Polite delay between search terms.
-            await asyncio.sleep(random.uniform(3.0, 7.0))
-
-        logger.info(
-            "=== Cycle done. Checked %d, posted %d ===",
-            self.listings_checked,
-            self.listings_posted,
-        )
-        # Prune stale records older than 30 days.
-        pruned = await self.db.prune_old(days=30)
-        if pruned:
-            logger.debug("Pruned %d old listings from DB", pruned)
-
-    async def _process_term(
-        self, term: str, channel: discord.TextChannel | None
-    ) -> None:
-        """Scrape *term* and post qualifying new listings."""
-        logger.info("Searching for: '%s'", term)
-        async for listing in self.scraper.search(term, max_results=settings.results_per_term):
-            self.listings_checked += 1
-            try:
-                await self._handle_listing(listing, term, channel)
+                await self._process_search_term(term)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "Error handling listing %s: %s", listing.listing_id, exc, exc_info=True
+                    "MonitorCog: error processing term '%s': %s",
+                    term, exc, exc_info=True,
                 )
 
-    async def _handle_listing(
-        self,
-        listing: "Listing",
-        term: str,
-        channel: discord.TextChannel | None,
-    ) -> None:
-        # Deduplicate.
+    async def _process_search_term(self, term: str) -> None:
+        """Search Vinted for *term* and process each listing found."""
+        logger.info("MonitorCog: searching Vinted for '%s'", term)
+        async for listing in self._vinted.search(term, settings.results_per_term):  # type: ignore[union-attr]
+            try:
+                await self._process_listing(listing)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MonitorCog: error processing listing '%s': %s",
+                    listing.listing_id, exc, exc_info=True,
+                )
+
+    # ------------------------------------------------------------------
+    # Listing processing pipeline
+    # ------------------------------------------------------------------
+
+    async def _process_listing(self, listing: "Listing") -> None:
+        """Full pipeline for a single Vinted listing."""
+        self._listings_checked += 1
+
+        # ── 1. Deduplication ─────────────────────────────────────────────
         if await self.db.is_seen(listing.listing_id):
-            logger.debug("Already seen: %s", listing.listing_id)
+            logger.debug("MonitorCog: skipping already-seen listing %s", listing.listing_id)
             return
 
-        # Analyse whether this is a card listing / bulk lot and estimate
-        # card count + price per card before any pricing decisions are made.
-        self.card_analyzer.analyze(listing)
+        logger.info(
+            "MonitorCog: processing listing '%s' (€%.2f)",
+            listing.title[:60], listing.price,
+        )
 
-        # --- Check identification memory for previously approved matches ---
-        memory_matches = await self.db.find_in_memory(listing.title)
-        memory_value: float | None = None
-        # Extract a direct Cardmarket URL from memory if one exists; this lets
-        # the scraper bypass the unreliable search page.
-        cm_memory_url: str | None = None
-        if memory_matches:
-            for match in memory_matches:
-                ref = match.get("reference_url") or ""
-                try:
-                    # Check netloc specifically to avoid matching URLs that
-                    # merely contain "cardmarket.com" in the path or query.
-                    # Accept "cardmarket.com" and subdomains ("www.cardmarket.com")
-                    # but reject spoofs like "evil-cardmarket.com".
-                    netloc = urlparse(ref).netloc.lower()
-                    if netloc == "cardmarket.com" or netloc.endswith(".cardmarket.com"):
-                        cm_memory_url = ref
-                        break
-                except Exception:  # noqa: BLE001
-                    pass
-            best = next((m for m in memory_matches if m.get("market_value")), None)
-            if best:
-                memory_value = best["market_value"]
-                listing.confidence = "Medium"
-                listing.valuation_explanation = (
-                    f"Matched from community memory: {best['card_name']}. "
-                    f"Reference: {best.get('reference_url') or 'n/a'}"
-                )
-                logger.info(
-                    "Memory match for listing %s: '%s' (value=%.2f)",
-                    listing.listing_id,
-                    best["card_name"],
-                    memory_value,
-                )
+        # ── 2. Card identification ────────────────────────────────────────
+        fingerprint = identify_card(listing.title)
 
-        # Fetch live market prices from eBay / Cardmarket (via TCGGO API or scraper fallback).
-        price_results = []
-        if self._http:
-            # When no memory URL exists but card info was extracted, try to build a
-            # direct Cardmarket product URL.  This works for any card with a known
-            # set code (promos and standard sets alike).
-            cm_lookup_url = cm_memory_url
-            if not cm_lookup_url and listing.extracted_set_code:
-                try:
-                    from scraper.cardmarket import build_cardmarket_url, _SET_CODE_TO_SLUG
-                    set_code_upper = listing.extracted_set_code.upper()
-                    if set_code_upper in _SET_CODE_TO_SLUG:
-                        card_name_for_url = listing.extracted_card_name or listing.title
-                        collector_num = listing.extracted_collector_number or ""
-                        is_promo = "/" not in collector_num
-                        built = build_cardmarket_url(
-                            card_name_for_url,
-                            listing.extracted_set_code,
-                            collector_num,
-                            promo=is_promo,
-                        )
-                        if built:
-                            cm_lookup_url = built
-                            logger.info(
-                                "Built Cardmarket URL for listing %s (set=%s num=%s promo=%s): %s",
-                                listing.listing_id,
-                                listing.extracted_set_code,
-                                collector_num or "n/a",
-                                is_promo,
-                                built,
-                            )
-                        else:
-                            logger.debug(
-                                "build_cardmarket_url returned None for listing %s "
-                                "(set=%s num=%s)",
-                                listing.listing_id,
-                                listing.extracted_set_code,
-                                collector_num or "n/a",
-                            )
-                    else:
-                        logger.debug(
-                            "Set code %r not in known slugs for listing %s – "
-                            "falling back to TCGGO text search",
-                            listing.extracted_set_code,
-                            listing.listing_id,
-                        )
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "Error building Cardmarket URL for listing %s",
-                        listing.listing_id,
-                        exc_info=True,
-                    )
-            elif not cm_lookup_url and listing.extracted_card_name:
-                logger.debug(
-                    "Listing %s has card name %r but no set code – using TCGGO text search",
-                    listing.listing_id,
-                    listing.extracted_card_name,
-                )
+        # ── 3. Cardmarket URL resolution ──────────────────────────────────
+        matching_attempts: list[dict] = []
 
-            price_results = await lookup_prices(
-                self._http,
-                listing.title,
-                browser=self._browser,
-                cm_direct_url=cm_lookup_url,
-                tcggo_client=self._tcggo_client,
-                card_name=listing.extracted_card_name,
-                collector_number=listing.extracted_collector_number,
-                set_code=listing.extracted_set_code,
-                set_name=listing.extracted_set_name,
+        resolved = await self._resolver.resolve(fingerprint, listing.title)  # type: ignore[union-attr]
+
+        if resolved is None:
+            # No mapping found → send to review queue.
+            await self._send_to_review(listing, fingerprint, matching_attempts)
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=fingerprint.fingerprint_hash(),
             )
-            logger.debug(
-                "Price lookup for listing %s returned %d result(s): %s",
-                listing.listing_id,
-                len(price_results),
-                [r.platform for r in price_results],
+            return
+
+        # ── 4. Cardmarket scraping ────────────────────────────────────────
+        try:
+            cm_data = await self._cardmarket.scrape_url(resolved.url)  # type: ignore[union-attr]
+        except CardmarketScrapeError as exc:
+            logger.warning(
+                "MonitorCog: Cardmarket scrape failed for '%s': %s",
+                listing.title[:60], exc,
+            )
+            # Log error and abort – do NOT crash the loop or send to review.
+            await self.db.log_error(
+                listing_id=listing.listing_id,
+                listing_title=listing.title,
+                listing_url=listing.url,
+                cardmarket_url=resolved.url,
+                failure_step=exc.step,
+                http_status=exc.http_status,
+                error_message=exc.message,
+                stack_trace=exc.stack_trace,
+            )
+            await self._send_error(
+                failure_step=exc.step,
+                error_message=exc.message,
+                listing_title=listing.title,
+                listing_url=listing.url,
+                cardmarket_url=resolved.url,
+                http_status=exc.http_status,
+                stack_trace=exc.stack_trace,
+            )
+            # Mark as seen so we don't retry every cycle.
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=fingerprint.fingerprint_hash(),
+            )
+            return
+
+        # ── 5. Price comparison ───────────────────────────────────────────
+        comparison = compare_prices(listing, cm_data)
+
+        # ── 6. Store mapping if auto-constructed (now validated) ──────────
+        if resolved.source == "constructed":
+            await self._resolver.store_mapping(  # type: ignore[union-attr]
+                fingerprint=fingerprint,
+                raw_title=listing.title,
+                cardmarket_url=cm_data.product_url,
+                product_name=cm_data.product_name,
+                product_id=cm_data.product_id,
+                validated_by="auto",
+                confidence=resolved.confidence,
+                listing_url=listing.url,
+                seller_name=listing.seller_name,
+                price=listing.price,
             )
 
-        live_value = best_market_value(price_results) if price_results else memory_value
-
-        # Upgrade confidence to High when we have a live market price match.
-        if live_value is not None and listing.confidence == "Medium":
-            listing.confidence = "High"
-            listing.valuation_explanation = (
-                listing.valuation_explanation.replace(
-                    "Confidence will rise to High if a live market price is matched.",
-                    "Live market price matched – confidence upgraded to High.",
-                )
-            )
-
-        # ----------------------------------------------------------------
-        # Decide whether to post this listing.
-        # ----------------------------------------------------------------
-        should_post: bool
-        send_to_review: bool = False
-
-        if listing.is_bulk_lot:
-            # Bulk lots bypass the score system; pass only at ≤ €0.01/card.
-            should_post = self.scorer.should_post_bulk(listing)
-            listing.score = 0  # score not meaningful for bulk lots
-            if should_post and not listing.valuation_explanation:
-                listing.valuation_explanation = (
-                    f"Bulk lot: {listing.estimated_card_count} cards at "
-                    f"€{listing.price_per_card:.4f}/card."
-                )
+        # ── 7. Post profit alert or skip ──────────────────────────────────
+        if comparison.is_profitable:
+            self._listings_profitable += 1
+            await self._send_profit_alert(listing, cm_data, comparison, resolved)
         else:
-            # Individual card: check Cardmarket deal conditions first (when
-            # Cardmarket data is available), then fall back to score threshold.
-            cm_result = next(
-                (r for r in price_results if r.platform == "Cardmarket"), None
+            logger.info(
+                "MonitorCog: not profitable – Vinted €%.2f vs CM €%.2f for '%s'",
+                comparison.vinted_price,
+                comparison.cardmarket_from_price,
+                listing.title[:60],
             )
 
-            cm_qualifies = False
-            cm_deal_label = ""
-            if cm_result is not None:
-                cm_qualifies, cm_deal_label = self.scorer.cardmarket_deal_type(
-                    listing, cm_result
-                )
-
-            score = self.scorer.score(listing, live_market_value=live_value)
-            logger.debug(
-                "Listing %s '%s' %.2f %s → score %d cm_qualifies=%s",
-                listing.listing_id,
-                listing.title,
-                listing.price,
-                listing.currency,
-                score,
-                cm_qualifies,
-            )
-
-            if cm_qualifies:
-                # Cardmarket conditions met – always post regardless of score.
-                should_post = True
-                # Annotate the deal label in the explanation.
-                listing.valuation_explanation = (
-                    f"Cardmarket deal detected: {cm_deal_label}. "
-                    + (listing.valuation_explanation or "")
-                ).strip()
-                if listing.confidence == "Low":
-                    listing.confidence = "Medium"
-            elif score == 0 and not settings.allow_low_confidence:
-                # Unverified – route to review channel instead of discarding.
-                should_post = False
-                send_to_review = True
-            else:
-                should_post = score >= settings.min_score
-
-            # Annotate explanation when market data was found (only if not
-            # already set by Cardmarket deal detection above).
-            if not cm_qualifies and price_results and listing.estimated_market_value:
-                sources = ", ".join(r.platform for r in price_results)
-                urls = "  ".join(r.search_url for r in price_results)
-                listing.valuation_explanation = (
-                    f"Market price sourced from: {sources}. "
-                    f"Estimated value: €{listing.estimated_market_value:.2f}. "
-                    f"Sources: {urls}"
-                )
-
-        # Always mark as seen so we don't re-evaluate it.
+        # ── 8. Mark as seen ───────────────────────────────────────────────
         await self.db.mark_seen(
             listing_id=listing.listing_id,
             title=listing.title,
             url=listing.url,
             price=listing.price,
-            seller=listing.seller_name,
             currency=listing.currency,
-            score=listing.score,
-            posted_to_discord=should_post,
-            terms=[term],
+            seller_name=listing.seller_name,
+            fingerprint=fingerprint.fingerprint_hash(),
         )
 
-        # Post to Discord / webhook if it qualifies.
-        if should_post:
-            await self._post_listing(listing, channel, price_results=price_results)
-        elif send_to_review:
-            await self._post_for_review(listing)
+    # ------------------------------------------------------------------
+    # Review queue
+    # ------------------------------------------------------------------
 
-    async def _post_for_review(self, listing: "Listing") -> None:
-        """Delegate an unidentified listing to the ReviewCog."""
-        review_cog: "ReviewCog | None" = self.bot.cogs.get("Review")  # type: ignore[assignment]
-        if review_cog is None:
+    async def _send_to_review(
+        self,
+        listing: "Listing",
+        fingerprint,
+        matching_attempts: list[dict],
+    ) -> None:
+        """Send a listing to the review queue Discord channel."""
+        from utils.embed_builder import build_review_embed
+
+        self._listings_reviewed += 1
+
+        # Determine failure reason
+        if fingerprint.is_identifiable:
+            failure_reason = (
+                f"Card fingerprint extracted ('{fingerprint.normalised_key()}') "
+                f"but no Cardmarket URL could be built. "
+                f"Set code '{fingerprint.set_code}' may not be in the known mapping table."
+            )
+        elif fingerprint.card_name:
+            failure_reason = (
+                f"Card name '{fingerprint.card_name}' extracted but no set information found. "
+                "Insufficient data to construct a Cardmarket URL."
+            )
+        else:
+            failure_reason = (
+                "Could not extract card name from listing title. "
+                "Title may be too generic or non-standard."
+            )
+
+        # Add to DB review queue.
+        await self.db.add_review_item(
+            listing_id=listing.listing_id,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price,
+            currency=listing.currency,
+            seller_name=listing.seller_name,
+            description=listing.description,
+            images=listing.images,
+            fingerprint=fingerprint.fingerprint_hash(),
+            failure_reason=failure_reason,
+            matching_attempts=matching_attempts,
+        )
+
+        # Post to review channel.
+        review_channel = self._get_review_channel()
+        if review_channel is None:
             logger.debug(
-                "ReviewCog not loaded – unidentified listing %s will not be posted",
+                "MonitorCog: review channel not configured – skipping review post for %s",
                 listing.listing_id,
             )
             return
-        await review_cog.post_for_review(listing)
 
-    async def _post_listing(
+        embed = build_review_embed(
+            listing,
+            fingerprint=fingerprint,
+            failure_reason=failure_reason,
+            matching_attempts=matching_attempts,
+        )
+
+        try:
+            msg = await review_channel.send(embed=embed)
+            await self.db.set_review_discord_message(
+                listing.listing_id, str(msg.id), str(review_channel.id)
+            )
+            logger.info(
+                "MonitorCog: sent listing %s to review (msg %s)",
+                listing.listing_id, msg.id,
+            )
+        except discord.HTTPException as exc:
+            logger.error(
+                "MonitorCog: failed to post review message for %s: %s",
+                listing.listing_id, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Discord posting helpers
+    # ------------------------------------------------------------------
+
+    async def _send_profit_alert(
         self,
         listing: "Listing",
-        channel: discord.TextChannel | None,
-        price_results: list | None = None,
+        cm_data,
+        comparison,
+        resolved,
     ) -> None:
-        embed = build_listing_embed(listing, price_results=price_results)
-
-        # Try the bot channel first.
+        """Post a profit alert embed to the deals channel."""
+        embed = build_profit_alert_embed(
+            listing,
+            cm_data,
+            comparison,
+            match_confidence=resolved.confidence,
+            match_source=resolved.source,
+        )
+        channel = self._get_deals_channel()
         if channel:
             try:
                 await channel.send(embed=embed)
-                self.listings_posted += 1
-                logger.info(
-                    "Posted deal: %s (%s) bulk=%s score=%d",
-                    listing.title,
-                    listing.url,
-                    listing.is_bulk_lot,
-                    listing.score,
-                )
-                await self.db.mark_posted(listing.listing_id)
-                return
             except discord.HTTPException as exc:
-                logger.error("Failed to post to channel: %s", exc)
+                logger.error(
+                    "MonitorCog: failed to post profit alert for %s: %s",
+                    listing.listing_id, exc,
+                )
 
-        # Fallback: webhook.
-        if settings.use_webhook and settings.discord_webhook_url and self._http:
-            await self._post_via_webhook(listing, embed)
-
-    async def _post_via_webhook(
-        self, listing: "Listing", embed: discord.Embed
+    async def _send_error(
+        self,
+        *,
+        failure_step: str,
+        error_message: str,
+        listing_title: str | None = None,
+        listing_url: str | None = None,
+        cardmarket_url: str | None = None,
+        http_status: int | None = None,
+        stack_trace: str | None = None,
     ) -> None:
-        """Deliver embed via an incoming Discord webhook."""
-        payload = {"embeds": [embed.to_dict()]}
-        try:
-            async with self._http.post(  # type: ignore[union-attr]
-                settings.discord_webhook_url,  # type: ignore[arg-type]
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status not in (200, 204):
-                    body = await resp.text()
-                    logger.error("Webhook delivery failed %d: %s", resp.status, body)
-                else:
-                    self.listings_posted += 1
-                    logger.info("Posted via webhook: %s", listing.url)
-                    await self.db.mark_posted(listing.listing_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Webhook error: %s", exc)
+        """Post a structured error embed to the log channel."""
+        embed = build_error_embed(
+            listing_title=listing_title,
+            listing_url=listing_url,
+            cardmarket_url=cardmarket_url,
+            failure_step=failure_step,
+            error_message=error_message,
+            http_status=http_status,
+            stack_trace=stack_trace,
+        )
+        channel = self._get_log_channel()
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except discord.HTTPException as exc:
+                logger.error("MonitorCog: failed to post error embed: %s", exc)
+
+    def _get_deals_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
+
+    def _get_review_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_review_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
+
+    def _get_log_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_log_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Slash commands
     # ------------------------------------------------------------------
 
-    def _get_channel(self) -> discord.TextChannel | None:
-        channel_id = settings.discord_channel_id
-        if not channel_id:
-            return None
-        channel = self.bot.get_channel(channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            logger.warning("Channel %d not found or not a text channel", channel_id)
-            return None
-        return channel
+    @discord.app_commands.command(name="status", description="Show monitoring bot status")
+    async def status_command(self, interaction: discord.Interaction) -> None:
+        mappings = await self.db.get_all_mappings()
+        embed = build_status_embed(
+            listings_checked=self._listings_checked,
+            listings_profitable=self._listings_profitable,
+            listings_reviewed=self._listings_reviewed,
+            mappings_count=len(mappings),
+            last_run=self._last_run,
+            next_run=self._next_run,
+            search_terms=settings.search_terms,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
