@@ -260,6 +260,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 browser=self._browser,
                 cm_direct_url=cm_memory_url,
                 tcggo_client=self._tcggo_client,
+                card_name=listing.extracted_card_name,
+                collector_number=listing.extracted_collector_number,
+                set_code=listing.extracted_set_code,
+                set_name=listing.extracted_set_name,
             )
 
         live_value = best_market_value(price_results) if price_results else memory_value

@@ -43,6 +43,13 @@ class Listing:
     # OCR text extracted from listing images (populated externally when available)
     ocr_text: str | None = None
 
+    # Structured card identity extracted from the listing title by CardAnalyzer.
+    # Used to build precise Cardmarket API search queries.
+    extracted_card_name: str | None = None
+    extracted_collector_number: str | None = None
+    extracted_set_code: str | None = None
+    extracted_set_name: str | None = None
+
     @property
     def discount_pct(self) -> float | None:
         """Return percentage below estimated market value (positive = cheaper)."""
