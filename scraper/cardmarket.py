@@ -32,7 +32,7 @@ import json
 import random
 import re
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, urlunparse, urlencode, parse_qs
 
 from bs4 import BeautifulSoup
 from playwright.async_api import Browser, BrowserContext, Page
@@ -87,6 +87,38 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
 Object.defineProperty(navigator, 'languages', {get: () => ['nl-NL', 'nl', 'en-GB', 'en']});
 window.chrome = {runtime: {}};
 """
+
+# Default filter parameters added to product URLs.
+# sellerCountry=23 → Netherlands; language=1 → English cards.
+_CM_FILTER_PARAMS: dict[str, str] = {"sellerCountry": "23", "language": "1"}
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def normalize_cardmarket_url(url: str) -> str:
+    """Return *url* with the standard Cardmarket filter params appended.
+
+    Adds ``sellerCountry=23`` (Netherlands) and ``language=1`` (English) if
+    they are not already present in the query string.  Non-Cardmarket URLs are
+    returned unchanged.
+    """
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    if netloc != "cardmarket.com" and not netloc.endswith(".cardmarket.com"):
+        return url
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    changed = False
+    for key, value in _CM_FILTER_PARAMS.items():
+        if key not in params:
+            params[key] = [value]
+            changed = True
+    if not changed:
+        return url
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
 
 # ---------------------------------------------------------------------------
 # HTML parsing helpers  (AutoScrape / cardmarket_parser inspired)
@@ -416,9 +448,13 @@ class CardmarketPriceScraper:
     async def lookup_url(self, url: str) -> dict[str, Any] | None:
         """Fetch price data directly from a Cardmarket product page URL.
 
+        The URL is normalised to include standard filter params
+        (``sellerCountry=23``, ``language=1``) before fetching.
+
         Returns the raw prices dict (``lowest_price``, ``price_trend``,
         ``avg_30_days``, …) on success, or ``None`` on failure.
         """
+        url = normalize_cardmarket_url(url)
         logger.info("Cardmarket: fetching prices from URL %s", url)
         context = await self._new_context()
         page = await context.new_page()

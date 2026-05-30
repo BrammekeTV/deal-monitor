@@ -198,13 +198,28 @@ async def _ebay_lookup(
 # ---------------------------------------------------------------------------
 
 async def _cardmarket_lookup(
-    browser: "Browser", query: str
+    browser: "Browser", query: str, direct_url: str | None = None
 ) -> PriceResult | None:
-    """Scrape Cardmarket product prices for *query* using Playwright + BS4."""
-    from scraper.cardmarket import CardmarketPriceScraper
+    """Scrape Cardmarket product prices for *query* using Playwright + BS4.
+
+    When *direct_url* is supplied (a URL stored in identification memory) the
+    scraper navigates directly to that product page, bypassing the unreliable
+    Cardmarket search step entirely.
+    """
+    from scraper.cardmarket import CardmarketPriceScraper, normalize_cardmarket_url
 
     scraper = CardmarketPriceScraper(browser)
-    prices_dict = await scraper.lookup(query, sample_size=settings.cardmarket_sample_size)
+
+    if direct_url:
+        normalized = normalize_cardmarket_url(direct_url)
+        prices_dict = await scraper.lookup_url(normalized)
+        search_url = normalized
+    else:
+        prices_dict = await scraper.lookup(query, sample_size=settings.cardmarket_sample_size)
+        search_url = (
+            f"https://www.cardmarket.com/en/Pokemon/Products/Search"
+            f"?searchString={urllib.parse.quote_plus(query)}"
+        )
 
     if not prices_dict:
         return None
@@ -220,10 +235,6 @@ async def _cardmarket_lookup(
         return None
 
     avg = sum(prices) / len(prices)
-    search_url = (
-        f"https://www.cardmarket.com/en/Pokemon/Products/Search"
-        f"?searchString={urllib.parse.quote_plus(query)}"
-    )
     return PriceResult(
         platform="Cardmarket",
         query=query,
@@ -251,17 +262,24 @@ async def lookup_prices(
     session: aiohttp.ClientSession,
     query: str,
     browser: "Browser | None" = None,
+    cm_direct_url: str | None = None,
 ) -> list[PriceResult]:
     """Return live price results for *query* from all enabled platforms.
 
     *session* is used for the eBay Finding API.
     *browser* is a Playwright Browser instance used for Cardmarket scraping;
     if ``None`` the Cardmarket lookup is skipped.
+    *cm_direct_url* is an optional Cardmarket product page URL stored in
+    identification memory.  When provided the scraper navigates directly to
+    that URL instead of performing a search, which is faster and more reliable.
 
     Results are cached for ``settings.price_lookup_cache_ttl`` seconds.
     Returns an empty list if no platforms are enabled or all fail.
     """
-    cached = _cached(query)
+    # Cache key includes the direct URL so URL-based and search-based results
+    # are stored separately.
+    cache_query = f"{query}|{cm_direct_url}" if cm_direct_url else query
+    cached = _cached(cache_query)
     if cached is not None:
         logger.debug("Price lookup cache hit for '%s'", query)
         return cached
@@ -281,21 +299,22 @@ async def lookup_prices(
             )
 
     if settings.cardmarket_enabled and browser is not None:
-        cm_result = await _cardmarket_lookup(browser, query)
+        cm_result = await _cardmarket_lookup(browser, query, direct_url=cm_direct_url)
         if cm_result:
             results.append(cm_result)
             logger.info(
-                "Cardmarket: '%s' → avg %.2f EUR (%d price points)",
+                "Cardmarket: '%s' → avg %.2f EUR (%d price points)%s",
                 query,
                 cm_result.avg_price,
                 cm_result.sample_count,
+                " [direct URL]" if cm_direct_url else "",
             )
     elif settings.cardmarket_enabled and browser is None:
         logger.debug(
             "Cardmarket lookup skipped for '%s' – no browser available", query
         )
 
-    _store_cache(query, results)
+    _store_cache(cache_query, results)
     return results
 
 

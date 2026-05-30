@@ -18,6 +18,7 @@ import asyncio
 import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -196,7 +197,23 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # --- Check identification memory for previously approved matches ---
         memory_matches = await self.db.find_in_memory(listing.title)
         memory_value: float | None = None
+        # Extract a direct Cardmarket URL from memory if one exists; this lets
+        # the scraper bypass the unreliable search page.
+        cm_memory_url: str | None = None
         if memory_matches:
+            for match in memory_matches:
+                ref = match.get("reference_url") or ""
+                try:
+                    # Check netloc specifically to avoid matching URLs that
+                    # merely contain "cardmarket.com" in the path or query.
+                    # Accept "cardmarket.com" and subdomains ("www.cardmarket.com")
+                    # but reject spoofs like "evil-cardmarket.com".
+                    netloc = urlparse(ref).netloc.lower()
+                    if netloc == "cardmarket.com" or netloc.endswith(".cardmarket.com"):
+                        cm_memory_url = ref
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
             best = next((m for m in memory_matches if m.get("market_value")), None)
             if best:
                 memory_value = best["market_value"]
@@ -215,7 +232,12 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Fetch live market prices from eBay / Cardmarket.
         price_results = []
         if self._http:
-            price_results = await lookup_prices(self._http, listing.title, browser=self._browser)
+            price_results = await lookup_prices(
+                self._http,
+                listing.title,
+                browser=self._browser,
+                cm_direct_url=cm_memory_url,
+            )
 
         live_value = best_market_value(price_results) if price_results else memory_value
 

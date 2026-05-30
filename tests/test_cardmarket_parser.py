@@ -15,6 +15,7 @@ from scraper.cardmarket import (
     _parse_price_to_float,
     _parse_product_page,
     _extract_card_metadata,
+    normalize_cardmarket_url,
 )
 from bs4 import BeautifulSoup
 
@@ -415,3 +416,46 @@ class TestOneDayLabelIsolation:
         assert result.get("avg_30_days") == pytest.approx(3.00)
         assert result.get("avg_7_days") == pytest.approx(4.00)
         assert result.get("avg_1_day") == pytest.approx(5.00)
+
+
+# ---------------------------------------------------------------------------
+# normalize_cardmarket_url
+# ---------------------------------------------------------------------------
+
+_CM_PRODUCT = (
+    "https://www.cardmarket.com/en/Pokemon/Products/Singles"
+    "/Destined-Rivals/Team-Rockets-Mewtwo-ex-V1-DRI081"
+)
+_CM_PRODUCT_NORMALIZED = _CM_PRODUCT + "?sellerCountry=23&language=1"
+
+
+class TestNormalizeCardmarketUrl:
+    def test_bare_url_gets_both_params(self) -> None:
+        result = normalize_cardmarket_url(_CM_PRODUCT)
+        assert "sellerCountry=23" in result
+        assert "language=1" in result
+
+    def test_already_has_both_params_unchanged(self) -> None:
+        url = _CM_PRODUCT + "?sellerCountry=23&language=1"
+        assert normalize_cardmarket_url(url) == url
+
+    def test_already_has_seller_country_adds_only_language(self) -> None:
+        url = _CM_PRODUCT + "?sellerCountry=5"
+        result = normalize_cardmarket_url(url)
+        assert "sellerCountry=5" in result
+        assert "language=1" in result
+        assert "sellerCountry=23" not in result  # existing value kept
+
+    def test_non_cardmarket_url_unchanged(self) -> None:
+        url = "https://www.ebay.co.uk/itm/12345"
+        assert normalize_cardmarket_url(url) == url
+
+    def test_empty_string_unchanged(self) -> None:
+        assert normalize_cardmarket_url("") == ""
+
+    def test_existing_params_preserved(self) -> None:
+        url = _CM_PRODUCT + "?sortBy=price_asc"
+        result = normalize_cardmarket_url(url)
+        assert "sortBy=price_asc" in result
+        assert "sellerCountry=23" in result
+        assert "language=1" in result
