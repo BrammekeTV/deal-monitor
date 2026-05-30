@@ -66,6 +66,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._last_run: datetime | None = None
         self._next_run: datetime | None = None
 
+        # Pause / resume
+        self._paused: bool = False
+
         # Services (initialised in cog_load)
         self._vinted: VintedScraper | None = None
         self._cardmarket: CardmarketScraper | None = None
@@ -141,6 +144,11 @@ class MonitorCog(commands.Cog, name="Monitor"):
         logger.info("MonitorCog: monitoring loop started")
 
         while not self.bot.is_closed():
+            if self._paused:
+                logger.debug("MonitorCog: paused – skipping cycle")
+                await asyncio.sleep(30)
+                continue
+
             try:
                 await self._run_cycle()
             except asyncio.CancelledError:
@@ -303,6 +311,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 comparison.cardmarket_from_price,
                 listing.title[:60],
             )
+            await self._send_identified_not_profitable(listing, cm_data, comparison, resolved)
 
         # ── 8. Mark as seen ───────────────────────────────────────────────
         await self.db.mark_seen(
@@ -423,6 +432,29 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     listing.listing_id, exc,
                 )
 
+    async def _send_identified_not_profitable(
+        self,
+        listing: "Listing",
+        cm_data,
+        comparison,
+        resolved,
+    ) -> None:
+        """Post a non-profitable identified listing embed to the match channel."""
+        from utils.embed_builder import build_not_profitable_embed
+
+        channel = self._get_match_channel()
+        if channel is None:
+            return
+
+        embed = build_not_profitable_embed(listing, cm_data, comparison)
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException as exc:
+            logger.error(
+                "MonitorCog: failed to post identified-not-profitable embed for %s: %s",
+                listing.listing_id, exc,
+            )
+
     async def _send_error(
         self,
         *,
@@ -453,6 +485,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
     def _get_deals_channel(self) -> discord.TextChannel | None:
         ch_id = settings.discord_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
+
+    def _get_match_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_match_channel_id
         if not ch_id:
             return None
         ch = self.bot.get_channel(ch_id)
@@ -493,5 +534,36 @@ class MonitorCog(commands.Cog, name="Monitor"):
             last_run=self._last_run,
             next_run=self._next_run,
             search_terms=settings.search_terms,
+            paused=self._paused,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.app_commands.command(name="pause", description="Pause the monitoring loop")
+    @discord.app_commands.default_permissions(administrator=True)
+    async def pause_command(self, interaction: discord.Interaction) -> None:
+        if self._paused:
+            await interaction.response.send_message(
+                "⏸️ Monitoring is already paused.", ephemeral=True
+            )
+        else:
+            self._paused = True
+            logger.info("MonitorCog: monitoring paused by %s", interaction.user)
+            await interaction.response.send_message(
+                "⏸️ Monitoring **paused**. Use `/resume` to start searches again.",
+                ephemeral=True,
+            )
+
+    @discord.app_commands.command(name="resume", description="Resume the monitoring loop")
+    @discord.app_commands.default_permissions(administrator=True)
+    async def resume_command(self, interaction: discord.Interaction) -> None:
+        if not self._paused:
+            await interaction.response.send_message(
+                "▶️ Monitoring is already running.", ephemeral=True
+            )
+        else:
+            self._paused = False
+            logger.info("MonitorCog: monitoring resumed by %s", interaction.user)
+            await interaction.response.send_message(
+                "▶️ Monitoring **resumed**. Searches will continue on the next cycle.",
+                ephemeral=True,
+            )

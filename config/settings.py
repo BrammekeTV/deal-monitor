@@ -55,6 +55,10 @@ class Settings:
             os.getenv("DISCORD_CHANNEL_ID")
             or _deep_get(raw, "discord", "channel_id", default=0)
         )
+        self.discord_match_channel_id: int = int(
+            os.getenv("DISCORD_MATCH_CHANNEL_ID")
+            or _deep_get(raw, "discord", "match_channel_id", default=0)
+        )
         self.discord_review_channel_id: int = int(
             os.getenv("DISCORD_REVIEW_CHANNEL_ID")
             or _deep_get(raw, "discord", "review_channel_id", default=0)
