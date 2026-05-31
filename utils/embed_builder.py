@@ -47,6 +47,7 @@ def build_profit_alert_embed(
     *,
     match_confidence: float | None = None,
     match_source: str | None = None,
+    fingerprint: "CardFingerprint | None" = None,
 ) -> discord.Embed:
     """Build a rich embed for a profitable Vinted vs Cardmarket listing."""
     embed = discord.Embed(
@@ -90,6 +91,32 @@ def build_profit_alert_embed(
         value="\n".join(cm_lines),
         inline=False,
     )
+
+    # ── Extracted card info ───────────────────────────────────────────────
+    if fingerprint:
+        fp_lines = []
+        if fingerprint.card_name:
+            fp_lines.append(f"Card: **{fingerprint.card_name}**")
+        if fingerprint.set_name:
+            fp_lines.append(f"Set: **{fingerprint.set_name}**")
+        if fingerprint.set_code:
+            fp_lines.append(f"Set Code: **{fingerprint.set_code}**")
+        if fingerprint.collector_number:
+            fp_lines.append(f"Number: **{fingerprint.collector_number}**")
+        if fingerprint.condition:
+            fp_lines.append(f"Condition: **{fingerprint.condition}**")
+        if fingerprint.rarity:
+            fp_lines.append(f"Rarity: **{fingerprint.rarity}**")
+        if fingerprint.language:
+            fp_lines.append(f"Language: **{fingerprint.language}**")
+        if fingerprint.grade_authority:
+            fp_lines.append(f"Grade: **{fingerprint.grade_authority} {fingerprint.grade_value}**")
+        if fp_lines:
+            embed.add_field(
+                name="🔎 Card Info",
+                value="\n".join(fp_lines),
+                inline=False,
+            )
 
     # ── Comparison ────────────────────────────────────────────────────────
     embed.add_field(
@@ -142,6 +169,8 @@ def build_not_profitable_embed(
     listing: "Listing",
     cm_data: "CardmarketPriceData",
     comparison: "ComparisonResult",
+    *,
+    fingerprint: "CardFingerprint | None" = None,
 ) -> discord.Embed:
     """Build an embed shown when Vinted price >= Cardmarket From price."""
     embed = discord.Embed(
@@ -189,6 +218,32 @@ def build_not_profitable_embed(
             value="No Dutch sellers available – global pricing was used.",
             inline=False,
         )
+
+    # ── Extracted card info ───────────────────────────────────────────────
+    if fingerprint:
+        fp_lines = []
+        if fingerprint.card_name:
+            fp_lines.append(f"Card: **{fingerprint.card_name}**")
+        if fingerprint.set_name:
+            fp_lines.append(f"Set: **{fingerprint.set_name}**")
+        if fingerprint.set_code:
+            fp_lines.append(f"Set Code: **{fingerprint.set_code}**")
+        if fingerprint.collector_number:
+            fp_lines.append(f"Number: **{fingerprint.collector_number}**")
+        if fingerprint.condition:
+            fp_lines.append(f"Condition: **{fingerprint.condition}**")
+        if fingerprint.rarity:
+            fp_lines.append(f"Rarity: **{fingerprint.rarity}**")
+        if fingerprint.language:
+            fp_lines.append(f"Language: **{fingerprint.language}**")
+        if fingerprint.grade_authority:
+            fp_lines.append(f"Grade: **{fingerprint.grade_authority} {fingerprint.grade_value}**")
+        if fp_lines:
+            embed.add_field(
+                name="🔎 Card Info",
+                value="\n".join(fp_lines),
+                inline=False,
+            )
 
     embed.add_field(
         name="🔗 Cardmarket",
