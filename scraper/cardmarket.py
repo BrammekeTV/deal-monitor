@@ -1553,7 +1553,13 @@ class CardmarketScraper:
                 timeout=20_000,
             )
             await self._accept_cookies(page)
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            # Give Cloudflare time to set session cookies after the first page.
+            await asyncio.sleep(random.uniform(3.0, 5.0))
+            # Brief scroll to simulate human behaviour before navigating on.
+            await page.evaluate(
+                "window.scrollTo({top: Math.floor(Math.random()*300+100), behavior:'smooth'})"
+            )
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         except Exception:  # noqa: BLE001
             pass  # Pre-warm is best-effort; continue regardless
 
@@ -1563,15 +1569,23 @@ class CardmarketScraper:
         # Detect Cloudflare challenge page ("Just a moment…") and wait for it
         # to auto-resolve.  Cloudflare's passive JS challenge typically resolves
         # within a few seconds when the browser executes the challenge script.
-        for _attempt in range(3):
+        for _attempt in range(4):
             title = await page.title()
             if "just a moment" not in title.lower() and "checking your browser" not in title.lower():
                 break
             logger.warning(
-                "Cardmarket: Cloudflare challenge detected (%r) – waiting for resolution … (attempt %d/3)",
+                "Cardmarket: Cloudflare challenge detected (%r) – waiting for resolution … (attempt %d/4)",
                 title, _attempt + 1,
             )
-            await asyncio.sleep(random.uniform(4.0, 6.0))
+            # Simulate reading / scrolling while waiting for the JS challenge.
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+            try:
+                await page.evaluate(
+                    "window.scrollTo({top: Math.floor(Math.random()*200+50), behavior:'smooth'})"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(random.uniform(6.0, 10.0))
         else:
             logger.warning(
                 "Cardmarket: Cloudflare challenge did not resolve after retries for %s", url

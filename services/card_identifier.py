@@ -250,11 +250,14 @@ class CardFingerprint:
 # Public API
 # ---------------------------------------------------------------------------
 
-def identify_card(title: str) -> CardFingerprint:
+def identify_card(title: str, description: str | None = None) -> CardFingerprint:
     """Parse a Vinted listing title and return a structured CardFingerprint.
 
     Uses ``utils.card_analyzer.extract_card_info`` for the core parsing and
     augments with game detection, rarity, language, and grading extraction.
+
+    When *description* is provided and no condition keyword is found in the
+    title, the description is also searched for condition information.
     """
     fp = CardFingerprint(raw_title=title)
 
@@ -321,6 +324,10 @@ def identify_card(title: str) -> CardFingerprint:
 
     # --- Condition ---
     cm = _CONDITION_RE.search(translated_title)
+    if cm is None and description:
+        # Fall back to searching the listing description when the title does
+        # not contain a recognisable condition keyword.
+        cm = _CONDITION_RE.search(translate_listing_title(description))
     if cm:
         raw_condition = (cm.group(1) or cm.group(2) or "").strip().lower()
         # Normalise "near mint" / "light played" spacing variants.
