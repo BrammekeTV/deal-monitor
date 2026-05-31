@@ -115,6 +115,18 @@ class Settings:
             _deep_get(raw, "flaresolverr", "url", default="http://localhost:8191"),
         )
 
+        # When True, Playwright is used as a fallback when FlareSolverr is
+        # configured but does not return usable results.  Defaults to False
+        # because FlareSolverr is faster; set PLAYWRIGHT_FALLBACK=true or
+        # scraper.playwright_fallback: true in config.yaml to opt in.
+        _pw_fallback_env = os.getenv("PLAYWRIGHT_FALLBACK", "").lower()
+        if _pw_fallback_env in ("1", "true", "yes"):
+            self.playwright_fallback: bool = True
+        elif _pw_fallback_env in ("0", "false", "no"):
+            self.playwright_fallback = False
+        else:
+            self.playwright_fallback = bool(s.get("playwright_fallback", False))
+
         # --- Discord presentation ---
         disc = raw.get("discord", {})
         self.embed_colour: int = int(disc.get("embed_colour", 0x00FF7F))
