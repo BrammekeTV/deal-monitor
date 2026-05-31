@@ -139,6 +139,134 @@ class TestParseProductPageEnglish:
 
 
 # ---------------------------------------------------------------------------
+# 2025 Cardmarket Bootstrap-grid structure (dl.labeled row mx-auto g-0)
+# ---------------------------------------------------------------------------
+# Real HTML captured from cardmarket.com product pages in 2025.
+# The <dl> no longer has class "info-list-container"; it uses Bootstrap grid
+# classes.  The price labels (From, Price Trend, etc.) are unchanged.
+# The From price is a bare text node (no wrapping <span>).
+
+_BOOTSTRAP_DL_HTML = """
+<html><body>
+<h1>Greavard</h1>
+<dl class="labeled row mx-auto g-0">
+  <dt class="col-6 col-xl-5">Rarity</dt>
+  <dd class="col-6 col-xl-7">Promo</dd>
+  <dt class="col-6 col-xl-5">Available items</dt>
+  <dd class="col-6 col-xl-7">2028</dd>
+  <dt class="col-6 col-xl-5">From</dt>
+  <dd class="col-6 col-xl-7">0,02 €</dd>
+  <dt class="col-6 col-xl-5">Price Trend</dt>
+  <dd class="col-6 col-xl-7"><span>0,48 €</span></dd>
+  <dt class="col-6 col-xl-5">30-days average price</dt>
+  <dd class="col-6 col-xl-7"><span>0,39 €</span></dd>
+  <dt class="col-6 col-xl-5">7-days average price</dt>
+  <dd class="col-6 col-xl-7"><span>0,42 €</span></dd>
+  <dt class="col-6 col-xl-5">1-day average price</dt>
+  <dd class="col-6 col-xl-7"><span>1,00 €</span></dd>
+</dl>
+</body></html>
+"""
+
+
+class TestParseProductPageBootstrap2025:
+    """Tests for the 2025 Cardmarket Bootstrap-grid dl structure."""
+
+    def setup_method(self) -> None:
+        self.result = _parse_product_page(_BOOTSTRAP_DL_HTML)
+
+    def test_from_price_parsed(self) -> None:
+        assert "lowest_price" in self.result
+        assert self.result["lowest_price"] == pytest.approx(0.02)
+
+    def test_price_trend_parsed(self) -> None:
+        assert "price_trend" in self.result
+        assert self.result["price_trend"] == pytest.approx(0.48)
+
+    def test_avg_30_days_parsed(self) -> None:
+        assert "avg_30_days" in self.result
+        assert self.result["avg_30_days"] == pytest.approx(0.39)
+
+    def test_avg_7_days_parsed(self) -> None:
+        assert "avg_7_days" in self.result
+        assert self.result["avg_7_days"] == pytest.approx(0.42)
+
+    def test_avg_1_day_parsed(self) -> None:
+        assert "avg_1_day" in self.result
+        assert self.result["avg_1_day"] == pytest.approx(1.00)
+
+
+# ---------------------------------------------------------------------------
+# New 2025 Cardmarket labels ("From" → "Lowest" / "Lowest price")
+# ---------------------------------------------------------------------------
+
+_LOWEST_LABEL_HTML = """
+<html><body>
+<h1>Pikachu</h1>
+<dl class="info-list-container">
+  <dt>Available items</dt>
+  <dd><span class="badge">15</span></dd>
+  <dt>Lowest</dt>
+  <dd><span class="font-weight-bold color-primary">2,50 €</span></dd>
+  <dt>Price Trend</dt>
+  <dd><span class="font-weight-bold color-primary">3,00 €</span></dd>
+  <dt>30-days Average Price</dt>
+  <dd><span class="font-weight-bold color-primary">2,90 €</span></dd>
+  <dt>7-days Average Price</dt>
+  <dd><span class="font-weight-bold color-primary">2,75 €</span></dd>
+  <dt>1-day Average Price</dt>
+  <dd><span class="font-weight-bold color-primary">2,60 €</span></dd>
+</dl>
+</body></html>
+"""
+
+_LOWEST_PRICE_LABEL_HTML = """
+<html><body>
+<dl class="info-list-container">
+  <dt>Lowest price</dt>
+  <dd><span>5,00 €</span></dd>
+  <dt>Price Trend</dt>
+  <dd><span>6,00 €</span></dd>
+</dl>
+</body></html>
+"""
+
+
+class TestParseProductPageLowestLabel:
+    """Tests for the 2025 Cardmarket redesign where 'From' became 'Lowest'."""
+
+    def setup_method(self) -> None:
+        self.result = _parse_product_page(_LOWEST_LABEL_HTML)
+
+    def test_lowest_label_maps_to_lowest_price(self) -> None:
+        assert "lowest_price" in self.result
+        assert self.result["lowest_price"] == pytest.approx(2.50)
+
+    def test_price_trend_still_parsed(self) -> None:
+        assert "price_trend" in self.result
+        assert self.result["price_trend"] == pytest.approx(3.00)
+
+    def test_avg_30_days_still_parsed(self) -> None:
+        assert "avg_30_days" in self.result
+        assert self.result["avg_30_days"] == pytest.approx(2.90)
+
+
+class TestParseProductPageLowestPriceLabel:
+    """Tests for the full 'Lowest price' label variant."""
+
+    def setup_method(self) -> None:
+        self.result = _parse_product_page(_LOWEST_PRICE_LABEL_HTML)
+
+    def test_lowest_price_label_maps_to_lowest_price(self) -> None:
+        assert "lowest_price" in self.result
+        assert self.result["lowest_price"] == pytest.approx(5.00)
+
+    def test_price_trend_still_parsed(self) -> None:
+        assert "price_trend" in self.result
+        assert self.result["price_trend"] == pytest.approx(6.00)
+
+
+# ---------------------------------------------------------------------------
 # Dutch (NL) Cardmarket labels
 # ---------------------------------------------------------------------------
 
