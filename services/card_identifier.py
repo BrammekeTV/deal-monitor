@@ -106,6 +106,7 @@ class CardFingerprint:
 
     game: str | None = None
     card_name: str | None = None
+    card_name_matched: bool = False
     set_name: str | None = None
     set_code: str | None = None
     collector_number: str | None = None
@@ -125,6 +126,7 @@ class CardFingerprint:
         return {
             "game": self.game,
             "card_name": self.card_name,
+            "card_name_matched": self.card_name_matched,
             "set_name": self.set_name,
             "set_code": self.set_code,
             "collector_number": self.collector_number,
@@ -205,6 +207,7 @@ def identify_card(title: str) -> CardFingerprint:
     # --- Core fields from card_analyzer ---
     info = extract_card_info(title)
     fp.card_name = info.get("card_name")
+    fp.card_name_matched = bool(info.get("card_name_matched", False))
     fp.set_name = info.get("set_name")
     fp.set_code = info.get("set_code")
     fp.collector_number = info.get("collector_number")

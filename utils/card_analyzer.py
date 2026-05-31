@@ -19,6 +19,12 @@ import re
 from typing import TYPE_CHECKING
 
 from utils.logger import get_logger
+from utils.pokemon_data import (
+    CARD_PREFIXES,
+    CARD_SUFFIXES,
+    KNOWN_SET_CODES,
+    _POKEMON_NAME_MAP,
+)
 
 if TYPE_CHECKING:
     from scraper.base import Listing
@@ -162,6 +168,15 @@ _LANG_PREFIX_RE = re.compile(
 # Collector number: e.g. "218/172", "006/197", "044/185"
 _COLLECTOR_NUMBER_RE = re.compile(r"\b(\d{1,4})/(\d{2,4})\b")
 
+# Subset collector number: e.g. "SV49/SV94" (Shiny Vault in Hidden Fates),
+# "TG09/TG30" (Trainer Gallery in Silver Tempest), "GG12/GG70" (Crown Zenith).
+# First group: card number with letter prefix + 2-3 digits.
+# Second group: the total / set size (letter prefix optional).
+# Requiring 2+ digits prevents false-positive matches on set codes like "SV1a".
+_SUBSET_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{2,3}[a-z]?)\s*/\s*([A-Z]{0,3}\d{2,3}[a-z]?)(?![A-Za-z0-9])"
+)
+
 # Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145"
 # Pattern: 2–6 uppercase letters (set code, typically ending in P for promos)
 # followed by optional whitespace and 1–4 digits.
@@ -196,6 +211,66 @@ _NOT_PROMO_TOKENS: frozenset[str] = frozenset({
 })
 
 
+def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
+    """Try to parse *text* as ``[prefix] [pokemon_name] [suffix]``.
+
+    Returns ``(full_card_name, is_matched)`` where:
+
+    - *full_card_name* is the canonical card name (preserving prefix/suffix
+      from *text* and the canonical base name from the known list), or the
+      original *text* when no match is found.
+    - *is_matched* is ``True`` when the base name was found in the known
+      Pokémon names list.
+
+    Examples::
+
+        _match_pokemon_name("Charizard ex")       → ("Charizard ex", True)
+        _match_pokemon_name("Alolan Ninetales GX") → ("Alolan Ninetales GX", True)
+        _match_pokemon_name("Pikachu VMAX")        → ("Pikachu VMAX", True)
+        _match_pokemon_name("Random Card EX")      → ("Random Card EX", False)
+    """
+    if not text:
+        return None, False
+
+    working = " ".join(text.split()).strip()
+
+    # --- Strip trailing card-name suffix (longest first) ---
+    found_suffix: str | None = None
+    for sfx in CARD_SUFFIXES:
+        # Word-boundary-aware suffix match at end of string.
+        pattern = r"(?i)(?:\s+)" + re.escape(sfx) + r"\s*$"
+        m = re.search(pattern, working)
+        if m:
+            found_suffix = working[m.start() :].strip()  # preserve original casing
+            working = working[: m.start()].strip()
+            break
+
+    # --- Strip leading card-name prefix (longest first) ---
+    found_prefix: str | None = None
+    for pfx in CARD_PREFIXES:
+        pattern = r"^" + re.escape(pfx) + r"(?:\s+|$)"
+        m = re.match(pattern, working, re.IGNORECASE)
+        if m:
+            found_prefix = working[: m.end()].strip()  # preserve original casing
+            working = working[m.end() :].strip()
+            break
+
+    # --- Lookup remaining text in the known Pokémon names list ---
+    canonical = _POKEMON_NAME_MAP.get(working.lower())
+    if canonical is not None:
+        parts: list[str] = []
+        if found_prefix:
+            parts.append(found_prefix)
+        parts.append(canonical)
+        if found_suffix:
+            parts.append(found_suffix)
+        return " ".join(parts), True
+
+    # No match – return the original (cleaned) text as-is.
+    original = " ".join(text.split()).strip()
+    return original or None, False
+
+
 def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None]:
     """Try to extract a promo-style collector number from *text*.
 
@@ -224,37 +299,43 @@ def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None
     return None, None, None
 
 
-def extract_card_info(title: str) -> dict[str, str | None]:
+def extract_card_info(title: str) -> dict[str, str | None | bool]:
     """Extract structured card identity fields from a marketplace listing title.
 
     Handles common Vinted listing title formats across multiple languages::
 
         "Carte Pokemon Raikou V SAR 218/172 - S12a VSTAR Universe"
         → card_name="Raikou V", collector_number="218/172",
-          set_code="S12a", set_name="VSTAR Universe"
+          set_code="S12a", set_name="VSTAR Universe", card_name_matched=True
 
         "Pokemon Charizard ex 006/197 Obsidian Flames"
         → card_name="Charizard ex", collector_number="006/197",
-          set_code=None, set_name="Obsidian Flames"
+          set_code=None, set_name="Obsidian Flames", card_name_matched=True
 
         "Pikachu (SVP 214)"
         → card_name="Pikachu", collector_number="214",
-          set_code="SVP", set_name=None
+          set_code="SVP", set_name=None, card_name_matched=True
+
+        "Umbreon TG25/TG30 Silver Tempest"
+        → card_name="Umbreon", collector_number="TG25/TG30",
+          set_code=None, set_name="Silver Tempest", card_name_matched=True
 
     Returns a dict with keys ``card_name``, ``collector_number``, ``set_code``,
-    and ``set_name``; each value is a string or ``None`` when not found.
+    ``set_name``, and ``card_name_matched`` (bool); string values are ``None``
+    when not found.
     """
-    result: dict[str, str | None] = {
+    result: dict[str, str | None | bool] = {
         "card_name": None,
         "collector_number": None,
         "set_code": None,
         "set_name": None,
+        "card_name_matched": False,
     }
 
     # Strip language/game prefix.
     text = _LANG_PREFIX_RE.sub("", title).strip()
 
-    # Find collector number – it anchors the rest of the extraction.
+    # ── 1. Standard collector number: NNN/NNN ────────────────────────────
     num_match = _COLLECTOR_NUMBER_RE.search(text)
     if num_match:
         result["collector_number"] = num_match.group(0)
@@ -262,34 +343,59 @@ def extract_card_info(title: str) -> dict[str, str | None]:
         after = text[num_match.end() :].strip()
 
         # Card name = text before number, minus any trailing rarity code.
-        card_name = _RARITY_SUFFIX_RE.sub("", before).strip()
-        result["card_name"] = card_name or None
+        raw_name = _RARITY_SUFFIX_RE.sub("", before).strip()
+        card_name, matched = _match_pokemon_name(raw_name)
+        result["card_name"] = card_name
+        result["card_name_matched"] = matched
 
         # Set info = text after number.
         set_code, set_name = _parse_set_info(after)
         result["set_code"] = set_code
         result["set_name"] = set_name
-    else:
-        # Try promo-style collector number (e.g. "SVP 214", "SVP214").
-        promo_name, promo_set_code, promo_number = _extract_promo_number(text)
-        if promo_set_code and promo_number:
-            result["card_name"] = promo_name
-            result["set_code"] = promo_set_code
-            result["collector_number"] = promo_number
-        else:
-            # No collector number – use the cleaned text as a best-effort card name.
-            card_name = _RARITY_SUFFIX_RE.sub("", text).strip()
-            result["card_name"] = card_name or None
+        return result
 
+    # ── 2. Subset slash notation: XX99/XX99 (e.g. SV49/SV94, TG09/TG30) ──
+    subset_match = _SUBSET_NUMBER_RE.search(text)
+    if subset_match:
+        result["collector_number"] = subset_match.group(0)
+        before = text[: subset_match.start()].strip()
+        after = text[subset_match.end() :].strip()
+
+        raw_name = _RARITY_SUFFIX_RE.sub("", before).strip()
+        card_name, matched = _match_pokemon_name(raw_name)
+        result["card_name"] = card_name
+        result["card_name_matched"] = matched
+
+        set_code, set_name = _parse_set_info(after)
+        result["set_code"] = set_code
+        result["set_name"] = set_name
+        return result
+
+    # ── 3. Promo-style collector number (e.g. "SVP 214", "SVP214") ────────
+    promo_name, promo_set_code, promo_number = _extract_promo_number(text)
+    if promo_set_code and promo_number:
+        card_name, matched = _match_pokemon_name(promo_name or "")
+        result["card_name"] = card_name
+        result["card_name_matched"] = matched
+        result["set_code"] = promo_set_code
+        result["collector_number"] = promo_number
+        return result
+
+    # ── 4. No collector number – best-effort card name only ───────────────
+    raw_name = _RARITY_SUFFIX_RE.sub("", text).strip()
+    card_name, matched = _match_pokemon_name(raw_name)
+    result["card_name"] = card_name
+    result["card_name_matched"] = matched
     return result
 
 
 def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     """Return *(set_code, set_name)* from the text following a collector number.
 
-    Tries to identify a short set code token (e.g. ``S12a``, ``OBF``) before
-    the human-readable set name.  When no code is found, all of *text* is
-    treated as the set name.
+    Validates any candidate set code against the known set-code list.  Unknown
+    codes are not stored as the set code; the full text is treated as the set
+    name instead, so the listing goes to the review queue rather than receiving
+    a fabricated set code.
     """
     text = text.strip()
     if not text:
@@ -298,14 +404,21 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     # Try "set_code<space>set_name" pattern.
     m = _SET_CODE_RE.match(text)
     if m:
-        return m.group(1), m.group(2).strip() or None
+        candidate = m.group(1)
+        if candidate.upper() in KNOWN_SET_CODES:
+            return candidate, m.group(2).strip() or None
+        # Not a known set code – treat the whole text as the set name.
+        set_name = re.sub(r"^[\s\-–—]+", "", text).strip()
+        return None, set_name or None
 
     # Try set code only (no set name after it).
     m = _SET_CODE_ONLY_RE.match(text)
     if m:
-        # Strip any leading separator characters.
         stripped = text.lstrip(" \t-–—").strip()
-        return stripped or None, None
+        if stripped.upper() in KNOWN_SET_CODES:
+            return stripped or None, None
+        # Not a known set code – treat it as a set name.
+        return None, stripped or None
 
     # No set code – strip any leading separator and treat remainder as set name.
     set_name = re.sub(r"^[\s\-–—]+", "", text).strip()
