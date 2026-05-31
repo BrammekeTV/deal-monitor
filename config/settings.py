@@ -106,6 +106,15 @@ class Settings:
         self.cardmarket_enabled: bool = bool(cm.get("enabled", True))
         self.cardmarket_fuzzy_threshold: float = float(cm.get("fuzzy_threshold", 80.0))
 
+        # --- FlareSolverr ---
+        # Can be overridden via FLARESOLVERR_URL env var.
+        # Default: localhost for local development; Docker Compose sets this
+        # automatically to http://flaresolverr:8191 via the environment block.
+        self.flaresolverr_url: str = os.getenv(
+            "FLARESOLVERR_URL",
+            _deep_get(raw, "flaresolverr", "url", default="http://localhost:8191"),
+        )
+
         # --- Discord presentation ---
         disc = raw.get("discord", {})
         self.embed_colour: int = int(disc.get("embed_colour", 0x00FF7F))

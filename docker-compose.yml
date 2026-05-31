@@ -1,16 +1,29 @@
 version: "3.9"
 
 services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
   deal-monitor:
     build: .
     container_name: deal-monitor
     restart: unless-stopped
+    depends_on:
+      - flaresolverr
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - DATABASE_PATH=/app/data/deals.db
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # When running via Docker Compose, FlareSolverr is reachable by service name.
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
     volumes:
       # Persist the database and logs outside the container.
       - ./data:/app/data
