@@ -69,7 +69,10 @@ _PRODUCT_LINK_SEL = "a[href*='/en/Pokemon/Products/']"
 
 # Price info container on product pages; we wait for this to be rendered.
 # Multiple selectors are tried in order to handle HTML structure variations.
+# As of 2025 Cardmarket uses <dl class="labeled row mx-auto g-0"> (Bootstrap grid);
+# legacy pages used <dl class="info-list-container">.
 _PRICE_CONTAINER_SELS = [
+    "dl.labeled",
     "dl.info-list-container",
     ".info-list-container dl",
     ".info-list-container",
@@ -762,9 +765,22 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
             price_data[key] = value
             logger.debug("Cardmarket dt/dd: %r → %r", key, value)
 
-        # Lowest / From price  (labels: "From" / "De" / "Ab" / "Vanaf" / "Fra")
+        # Lowest / From price
+        # Old labels (pre-2025): "From" / "De" / "Ab" / "Vanaf" / "Fra"
+        # New labels (2025+):    "Lowest" / "Lowest price" and translations
+        #   NL: "Laagste" / "Laagste prijs"
+        #   DE: "Niedrigster" / "Niedrigster Preis"
+        #   FR: "Le plus bas" / "Prix le plus bas"
+        _LOWEST_LABELS = frozenset((
+            "from", "de", "ab", "vanaf", "fra", "od", "da", "vanuit",
+            "lowest", "lowest price",
+            "laagste", "laagste prijs",
+            "niedrigster", "niedrigster preis",
+            "le plus bas", "prix le plus bas",
+        ))
         for key, value in price_data.items():
-            if key.lower() in ("from", "de", "ab", "vanaf", "fra", "od", "da", "vanuit"):
+            k_lower = key.lower()
+            if k_lower in _LOWEST_LABELS or k_lower.startswith("lowest"):
                 v = _parse_price_to_float(value)
                 if v > 0:
                     prices["lowest_price"] = v
