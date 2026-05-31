@@ -22,6 +22,9 @@ aiohttp>=3.9.0
 # Browser automation for Cardmarket scraping (Cloudflare bypass)
 playwright>=1.40.0
 
+# Camoufox: patched Firefox with anti-fingerprinting for reliable Cloudflare bypass
+camoufox>=0.4.0
+
 # HTML parsing for Cardmarket product pages
 beautifulsoup4>=4.12.0
 

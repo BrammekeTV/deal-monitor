@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system-level Playwright dependencies.
+# Install system-level browser dependencies (Chromium + Firefox).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libnss3 \
@@ -26,8 +26,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers (Chromium only to save space).
-RUN playwright install chromium
+# Install Firefox system-level dependencies (required by Camoufox/Playwright Firefox).
+RUN playwright install-deps firefox
+
+# Fetch Camoufox's patched Firefox binary.
+RUN python -m camoufox fetch
 
 # Copy project files.
 COPY . .
