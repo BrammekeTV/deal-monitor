@@ -26,7 +26,7 @@ import asyncio
 import dataclasses
 import random
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import discord
