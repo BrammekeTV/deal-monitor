@@ -160,6 +160,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
         await self.bot.wait_until_ready()
         logger.info("MonitorCog: monitoring loop started")
 
+        # Post initial status immediately so the status channel is cleared and
+        # shows the bot is online.  Set _next_run to now so the embed displays
+        # "starting now" instead of "Unknown" (issue #82).
+        self._next_run = datetime.now(timezone.utc)
+        try:
+            await self._update_status_message()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MonitorCog: failed to post initial status message: %s", exc)
+
         while not self.bot.is_closed():
             if self._paused:
                 logger.debug("MonitorCog: paused – waiting for resume")
@@ -169,7 +178,19 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("MonitorCog: failed to update status message (paused): %s", exc)
                 await self._resume_event.wait()
+                # Update status immediately after resuming so the channel shows
+                # "Running" rather than "Paused" (issue #81).
+                try:
+                    await self._update_status_message()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MonitorCog: failed to update status message (resumed): %s", exc)
                 continue
+
+            # Update status at the start of each new cycle (issue #81).
+            try:
+                await self._update_status_message()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MonitorCog: failed to update status message (cycle start): %s", exc)
 
             try:
                 await self._run_cycle()
@@ -180,11 +201,18 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     "MonitorCog: unexpected error in monitoring loop: %s",
                     exc, exc_info=True,
                 )
-                await self._send_error(
-                    failure_step="monitor_loop",
-                    error_message=str(exc),
-                    stack_trace=traceback.format_exc(),
-                )
+                # Wrap _send_error in its own try/except so a failure here
+                # cannot crash the monitoring task (issue: bot not entering new run).
+                try:
+                    await self._send_error(
+                        failure_step="monitor_loop",
+                        error_message=str(exc),
+                        stack_trace=traceback.format_exc(),
+                    )
+                except Exception as send_exc:  # noqa: BLE001
+                    logger.error(
+                        "MonitorCog: failed to send loop error notification: %s", send_exc
+                    )
 
             # Calculate next run time before updating the status message so the
             # status embed always shows the correct upcoming schedule.
