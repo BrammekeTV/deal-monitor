@@ -300,27 +300,29 @@ def build_review_embed(
 
     # ── Extracted fingerprint ─────────────────────────────────────────────
     if fingerprint:
-        fp_lines = []
-        if fingerprint.card_name:
-            fp_lines.append(f"Card Name: **{fingerprint.card_name}**")
-        if fingerprint.set_name:
-            fp_lines.append(f"Set: **{fingerprint.set_name}**")
-        if fingerprint.set_code:
-            fp_lines.append(f"Set Code: **{fingerprint.set_code}**")
-        if fingerprint.collector_number:
-            fp_lines.append(f"Number: **{fingerprint.collector_number}**")
-        if fingerprint.rarity:
-            fp_lines.append(f"Rarity: **{fingerprint.rarity}**")
-        if fingerprint.language:
-            fp_lines.append(f"Language: **{fingerprint.language}**")
-        if fingerprint.grade_authority:
-            fp_lines.append(f"Grade: **{fingerprint.grade_authority} {fingerprint.grade_value}**")
-        if fp_lines:
-            embed.add_field(
-                name="🔎 Extracted Card Info",
-                value="\n".join(fp_lines),
-                inline=False,
-            )
+        def _val(v: object) -> str:
+            return f"**{v}**" if v else "—"
+
+        grade_str = (
+            f"**{fingerprint.grade_authority} {fingerprint.grade_value}**"
+            if fingerprint.grade_authority
+            else "—"
+        )
+        fp_lines = [
+            f"Card Name: {_val(fingerprint.card_name)}",
+            f"Set: {_val(fingerprint.set_name)}",
+            f"Set Code: {_val(fingerprint.set_code)}",
+            f"Number: {_val(fingerprint.collector_number)}",
+            f"Condition: {_val(fingerprint.condition)}",
+            f"Rarity: {_val(fingerprint.rarity)}",
+            f"Language: {_val(fingerprint.language)}",
+            f"Grade: {grade_str}",
+        ]
+        embed.add_field(
+            name="🔎 Extracted Card Info",
+            value="\n".join(fp_lines),
+            inline=False,
+        )
 
     # ── Failure reason ────────────────────────────────────────────────────
     if failure_reason:
@@ -484,25 +486,29 @@ def build_error_embed(
 
     # ── Extracted card info ───────────────────────────────────────────────
     if fingerprint:
-        fp_lines = []
-        if fingerprint.card_name:
-            fp_lines.append(f"Card Name: **{fingerprint.card_name}**")
-        if fingerprint.set_name:
-            fp_lines.append(f"Set: **{fingerprint.set_name}**")
-        if fingerprint.set_code:
-            fp_lines.append(f"Set Code: **{fingerprint.set_code}**")
-        if fingerprint.collector_number:
-            fp_lines.append(f"Collector Number: **{fingerprint.collector_number}**")
-        if fingerprint.rarity:
-            fp_lines.append(f"Rarity: **{fingerprint.rarity}**")
-        if fingerprint.language:
-            fp_lines.append(f"Language: **{fingerprint.language}**")
-        if fp_lines:
-            embed.add_field(
-                name="🔎 Extracted Card Info",
-                value="\n".join(fp_lines),
-                inline=False,
-            )
+        def _val(v: object) -> str:
+            return f"**{v}**" if v else "—"
+
+        grade_str = (
+            f"**{fingerprint.grade_authority} {fingerprint.grade_value}**"
+            if fingerprint.grade_authority
+            else "—"
+        )
+        fp_lines = [
+            f"Card Name: {_val(fingerprint.card_name)}",
+            f"Set: {_val(fingerprint.set_name)}",
+            f"Set Code: {_val(fingerprint.set_code)}",
+            f"Collector Number: {_val(fingerprint.collector_number)}",
+            f"Condition: {_val(fingerprint.condition)}",
+            f"Rarity: {_val(fingerprint.rarity)}",
+            f"Language: {_val(fingerprint.language)}",
+            f"Grade: {grade_str}",
+        ]
+        embed.add_field(
+            name="🔎 Extracted Card Info",
+            value="\n".join(fp_lines),
+            inline=False,
+        )
 
     # ── Correction instructions ───────────────────────────────────────────
     if cardmarket_url:

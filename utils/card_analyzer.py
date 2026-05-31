@@ -494,6 +494,15 @@ _KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
         ("star birth", "Star Birth"),
         ("vmax climax", "VMAX Climax"),
         ("incandescent arcana", "Incandescent Arcana"),
+        # Mega Evolution / Japanese 2024-2025 sets
+        ("mega evolution", "Mega Evolution"),
+        ("phantasmal flames", "Phantasmal Flames"),
+        ("ascended heroes", "Ascended Heroes"),
+        ("perfect order", "Perfect Order"),
+        ("chaos rising", "Chaos Rising"),
+        ("pitch black", "Pitch Black"),
+        ("black bolt", "Black Bolt"),
+        ("white flare", "White Flare"),
         # Misc / promos
         ("southern islands", "Southern Islands"),
         ("wizards black star promos", "Wizards Black Star Promos"),
@@ -531,6 +540,15 @@ _CONDITION_WORD_PREFIX_RE = re.compile(
 # Excludes EX (set code), PL (Platinum set code), HP (Holon Phantoms set code).
 _CONDITION_ABBREV_PREFIX_RE = re.compile(
     r"^(NM|LP|GD|PO|VG)\b",
+    re.IGNORECASE,
+)
+
+# Trailing game-context noise that is NOT part of a card name:
+# e.g. "Probopass pokemon card" → strip "pokemon card" → "Probopass"
+# e.g. "Pikachu TCG"           → strip "TCG"          → "Pikachu"
+_GAME_SUFFIX_RE = re.compile(
+    r"\s+(?:pok[eé]mon\s+)?(?:tcg\s+)?(?:card|kaart|karte|carte|carta)s?\s*$"
+    r"|\s+(?:pok[eé]mon|tcg)\s*$",
     re.IGNORECASE,
 )
 
@@ -613,6 +631,47 @@ def _split_set_from_before(before: str) -> tuple[str, str]:
     return cleaned, ""
 
 
+def _split_before_at_known_set(text: str) -> tuple[str, str]:
+    """Search *text* for a known set name anywhere (not just after ' - ').
+
+    Useful when the set name appears inline before the collector number, e.g.::
+
+        "Stoutland ir white flare 156/086"
+        → card_part="Stoutland ir", set_fragment="white flare"
+
+    Returns *(card_part, set_fragment)* where *set_fragment* is the
+    canonical set name, or *(text, "")* when no known set is found.
+    The search prefers the *rightmost* occurrence to keep as much of the
+    card name as possible.
+    """
+    normalised = " ".join(text.lower().split())
+    best_idx: int = -1
+    best_canonical: str = ""
+    for lower_key, canonical in _KNOWN_SET_NAMES:
+        idx = normalised.find(lower_key)
+        while idx != -1:
+            # Ensure word boundary before.
+            if idx > 0 and normalised[idx - 1] != " ":
+                idx = normalised.find(lower_key, idx + 1)
+                continue
+            # Ensure word boundary after.
+            end_idx = idx + len(lower_key)
+            if end_idx < len(normalised) and normalised[end_idx].isalpha():
+                idx = normalised.find(lower_key, idx + 1)
+                continue
+            # Prefer the leftmost match with the longest key (sorted longest-first);
+            # when two keys start at the same position the longer one wins already.
+            if best_idx == -1 or idx < best_idx:
+                best_idx = idx
+                best_canonical = canonical
+            break
+    if best_idx == -1:
+        return text, ""
+    # Map the index back to the original text using character count.
+    card_part = text[:best_idx].rstrip()
+    return card_part, best_canonical
+
+
 def _strip_after_number_noise(text: str) -> str:
     """Strip language-code and condition tokens from text that follows a
     collector number in a Vinted (or similar) listing title.
@@ -683,6 +742,13 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
         return None, False
 
     working = " ".join(text.split()).strip()
+
+    # --- Strip trailing game-context noise before attempting name lookup ---
+    # e.g. "Probopass pokemon card"  → "Probopass"
+    # e.g. "Mewtwo ex pokemon kaart" → "Mewtwo ex"
+    game_stripped = _GAME_SUFFIX_RE.sub("", working).strip()
+    if game_stripped:
+        working = game_stripped
 
     # --- Strip trailing card-name suffix (longest first) ---
     found_suffix: str | None = None
@@ -830,6 +896,19 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         # (e.g. when the collector number is wrapped in "(NN/NN)").
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
+
+        # When no set info could be determined from the after/before fragments,
+        # scan the before text for an embedded known set name (e.g.
+        # "Stoutland ir white flare 156/086").
+        if set_code is None and set_name is None and not after_useful and not set_from_before:
+            name_part, set_frag = _split_before_at_known_set(before_clean)
+            if set_frag:
+                raw_name2 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", name_part))
+                card_name2, matched2 = _match_pokemon_name(raw_name2)
+                result["card_name"] = card_name2
+                result["card_name_matched"] = matched2
+                set_code, set_name = _parse_set_info(set_frag)
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -853,6 +932,17 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after_clean = _strip_after_number_noise(after)
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
+
+        # Same fallback: scan before text for embedded set name.
+        if set_code is None and set_name is None and not after_useful and not set_from_before:
+            name_part, set_frag = _split_before_at_known_set(before_clean)
+            if set_frag:
+                raw_name2 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", name_part))
+                card_name2, matched2 = _match_pokemon_name(raw_name2)
+                result["card_name"] = card_name2
+                result["card_name_matched"] = matched2
+                set_code, set_name = _parse_set_info(set_frag)
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -930,6 +1020,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
     card_name, matched = _match_pokemon_name(raw_name)
     result["card_name"] = card_name
     result["card_name_matched"] = matched
+
+    # When no collector number was found and the card name wasn't matched,
+    # try to split the text at a known set name so that e.g.
+    # "Charizard ex Obsidian Flames" → card="Charizard ex", set="Obsidian Flames".
+    if not matched:
+        name_part, set_frag = _split_before_at_known_set(raw_name)
+        if set_frag and name_part:
+            card_name2, matched2 = _match_pokemon_name(name_part.strip())
+            if matched2:
+                result["card_name"] = card_name2
+                result["card_name_matched"] = True
+                set_code, set_name = _parse_set_info(set_frag)
+                result["set_code"] = set_code
+                result["set_name"] = set_name
+
     return result
 
 
@@ -963,11 +1068,12 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         if _CONDITION_ABBREV_PREFIX_RE.match(candidate):
             remainder = m.group(2).strip()
             known = _find_known_set_name(remainder) or _search_known_set_name(remainder)
-            return None, (known or remainder) or None
-        # Not a known set code – treat the whole text as the set name.
+            return None, known or None
+        # Not a known set code – treat the whole text as the set name, but only
+        # when it matches a known set.
         raw = re.sub(r"^[\s\-–—]+", "", text).strip()
         known = _find_known_set_name(raw) or _search_known_set_name(raw)
-        return None, (known or raw) or None
+        return None, known or None
 
     # Try set code only (no set name after it).
     m = _SET_CODE_ONLY_RE.match(text)
@@ -978,14 +1084,15 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         # A standalone condition abbreviation yields no set info.
         if _CONDITION_ABBREV_PREFIX_RE.match(stripped):
             return None, None
-        # Not a known set code – check if it matches a known set name.
+        # Not a known set code – only return it when it's a known set name.
         known = _find_known_set_name(stripped) or _search_known_set_name(stripped)
-        return None, (known or stripped) or None
+        return None, known or None
 
-    # No set code – strip any leading separator and treat remainder as set name.
+    # No set code – strip any leading separator and treat remainder as set name,
+    # but only when it is a recognised set name.
     raw = re.sub(r"^[\s\-–—]+", "", text).strip()
     known = _find_known_set_name(raw) or _search_known_set_name(raw)
-    return None, (known or raw) or None
+    return None, known or None
 
 
 # ---------------------------------------------------------------------------

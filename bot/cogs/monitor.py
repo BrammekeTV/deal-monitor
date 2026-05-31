@@ -512,41 +512,62 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 "MonitorCog: Cardmarket scrape failed for '%s': %s",
                 listing.title[:60], exc,
             )
-            # Log error and abort – do NOT crash the loop or send to review.
-            error_log_id = await self.db.log_error(
-                listing_id=listing.listing_id,
-                listing_title=listing.title,
-                listing_url=listing.url,
-                listing_price=listing.price,
-                listing_currency=listing.currency,
-                cardmarket_url=resolved.url,
-                failure_step=exc.step,
-                http_status=exc.http_status,
-                error_message=exc.message,
-                stack_trace=exc.stack_trace,
-            )
-            await self._send_error(
-                failure_step=exc.step,
-                error_message=exc.message,
-                listing_title=listing.title,
-                listing_url=listing.url,
-                cardmarket_url=resolved.url,
-                http_status=exc.http_status,
-                stack_trace=exc.stack_trace,
-                fingerprint=fingerprint,
-                error_log_id=error_log_id,
-            )
-            # Mark as seen so we don't retry every cycle.
-            await self.db.mark_seen(
-                listing_id=listing.listing_id,
-                title=listing.title,
-                url=listing.url,
-                price=listing.price,
-                currency=listing.currency,
-                seller_name=listing.seller_name,
-                fingerprint=fingerprint.fingerprint_hash(),
-            )
-            return
+            # When the page loaded but had no pricing data, try V1-V10 variant
+            # URLs before giving up (e.g. Fennekin-MEP080 → Fennekin-V1-MEP080).
+            if "no pricing data" in exc.message.lower():
+                for variant_url in generate_variant_urls(resolved.url):
+                    try:
+                        cm_data = await self._cardmarket.scrape_url(variant_url)  # type: ignore[union-attr]
+                        logger.info(
+                            "MonitorCog: no pricing on primary URL, variant succeeded: %s",
+                            variant_url,
+                        )
+                        resolved = dataclasses.replace(resolved, url=variant_url)
+                        break
+                    except CardmarketScrapeError:
+                        continue
+                else:
+                    cm_data = None
+            else:
+                cm_data = None
+
+            if cm_data is None:
+                # Log error and abort – do NOT crash the loop or send to review.
+                error_log_id = await self.db.log_error(
+                    listing_id=listing.listing_id,
+                    listing_title=listing.title,
+                    listing_url=listing.url,
+                    listing_price=listing.price,
+                    listing_currency=listing.currency,
+                    listing_seller_name=listing.seller_name,
+                    cardmarket_url=resolved.url,
+                    failure_step=exc.step,
+                    http_status=exc.http_status,
+                    error_message=exc.message,
+                    stack_trace=exc.stack_trace,
+                )
+                await self._send_error(
+                    failure_step=exc.step,
+                    error_message=exc.message,
+                    listing_title=listing.title,
+                    listing_url=listing.url,
+                    cardmarket_url=resolved.url,
+                    http_status=exc.http_status,
+                    stack_trace=exc.stack_trace,
+                    fingerprint=fingerprint,
+                    error_log_id=error_log_id,
+                )
+                # Mark as seen so we don't retry every cycle.
+                await self.db.mark_seen(
+                    listing_id=listing.listing_id,
+                    title=listing.title,
+                    url=listing.url,
+                    price=listing.price,
+                    currency=listing.currency,
+                    seller_name=listing.seller_name,
+                    fingerprint=fingerprint.fingerprint_hash(),
+                )
+                return
 
         # ── 4b. PSA-specific listing price ────────────────────────────────
         # For PSA 9 and PSA 10 listings, attempt to find the price of the
