@@ -564,6 +564,26 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "fossil": "FO",
     # GO
     "pokemon go": "GO",
+    # Black & White era
+    "black white": "BLW",
+    "black & white": "BLW",
+    "emerging powers": "EPO",
+    "noble victories": "NVI",
+    "next destinies": "NXD",
+    "dark explorers": "DEX",
+    "dragons exalted": "DRX",
+    "boundaries crossed": "BCR",
+    "plasma storm": "PLS",
+    "plasma freeze": "PLF",
+    "plasma blast": "PLB",
+    "legendary treasures": "LTR",
+    # Mega Evolution / Japanese Era 2024–2025
+    "mega evolution": "MEG",
+    "phantasmal flames": "PFL",
+    "ascended heroes": "ASC",
+    "perfect order": "POR",
+    "chaos rising": "CRI",
+    "pitch black": "PBL",
 }
 
 

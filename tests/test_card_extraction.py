@@ -285,3 +285,48 @@ class TestSetCodeValidation:
         code, name = _parse_set_info("NM")
         assert code is None
         assert name == "NM"
+
+
+class TestNoisyTitleNoCollectorNumber:
+    """Regression tests for path-4 (no collector number) card name extraction.
+
+    Previously, the full title was returned as the card name when noise tokens
+    such as years or grade certifiers appeared after the card name.
+    """
+
+    def test_pokemon_name_before_year_extracted(self):
+        """'Haxorus 2012 Noble victories Holo' → card_name='Haxorus'."""
+        info = extract_card_info("Haxorus 2012 Noble victories Holo")
+        assert info["card_name"] == "Haxorus"
+        assert info["card_name_matched"] is True
+
+    def test_pokemon_name_before_year_set_name_extracted(self):
+        """Set info after the year break point should be captured."""
+        info = extract_card_info("Haxorus 2012 Noble victories Holo")
+        # set_name contains 'Noble victories' (may include trailing 'Holo')
+        assert info["set_name"] is not None
+        assert "noble victories" in info["set_name"].lower()
+
+    def test_pokemon_name_before_grade_extracted(self):
+        """'Stargazer Pikachu & Friends CGC 9 ...' → card_name preserves full name."""
+        title = (
+            "Pokemon Stargazer Pikachu & Friends CGC 9 "
+            "Astronomical Observatory 2025 Rare Japan"
+        )
+        info = extract_card_info(title)
+        assert info["card_name"] == "Stargazer Pikachu & Friends"
+        assert info["card_name_matched"] is True
+
+    def test_grade_match_captured(self):
+        """Grade should still be captured by card_identifier, not card_analyzer."""
+        # card_analyzer doesn't return grade – that's card_identifier's job.
+        # Just verify card_name is clean.
+        info = extract_card_info("Charizard PSA 10 Base Set")
+        assert info["card_name"] == "Charizard"
+        assert info["card_name_matched"] is True
+
+    def test_no_break_point_falls_back(self):
+        """When no break point exists, the original fallback behaviour is used."""
+        info = extract_card_info("Pikachu V")
+        assert info["card_name"] == "Pikachu V"
+        assert info["card_name_matched"] is True

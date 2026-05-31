@@ -1458,6 +1458,84 @@ def _extract_product_id(url: str) -> str | None:
     return path_parts[-1] if path_parts else None
 
 
+# ---------------------------------------------------------------------------
+# URL variant helpers
+# ---------------------------------------------------------------------------
+
+# Matches a slug that already has a version prefix, e.g. "Salazzle-V1-ASC224".
+# Groups: card (everything before the version), ver (digit(s)), suffix (code+number).
+_SLUG_VERSION_RE = re.compile(
+    r'^(?P<card>.+)-V(?P<ver>\d+)-(?P<suffix>[A-Z]{0,6}\d{2,4})$',
+)
+
+# Matches the number-suffix part of a product slug, e.g. "ASC224" or "044".
+_SLUG_NUM_SUFFIX_RE = re.compile(r'^[A-Z]{0,6}\d{2,4}$')
+
+# Number of numbered variants (V1…V_N) to probe beside the base slug.
+_VARIANT_COUNT = 2
+
+
+def generate_variant_urls(url: str) -> list[str]:
+    """Return alternative URL variants for a Cardmarket product page.
+
+    Cardmarket can list multiple print versions of the same card under
+    different product slugs, e.g. ``Salazzle-ASC224``, ``Salazzle-V1-ASC224``,
+    ``Salazzle-V2-ASC224``.  Given any one of these URLs this function returns
+    the *other* variants so callers can probe all of them.
+
+    Returns an empty list when the URL does not match the expected pattern.
+
+    Examples::
+
+        generate_variant_urls(".../Salazzle-ASC224?...")
+        → [".../Salazzle-V1-ASC224?...", ".../Salazzle-V2-ASC224?..."]
+
+        generate_variant_urls(".../Salazzle-V1-ASC224?...")
+        → [".../Salazzle-ASC224?...", ".../Salazzle-V2-ASC224?..."]
+    """
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.split("/") if p]
+    if not path_parts:
+        return []
+
+    product_slug = path_parts[-1]
+    parent_path = "/" + "/".join(path_parts[:-1])
+
+    # Check whether the slug already contains a version prefix (e.g. "-V1-").
+    m = _SLUG_VERSION_RE.match(product_slug)
+    if m:
+        card_part = m.group("card")
+        num_suffix = m.group("suffix")
+    else:
+        # Scan right-to-left for the first hyphen-delimited segment that looks
+        # like a set-code+number suffix (e.g. "ASC224" or "044").
+        parts = product_slug.split("-")
+        suffix_idx: int | None = None
+        for i in range(len(parts) - 1, 0, -1):
+            if _SLUG_NUM_SUFFIX_RE.match(parts[i]):
+                suffix_idx = i
+                break
+        if suffix_idx is None:
+            return []
+        card_part = "-".join(parts[:suffix_idx])
+        num_suffix = parts[suffix_idx]
+
+    # Build all candidate slugs: base + V1…V{_VARIANT_COUNT}.
+    all_slugs = [f"{card_part}-{num_suffix}"]
+    for v in range(1, _VARIANT_COUNT + 1):
+        all_slugs.append(f"{card_part}-V{v}-{num_suffix}")
+
+    # Return every variant *except* the one that matches the input URL.
+    result: list[str] = []
+    for slug in all_slugs:
+        if slug.lower() == product_slug.lower():
+            continue
+        new_path = f"{parent_path}/{slug}"
+        result.append(urlunparse(parsed._replace(path=new_path)))
+
+    return result
+
+
 def _remove_country_filter(url: str) -> str:
     """Return *url* with the sellerCountry parameter removed."""
     parsed = urlparse(url)
