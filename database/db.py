@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS error_log (
     listing_url         TEXT,
     listing_price       REAL,
     listing_currency    TEXT    DEFAULT 'EUR',
+    listing_seller_name TEXT,
     cardmarket_url      TEXT,
     failure_step        TEXT,
     http_status         INTEGER,
@@ -235,6 +236,7 @@ class Database:
         for col, definition in (
             ("listing_price", "REAL"),
             ("listing_currency", "TEXT DEFAULT 'EUR'"),
+            ("listing_seller_name", "TEXT"),
         ):
             try:
                 await self._conn.execute(  # type: ignore[union-attr]
@@ -468,6 +470,7 @@ class Database:
         listing_url: str | None = None,
         listing_price: float | None = None,
         listing_currency: str | None = None,
+        listing_seller_name: str | None = None,
         cardmarket_url: str | None = None,
         failure_step: str | None = None,
         http_status: int | None = None,
@@ -501,15 +504,15 @@ class Database:
                 """
                 INSERT INTO error_log
                     (listing_id, listing_title, listing_url,
-                     listing_price, listing_currency,
+                     listing_price, listing_currency, listing_seller_name,
                      cardmarket_url,
                      failure_step, http_status, error_message, stack_trace,
                      created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     listing_id, listing_title, listing_url,
-                    listing_price, listing_currency or "EUR",
+                    listing_price, listing_currency or "EUR", listing_seller_name,
                     cardmarket_url,
                     failure_step, http_status, error_message, stack_trace, now,
                 ),

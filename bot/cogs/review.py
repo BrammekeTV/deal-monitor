@@ -399,6 +399,7 @@ class ReviewCog(commands.Cog, name="Review"):
             price=listing_price,
             currency=listing_currency,
             url=listing_url,
+            seller_name=review_item.get("seller_name"),
         )
         comparison = compare_prices(stub_listing, cm_data)
 
@@ -586,6 +587,7 @@ class ReviewCog(commands.Cog, name="Review"):
             price=listing_price,
             currency=listing_currency,
             url=listing_url,
+            seller_name=error_item.get("listing_seller_name"),
         )
         comparison = compare_prices(stub_listing, cm_data)
 
