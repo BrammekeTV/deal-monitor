@@ -258,11 +258,41 @@ _PROMO_NUMBER_RE = re.compile(
 )
 
 # Known rarity/variant codes that appear *between* the card name and number.
-# These are stripped so the card name is clean.
+# These are stripped so the card name is clean.  The pattern is applied
+# iteratively (see _strip_rarity_suffixes) so multi-word suffixes like
+# "Holo 1st Edition" are removed in two passes.
 _RARITY_SUFFIX_RE = re.compile(
-    r"\s+\b(?:SAR|CHR|CSR|SSR|UR|IR|HR|RR|AR|PROMO|SR|PR)\b\s*$",
+    r"\s+\b(?:"
+    r"SAR|CHR|CSR|SSR|UR|IR|HR|RR|AR|PROMO|SR|PR"
+    r"|Full\s+Art"
+    r"|Alt(?:ernate)?\s+Art"
+    r"|Special\s+Illustration(?:\s+Rare)?"
+    r"|Hyper\s+Rare"
+    r"|Rainbow\s+Rare"
+    r"|Ultra\s+Rare"
+    r"|Secret\s+Rare"
+    r"|Shiny(?:\s+Rare)?"
+    r"|Holo\s+Rare"
+    r"|Reverse\s+Holo"
+    r"|Holo"
+    r"|1st\s+Edition"
+    r"|First\s+Edition"
+    r")\b\s*$",
     re.IGNORECASE,
 )
+
+
+def _strip_rarity_suffixes(text: str) -> str:
+    """Apply ``_RARITY_SUFFIX_RE`` repeatedly until the name stabilises.
+
+    A single pass is not enough for compound suffixes such as "Holo 1st Edition"
+    (two distinct rarity tokens).  Iterating guarantees they are all stripped.
+    """
+    while True:
+        stripped = _RARITY_SUFFIX_RE.sub("", text).strip()
+        if stripped == text:
+            return text
+        text = stripped
 
 # Matches a grade-certifier + grade-number token that acts as a "break point"
 # when parsing noisy titles with no collector number.
@@ -518,6 +548,37 @@ def _find_known_set_name(text: str) -> str | None:
     return None
 
 
+def _split_set_from_before(before: str) -> tuple[str, str]:
+    """Split a set-name fragment that leaked into the *before* text.
+
+    Some multilingual listing titles embed set info before the collector
+    number, separated by " - ", e.g.::
+
+        "Hypno Holo 1st Edition - Fossil WOTC Vintage (8/62)"
+        → before="Hypno Holo 1st Edition - Fossil WOTC Vintage ("
+
+    This function:
+    1. Strips any trailing ``(`` / whitespace from *before*.
+    2. When *before* contains " - " and the fragment after it starts with a
+       known set name, splits there and returns *(card_part, set_fragment)*.
+    3. Otherwise returns *(cleaned_before, "")*·
+
+    Returns *(card_name_candidate, set_fragment)*; set_fragment is empty string
+    when no set info was found in the before text.
+    """
+    # Remove trailing open-parenthesis characters left over from "(number)"
+    # notation, e.g. "Hypno Holo - Fossil WOTC Vintage (" → strip "(".
+    cleaned = re.sub(r"[\s(]+$", "", before).strip()
+
+    dash_pos = cleaned.rfind(" - ")
+    if dash_pos > 0:
+        candidate_set = cleaned[dash_pos + 3:].strip()
+        if _find_known_set_name(candidate_set):
+            return cleaned[:dash_pos].strip(), candidate_set
+
+    return cleaned, ""
+
+
 def _strip_after_number_noise(text: str) -> str:
     """Strip language-code and condition tokens from text that follows a
     collector number in a Vinted (or similar) listing title.
@@ -715,14 +776,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         before = text[: num_match.start()].strip()
         after = text[num_match.end() :].strip()
 
+        before_clean, set_from_before = _split_set_from_before(before)
+
         # Card name = text before number, minus any trailing rarity code.
-        raw_name = _RARITY_SUFFIX_RE.sub("", before).strip()
+        raw_name = _strip_rarity_suffixes(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
         result["card_name"] = card_name
         result["card_name_matched"] = matched
 
-        # Set info = text after number.
-        set_code, set_name = _parse_set_info(_strip_after_number_noise(after))
+        # Set info = text after number (prefer after-number; fall back to
+        # the set fragment extracted from the before text when present).
+        after_clean = _strip_after_number_noise(after)
+        # Strip close-parenthesis / bracket noise that carries no set info
+        # (e.g. when the collector number is wrapped in "(NN/NN)").
+        after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
+        set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -734,12 +802,15 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         before = text[: subset_match.start()].strip()
         after = text[subset_match.end() :].strip()
 
-        raw_name = _RARITY_SUFFIX_RE.sub("", before).strip()
+        before_clean, set_from_before = _split_set_from_before(before)
+        raw_name = _strip_rarity_suffixes(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
         result["card_name"] = card_name
         result["card_name_matched"] = matched
 
-        set_code, set_name = _parse_set_info(_strip_after_number_noise(after))
+        after_clean = _strip_after_number_noise(after)
+        after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
+        set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
 
         # When no set info could be found from the text following the subset
         # number, try to infer the set from the subset prefix (e.g. "GG" → Crown
@@ -766,7 +837,7 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         return result
 
     # ── 4. No collector number – best-effort card name + set info ────────
-    raw_name = _RARITY_SUFFIX_RE.sub("", text).strip()
+    raw_name = _strip_rarity_suffixes(text)
 
     # Try to split the title at the first "break point" — a grade certifier
     # (e.g. "CGC 9") or a standalone calendar year (e.g. "2012") — so that

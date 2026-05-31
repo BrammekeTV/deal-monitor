@@ -67,6 +67,10 @@ class Settings:
             os.getenv("DISCORD_LOG_CHANNEL_ID")
             or _deep_get(raw, "discord", "log_channel_id", default=0)
         )
+        self.discord_status_channel_id: int = int(
+            os.getenv("DISCORD_STATUS_CHANNEL_ID")
+            or _deep_get(raw, "discord", "status_channel_id", default=0)
+        )
         self.discord_guild_id: int = int(
             os.getenv("DISCORD_GUILD_ID")
             or _deep_get(raw, "discord", "guild_id", default=0)

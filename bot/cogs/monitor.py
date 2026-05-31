@@ -91,6 +91,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Background task handle
         self._task: asyncio.Task | None = None
 
+        # Persistent status message (issue #47): message ID updated each cycle.
+        self._status_message_id: int | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -176,6 +179,12 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     error_message=str(exc),
                     stack_trace=traceback.format_exc(),
                 )
+
+            # Update the persistent status message (if a status channel is set).
+            try:
+                await self._update_status_message()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MonitorCog: failed to update status message: %s", exc)
 
             # Random sleep between cycles.
             delay = random.randint(settings.interval_min, settings.interval_max)
@@ -382,7 +391,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             return
 
         # ── 2. Card identification ────────────────────────────────────────
-        fingerprint = identify_card(listing.title)
+        fingerprint = identify_card(listing.title, description=listing.description)
 
         # ── 2b. Unresolvable guard ────────────────────────────────────────
         # If we extracted no set info and no collector number, skip CM lookup.
@@ -810,9 +819,57 @@ class MonitorCog(commands.Cog, name="Monitor"):
             return None
         return ch
 
-    # ------------------------------------------------------------------
-    # Slash commands
-    # ------------------------------------------------------------------
+    def _get_status_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_status_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
+
+    async def _update_status_message(self) -> None:
+        """Post or edit the persistent status embed in the status channel.
+
+        If ``discord_status_channel_id`` is not configured this is a no-op.
+        On the first call a new message is sent and its ID is stored in
+        ``_status_message_id``.  Subsequent calls edit that message so the
+        channel always shows a single up-to-date status embed.
+        """
+        channel = self._get_status_channel()
+        if channel is None:
+            return
+
+        mappings = await self.db.get_all_mappings()
+        embed = build_status_embed(
+            listings_checked=self._listings_checked,
+            listings_profitable=self._listings_profitable,
+            listings_reviewed=self._listings_reviewed,
+            mappings_count=len(mappings),
+            last_run=self._last_run,
+            next_run=self._next_run,
+            search_terms=settings.search_terms,
+            paused=self._paused,
+        )
+
+        if self._status_message_id is not None:
+            try:
+                msg = await channel.fetch_message(self._status_message_id)
+                await msg.edit(embed=embed)
+                return
+            except discord.NotFound:
+                # Message was deleted; fall through to send a new one.
+                self._status_message_id = None
+            except discord.HTTPException as exc:
+                logger.warning("MonitorCog: could not edit status message: %s", exc)
+                return
+
+        # Send a new status message.
+        msg = await channel.send(embed=embed)
+        self._status_message_id = msg.id
+        logger.info("MonitorCog: status message created (id=%d)", msg.id)
+
+
 
     @discord.app_commands.command(name="status", description="Show monitoring bot status")
     async def status_command(self, interaction: discord.Interaction) -> None:

@@ -22,6 +22,13 @@ POKEMON_NAME_TRANSLATIONS: dict[str, str] = {
     "dracaufeu": "Charizard",
     "carapuce": "Squirtle",
     "bulbizarre": "Bulbasaur",
+    # Italian rarity / edition terms that appear inline with the card name
+    "olografica": "Holo",
+    "olografico": "Holo",
+    "edizione 1": "1st Edition",
+    "edizione 1a": "1st Edition",
+    "prima edizione": "1st Edition",
+    "prima stampa": "1st Edition",
 }
 
 SET_NAME_TRANSLATIONS: dict[str, str] = {
