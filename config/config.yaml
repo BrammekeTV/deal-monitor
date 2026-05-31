@@ -19,6 +19,11 @@ scraper:
   # Number of results to fetch per search term per cycle.
   results_per_term: 30
 
+  # Allow Playwright as a fallback when FlareSolverr is configured but does
+  # not return usable results.  Defaults to false because FlareSolverr is
+  # significantly faster; set to true only if you need Playwright as a backup.
+  playwright_fallback: false
+
   # Playwright browser settings.
   headless: true
   browser: "chromium"   # chromium | firefox | webkit

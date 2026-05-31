@@ -1349,12 +1349,15 @@ class CardmarketScraper:
         that simultaneously has a Mint (MT) condition badge *and* a PSA grade
         in its description that matches *psa_grade* exactly.
 
-        Tries FlareSolverr first; falls back to Playwright when unavailable.
+        Tries FlareSolverr first.  Falls back to Playwright only when
+        FlareSolverr is not configured or ``settings.playwright_fallback`` is
+        enabled.
 
         Returns the price (float > 0) when a match is found, or ``None`` when
         no matching listing is available (caller should fall back to the
         standard From price).
         """
+        from config.settings import settings as _settings  # noqa: PLC0415
         normalised_url = normalize_cardmarket_url(url)
         logger.info(
             "Cardmarket: searching for PSA %d MT listing at %s", psa_grade, normalised_url
@@ -1377,6 +1380,13 @@ class CardmarketScraper:
             return price
 
         # ── Playwright fallback ───────────────────────────────────────────
+        if _settings.flaresolverr_url and not _settings.playwright_fallback:
+            logger.info(
+                "Cardmarket: FlareSolverr returned no HTML for %s and Playwright "
+                "fallback is disabled (set PLAYWRIGHT_FALLBACK=true to enable)",
+                normalised_url,
+            )
+            return None
         context = await self._new_context()
         page = await context.new_page()
         try:
@@ -1430,11 +1440,12 @@ class CardmarketScraper:
         product link, then scrapes the product page.
 
         Tries FlareSolverr for the search step and the subsequent product page
-        fetch when available.  Falls back to Playwright when FlareSolverr is
-        not reachable or does not return usable results.
+        fetch when available.  Falls back to Playwright only when FlareSolverr
+        is not configured or ``settings.playwright_fallback`` is enabled.
 
         Returns a non-empty ``dict`` on success, ``None`` on failure.
         """
+        from config.settings import settings as _settings  # noqa: PLC0415
         search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
         logger.info("Cardmarket: searching '%s'", query)
 
@@ -1463,17 +1474,40 @@ class CardmarketScraper:
                         "Cardmarket [FlareSolverr]: '%s' → %s", query, prices_dict
                     )
                     return prices_dict
+                if _settings.flaresolverr_url and not _settings.playwright_fallback:
+                    logger.info(
+                        "Cardmarket: FlareSolverr returned no prices for '%s' and "
+                        "Playwright fallback is disabled (set PLAYWRIGHT_FALLBACK=true "
+                        "to enable)",
+                        query,
+                    )
+                    return None
                 logger.warning(
                     "Cardmarket [FlareSolverr]: no prices from product page for '%s' – "
                     "falling back to Playwright",
                     query,
                 )
             else:
+                if _settings.flaresolverr_url and not _settings.playwright_fallback:
+                    logger.info(
+                        "Cardmarket: FlareSolverr found no product link for '%s' and "
+                        "Playwright fallback is disabled (set PLAYWRIGHT_FALLBACK=true "
+                        "to enable)",
+                        query,
+                    )
+                    return None
                 logger.warning(
                     "Cardmarket [FlareSolverr]: no product link in search results for "
                     "'%s' – falling back to Playwright",
                     query,
                 )
+        elif _settings.flaresolverr_url and not _settings.playwright_fallback:
+            logger.info(
+                "Cardmarket: FlareSolverr returned no HTML for '%s' and Playwright "
+                "fallback is disabled (set PLAYWRIGHT_FALLBACK=true to enable)",
+                query,
+            )
+            return None
 
         # ── Playwright fallback ───────────────────────────────────────────
         context = await self._new_context()
@@ -1544,10 +1578,13 @@ class CardmarketScraper:
         usable HTML the result is parsed immediately and the Playwright path is
         skipped entirely.
 
-        When FlareSolverr is unavailable or returns no prices, falls back to
-        the existing Playwright flow which pre-warms the browser context by
-        visiting the Cardmarket homepage first so that Cloudflare session
-        cookies are established before hitting the product page URL.
+        When FlareSolverr is configured but returns no prices, the Playwright
+        path is skipped unless ``settings.playwright_fallback`` is enabled.
+        When FlareSolverr is not configured, Playwright is always used.
+
+        The Playwright flow pre-warms the browser context by visiting the
+        Cardmarket homepage first so that Cloudflare session cookies are
+        established before hitting the product page URL.
 
         When *url* contains ``isReverseHolo=Y`` the method additionally waits
         for the individual article/offer rows to be rendered and records the
@@ -1556,6 +1593,7 @@ class CardmarketScraper:
         ``info-list-container`` includes non-reverse-holo listings, whereas the
         article rows are already filtered to reverse-holo-only.
         """
+        from config.settings import settings as _settings  # noqa: PLC0415
         # ── FlareSolverr path ─────────────────────────────────────────────
         fs_html = await self._fetch_via_flaresolverr(url)
         if fs_html:
@@ -1569,12 +1607,28 @@ class CardmarketScraper:
                     if first_listing is not None:
                         prices_dict["first_listing_price"] = first_listing
                 return prices_dict
+            if _settings.flaresolverr_url and not _settings.playwright_fallback:
+                logger.info(
+                    "Cardmarket: FlareSolverr returned HTML but no prices for %s and "
+                    "Playwright fallback is disabled (set PLAYWRIGHT_FALLBACK=true "
+                    "to enable)",
+                    url,
+                )
+                _log_parse_diagnostics(fs_html, url)
+                return None
             logger.warning(
                 "Cardmarket [FlareSolverr]: HTML received but no prices parsed for %s "
                 "– falling back to Playwright",
                 url,
             )
             _log_parse_diagnostics(fs_html, url)
+        elif _settings.flaresolverr_url and not _settings.playwright_fallback:
+            logger.info(
+                "Cardmarket: FlareSolverr returned no HTML for %s and Playwright "
+                "fallback is disabled (set PLAYWRIGHT_FALLBACK=true to enable)",
+                url,
+            )
+            return None
 
         # ── Playwright fallback ───────────────────────────────────────────
         # Pre-warm: visit the Cardmarket category page first so that Cloudflare
