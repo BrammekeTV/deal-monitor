@@ -10,12 +10,22 @@ services:
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
+  byparr:
+    image: ghcr.io/thephaseless/byparr:latest
+    container_name: byparr
+    restart: unless-stopped
+    ports:
+      - "8192:8192"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
   deal-monitor:
     build: .
     container_name: deal-monitor
     restart: unless-stopped
     depends_on:
       - flaresolverr
+      - byparr
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
@@ -24,6 +34,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # When running via Docker Compose, FlareSolverr is reachable by service name.
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      # When running via Docker Compose, Byparr is reachable by service name.
+      - BYPARR_URL=${BYPARR_URL:-http://byparr:8192}
     volumes:
       # Persist the database and logs outside the container.
       - ./data:/app/data

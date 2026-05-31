@@ -1765,23 +1765,19 @@ class CardmarketScraper:
     # FlareSolverr integration
     # ------------------------------------------------------------------
 
-    async def _fetch_via_flaresolverr(self, url: str) -> str | None:
-        """Fetch *url* via FlareSolverr and return the rendered HTML.
+    async def _fetch_via_solver(
+        self, api_url: str, url: str, solver_name: str
+    ) -> str | None:
+        """Send a ``request.get`` command to a FlareSolverr-compatible API.
 
-        Sends a ``request.get`` command to the FlareSolverr API, which uses a
-        real headless browser to bypass Cloudflare and similar bot-protection
-        systems.  Returns the rendered HTML string on success, or ``None`` when
-        FlareSolverr is unavailable or the request fails.
+        Both FlareSolverr (port 8191) and Byparr (port 8192) expose this same
+        API so the same helper works for both.
 
-        The FlareSolverr URL is read from ``settings.flaresolverr_url``
-        (``FLARESOLVERR_URL`` env var or config default ``http://localhost:8191``).
+        Returns the rendered HTML string on success, or ``None`` on any failure.
+        Cookies returned in a successful response are persisted to
+        ``self._saved_storage_state`` so subsequent Playwright contexts can
+        reuse them.
         """
-        from config.settings import settings  # noqa: PLC0415 (lazy to avoid circular import)
-        flaresolverr_url = settings.flaresolverr_url
-        if not flaresolverr_url:
-            return None
-
-        api_url = f"{flaresolverr_url.rstrip('/')}/v1"
         payload = {
             "cmd": "request.get",
             "url": url,
@@ -1794,8 +1790,8 @@ class CardmarketScraper:
                 async with session.post(api_url, json=payload) as resp:
                     if resp.status != 200:
                         logger.warning(
-                            "Cardmarket [FlareSolverr]: HTTP %d from API for %s",
-                            resp.status, url,
+                            "Cardmarket [%s]: HTTP %d from API for %s",
+                            solver_name, resp.status, url,
                         )
                         return None
                     data = await resp.json(content_type=None)
@@ -1803,15 +1799,14 @@ class CardmarketScraper:
                         html = data.get("solution", {}).get("response", "")
                         if html:
                             logger.info(
-                                "Cardmarket [FlareSolverr]: successfully fetched %s "
+                                "Cardmarket [%s]: successfully fetched %s "
                                 "(solution status %s)",
-                                url, data.get("status"),
+                                solver_name, url, data.get("status"),
                             )
-                            # Persist cookies returned by FlareSolverr so that
-                            # subsequent Playwright contexts can reuse them.
+                            # Persist cookies so subsequent Playwright contexts
+                            # can reuse the Cloudflare clearance cookie.
                             solution_cookies = data.get("solution", {}).get("cookies", [])
                             if solution_cookies and not self._saved_storage_state:
-                                # Convert FlareSolverr cookie dicts to Playwright format.
                                 pw_cookies: list[dict] = []
                                 for c in solution_cookies:
                                     pw_cookies.append({
@@ -1825,17 +1820,64 @@ class CardmarketScraper:
                                 self._saved_storage_state = {"cookies": pw_cookies}
                             return html
                         logger.warning(
-                            "Cardmarket [FlareSolverr]: empty response body for %s", url
+                            "Cardmarket [%s]: empty response body for %s",
+                            solver_name, url,
                         )
                     else:
                         logger.warning(
-                            "Cardmarket [FlareSolverr]: non-ok status for %s – %s",
-                            url, data.get("message", data.get("status")),
+                            "Cardmarket [%s]: non-ok status for %s – %s",
+                            solver_name, url,
+                            data.get("message", data.get("status")),
                         )
         except asyncio.TimeoutError:
-            logger.warning("Cardmarket [FlareSolverr]: timeout fetching %s", url)
+            logger.warning("Cardmarket [%s]: timeout fetching %s", solver_name, url)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Cardmarket [FlareSolverr]: request failed for %s – %s", url, exc)
+            logger.warning(
+                "Cardmarket [%s]: request failed for %s – %s", solver_name, url, exc
+            )
+        return None
+
+    async def _fetch_via_flaresolverr(self, url: str) -> str | None:
+        """Fetch *url* via FlareSolverr with Byparr as an automatic fallback.
+
+        Tries FlareSolverr first (``FLARESOLVERR_URL``, default port 8191).
+        If FlareSolverr returns a 500, is unavailable, or otherwise fails,
+        Byparr is tried next (``BYPARR_URL``, default port 8192).  Byparr
+        (https://github.com/ThePhaseless/Byparr) exposes the same API as
+        FlareSolverr and is a transparent drop-in replacement.
+
+        Returns the rendered HTML string on the first successful result, or
+        ``None`` when both solvers fail.
+        """
+        from config.settings import settings  # noqa: PLC0415 (lazy to avoid circular import)
+
+        flaresolverr_url = settings.flaresolverr_url
+        byparr_url = settings.byparr_url
+
+        if not flaresolverr_url and not byparr_url:
+            return None
+
+        # ── Try FlareSolverr ──────────────────────────────────────────────
+        if flaresolverr_url:
+            html = await self._fetch_via_solver(
+                f"{flaresolverr_url.rstrip('/')}/v1", url, "FlareSolverr"
+            )
+            if html:
+                return html
+            if byparr_url:
+                logger.info(
+                    "Cardmarket [FlareSolverr]: failed for %s – trying Byparr fallback",
+                    url,
+                )
+
+        # ── Byparr fallback ───────────────────────────────────────────────
+        if byparr_url:
+            html = await self._fetch_via_solver(
+                f"{byparr_url.rstrip('/')}/v1", url, "Byparr"
+            )
+            if html:
+                return html
+
         return None
 
     async def _new_context(self) -> BrowserContext:

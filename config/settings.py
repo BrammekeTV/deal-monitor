@@ -115,6 +115,16 @@ class Settings:
             _deep_get(raw, "flaresolverr", "url", default="http://localhost:8191"),
         )
 
+        # --- Byparr ---
+        # Byparr (https://github.com/ThePhaseless/Byparr) is used as a fallback
+        # when FlareSolverr returns a 500 or fails.  Uses the same API as
+        # FlareSolverr so it is a transparent drop-in.
+        # Default: http://localhost:8192 (Byparr's default port).
+        self.byparr_url: str = os.getenv(
+            "BYPARR_URL",
+            _deep_get(raw, "byparr", "url", default="http://localhost:8192"),
+        )
+
         # When True, Playwright is used as a fallback when FlareSolverr is
         # configured but does not return usable results.  Defaults to False
         # because FlareSolverr is faster; set PLAYWRIGHT_FALLBACK=true or
