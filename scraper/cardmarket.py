@@ -504,6 +504,7 @@ def normalize_cardmarket_url(
     *,
     language: str | None = None,
     is_reverse_holo: bool = False,
+    min_condition: int | None = None,
 ) -> str:
     """Return *url* with the standard Cardmarket filter params appended.
 
@@ -515,6 +516,12 @@ def normalize_cardmarket_url(
     ``"7"`` for Japanese), overrides the default ``language=1`` param.
 
     *is_reverse_holo* – when ``True``, appends ``isReverseHolo=Y``.
+
+    *min_condition* – when provided as an integer (1–6), appends
+    ``minCondition=<value>`` to filter results by card condition.  Cardmarket
+    condition codes: 1=Mint, 2=Near Mint, 3=Excellent, 4=Good, 5=Light Played,
+    6=Played.  Pass ``None`` or ``7`` (Poor) to omit the filter, which returns
+    listings of all conditions.
     """
     parsed = urlparse(url)
     netloc = parsed.netloc.lower()
@@ -531,6 +538,9 @@ def normalize_cardmarket_url(
     # Append reverse-holo flag when applicable.
     if is_reverse_holo:
         params["isReverseHolo"] = ["Y"]
+    # Append minCondition when a condition stricter than Poor is specified.
+    if min_condition is not None and 1 <= min_condition <= 6:
+        params["minCondition"] = [str(min_condition)]
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
 
