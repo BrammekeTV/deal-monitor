@@ -422,3 +422,95 @@ class TestIssue67LeadingDashAndRarityAsSet:
         assert _parse_set_info("Holo") == (None, None)
         assert _parse_set_info("Ultra Rare") == (None, None)
 
+
+
+class TestConditionFullWordStripping:
+    """Tests that full English condition words are treated as noise, not set names."""
+
+    # --- _parse_set_info: standalone full condition words ---
+
+    def test_mint_alone_returns_no_set(self):
+        """A standalone 'Mint' condition word returns no set info."""
+        code, name = _parse_set_info("Mint")
+        assert code is None
+        assert name is None
+
+    def test_near_mint_alone_returns_no_set(self):
+        """A standalone 'Near Mint' returns no set info."""
+        code, name = _parse_set_info("Near Mint")
+        assert code is None
+        assert name is None
+
+    def test_excellent_alone_returns_no_set(self):
+        """A standalone 'Excellent' returns no set info."""
+        code, name = _parse_set_info("Excellent")
+        assert code is None
+        assert name is None
+
+    def test_good_alone_returns_no_set(self):
+        """A standalone 'Good' returns no set info."""
+        code, name = _parse_set_info("Good")
+        assert code is None
+        assert name is None
+
+    def test_light_played_alone_returns_no_set(self):
+        """A standalone 'Light Played' returns no set info."""
+        code, name = _parse_set_info("Light Played")
+        assert code is None
+        assert name is None
+
+    def test_played_alone_returns_no_set(self):
+        """A standalone 'Played' returns no set info."""
+        code, name = _parse_set_info("Played")
+        assert code is None
+        assert name is None
+
+    def test_poor_alone_returns_no_set(self):
+        """A standalone 'Poor' returns no set info."""
+        code, name = _parse_set_info("Poor")
+        assert code is None
+        assert name is None
+
+    # --- _parse_set_info: full condition word + set name ---
+
+    def test_mint_prefix_stripped_set_name_found(self):
+        """'Mint Obsidian Flames' → condition stripped, set name detected."""
+        code, name = _parse_set_info("Mint Obsidian Flames")
+        assert code is None
+        assert name == "Obsidian Flames"
+
+    def test_near_mint_prefix_stripped_set_name_found(self):
+        """'Near Mint Obsidian Flames' → condition stripped, set name detected."""
+        code, name = _parse_set_info("Near Mint Obsidian Flames")
+        assert code is None
+        assert name == "Obsidian Flames"
+
+    def test_light_played_prefix_stripped_set_name_found(self):
+        """'Light Played Obsidian Flames' → condition stripped, set name detected."""
+        code, name = _parse_set_info("Light Played Obsidian Flames")
+        assert code is None
+        assert name == "Obsidian Flames"
+
+    # --- extract_card_info: full condition word after lang code ---
+
+    def test_jp_near_mint_stripped_from_set(self):
+        """'JP Near Mint' after the collector number must not become the set name."""
+        info = extract_card_info("Reshiram ex 029/193 JP Near Mint")
+        assert info["card_name"] == "Reshiram ex"
+        assert info["collector_number"] == "029/193"
+        assert info["set_code"] is None
+        assert info["set_name"] is None
+
+    def test_en_mint_stripped_from_set(self):
+        """'EN Mint' after the collector number must not become the set name."""
+        info = extract_card_info("Pikachu 025/165 EN Mint")
+        assert info["collector_number"] == "025/165"
+        assert info["set_code"] is None
+        assert info["set_name"] is None
+
+    def test_jp_excellent_stripped_from_set(self):
+        """'JP Excellent' after the collector number must not become the set name."""
+        info = extract_card_info("Charizard 006/197 JP Excellent")
+        assert info["collector_number"] == "006/197"
+        assert info["set_code"] is None
+        assert info["set_name"] is None
