@@ -47,12 +47,22 @@ NON_CARD_KEYWORDS: tuple[str, ...] = (
     "plush",
     "t-shirt",
     "tshirt",
+    "sleeve",
+    "sleeves",
+    "soft sleeve",
+    "toploader",
+    "top loader",
     "classeur",
     "binder",
+    "coffret",
     "etb",
     "elite trainer box",
+    "booster display",
     "booster box",
+    "display",
+    "36er display",
     "figure",
+    "figurine",
     "playmat",
     "deck box",
     "deckbox",
@@ -65,6 +75,12 @@ NON_CARD_KEYWORDS: tuple[str, ...] = (
     "sticker sheet",
     "pin badge",
     "statue",
+    "gameboy",
+    "game boy",
+    "nintendo ds",
+    "nintendo switch",
+    "switch game",
+    "cartucho",
 )
 
 def is_non_card_item(title: str, description: str | None = None) -> bool:
@@ -75,6 +91,62 @@ def is_non_card_item(title: str, description: str | None = None) -> bool:
     """
     combined = (title + " " + (description or "")).lower()
     return any(kw in combined for kw in NON_CARD_KEYWORDS)
+
+
+_LOT_KEYWORDS: tuple[str, ...] = (
+    "lot",
+    "lotto",
+    "bundle",
+    "lot de",
+    "boite",
+    "boîte",
+    "display",
+)
+
+_LOT_COUNT_RE = re.compile(
+    r"(?:\b\d{1,4}\s*x\b|\bx\s*\d{1,4}\b|\b\d{1,4}\s*(?:carte|cartes|karte|karten|carta|cartas)\b)",
+    re.IGNORECASE,
+)
+
+
+def is_lot_listing(title: str, description: str | None = None) -> bool:
+    """Return True when text suggests a multi-card lot/bundle listing."""
+    combined = (title + " " + (description or "")).lower()
+    if any(kw in combined for kw in _LOT_KEYWORDS):
+        return True
+    return _LOT_COUNT_RE.search(combined) is not None
+
+
+_GRADED_RE = re.compile(
+    r"\b(?:psa|bgs|cgc|sgs|ace|pgs|beckett|graad|grad[eé]e?|gradato|graded)\b"
+    r"(?:\s*[:#-]?\s*\d{1,2}(?:[.,]\d)?)?",
+    re.IGNORECASE,
+)
+
+
+def is_graded_listing(title: str, description: str | None = None) -> bool:
+    """Return True when text suggests a graded/slabbed card listing."""
+    combined = title + " " + (description or "")
+    return _GRADED_RE.search(combined) is not None
+
+
+_JAPANESE_KEYWORDS: tuple[str, ...] = (
+    " jap",
+    "jap.",
+    "japanese",
+    "japonais",
+    "giapponese",
+    "japanesé",
+)
+_JAPANESE_CHAR_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
+
+
+def is_japanese_listing(title: str, description: str | None = None) -> bool:
+    """Return True when listing appears to be a Japanese-language card."""
+    combined = (" " + title + " " + (description or "")).lower()
+    if any(kw in combined for kw in _JAPANESE_KEYWORDS):
+        return True
+    return _JAPANESE_CHAR_RE.search(title + " " + (description or "")) is not None
 
 
 # Title/description substrings that indicate the listing is trading cards.

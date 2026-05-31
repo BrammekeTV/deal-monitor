@@ -21,6 +21,7 @@ from typing import Any
 
 from utils.card_analyzer import extract_card_info
 from utils.logger import get_logger
+from services.pokemon_name_translations import translate_listing_title
 
 logger = get_logger(__name__)
 
@@ -260,8 +261,10 @@ def identify_card(title: str) -> CardFingerprint:
     if not title or not title.strip():
         return fp
 
+    translated_title = translate_listing_title(title)
+
     # --- Core fields from card_analyzer ---
-    info = extract_card_info(title)
+    info = extract_card_info(translated_title)
     fp.card_name = info.get("card_name")
     fp.card_name_matched = bool(info.get("card_name_matched", False))
     fp.set_name = info.get("set_name")
@@ -269,7 +272,7 @@ def identify_card(title: str) -> CardFingerprint:
     fp.collector_number = info.get("collector_number")
 
     # --- Game ---
-    m = _GAME_RE.search(title)
+    m = _GAME_RE.search(translated_title)
     if m:
         raw_game = m.group(0).lower().strip()
         # Normalise multi-word keys
@@ -284,40 +287,40 @@ def identify_card(title: str) -> CardFingerprint:
 
     # --- Rarity ---
     for pattern, rarity_label in _RARITY_KEYWORDS:
-        if pattern.search(title):
+        if pattern.search(translated_title):
             fp.rarity = rarity_label
             break
 
     # --- Holo / Reverse holo ---
-    if _REVERSE_HOLO_RE.search(title):
+    if _REVERSE_HOLO_RE.search(translated_title):
         fp.is_reverse_holo = True
         fp.is_holo = True
     elif fp.rarity and "holo" in fp.rarity.lower():
         fp.is_holo = True
 
     # --- First edition ---
-    if _FIRST_EDITION_RE.search(title):
+    if _FIRST_EDITION_RE.search(translated_title):
         fp.is_first_edition = True
 
     # --- Promo ---
     if fp.set_code and re.search(r"promo|svp|swshp|xy[a-z]*p\b", fp.set_code, re.I):
         fp.is_promo = True
-    elif re.search(r"\bpromo\b", title, re.I):
+    elif re.search(r"\bpromo\b", translated_title, re.I):
         fp.is_promo = True
 
     # --- Language ---
-    lm = _LANGUAGE_RE.search(title)
+    lm = _LANGUAGE_RE.search(translated_title)
     if lm:
         fp.language = _LANGUAGE_MAP.get(lm.group(0).lower())
 
     # --- Grading ---
-    gm = _GRADE_RE.search(title)
+    gm = _GRADE_RE.search(translated_title)
     if gm:
         fp.grade_authority = gm.group(1).upper()
         fp.grade_value = gm.group(2)
 
     # --- Condition ---
-    cm = _CONDITION_RE.search(title)
+    cm = _CONDITION_RE.search(translated_title)
     if cm:
         raw_condition = (cm.group(1) or cm.group(2) or "").strip().lower()
         # Normalise "near mint" / "light played" spacing variants.

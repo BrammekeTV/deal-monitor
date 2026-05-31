@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from rapidfuzz import fuzz, process
 
+from config.settings import settings
 from scraper.cardmarket import (
     _LANGUAGE_TO_CM_CODE,
     build_cardmarket_url,
@@ -92,8 +93,6 @@ class CardmarketResolver:
         rules = await self._db.get_all_slug_prefix_rules()
         new_rules: dict[str, dict[str, Any]] = {}
         for r in rules:
-            if r.get("confidence", 0.0) < 0.5:
-                continue
             sc = r["set_code"].upper()
             if sc not in new_rules:  # Keep the first (highest-scored) entry only.
                 new_rules[sc] = r
@@ -343,6 +342,17 @@ class CardmarketResolver:
         def _get_prefix(sc: str) -> str | None:
             rule = self._prefix_rules.get(sc.upper())
             if rule:
+                confidence = float(rule.get("confidence", 0.0) or 0.0)
+                min_conf = float(getattr(settings, "slug_confidence_threshold", 0.6))
+                if confidence < min_conf:
+                    logger.info(
+                        "CardmarketResolver: skipping low-confidence prefix rule for %s "
+                        "(confidence=%.2f < %.2f)",
+                        sc,
+                        confidence,
+                        min_conf,
+                    )
+                    return None
                 return rule.get("prefix")
             return None
 
