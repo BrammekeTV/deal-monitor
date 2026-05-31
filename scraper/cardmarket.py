@@ -31,6 +31,8 @@ import asyncio
 import json
 import random
 import re
+import tempfile
+import time
 import traceback
 from dataclasses import dataclass
 from typing import Any
@@ -751,6 +753,7 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
     """
     soup = BeautifulSoup(html_content, "html.parser")
     prices: dict[str, Any] = {}
+    price_data: dict[str, str] = {}
 
     # ── Strategy 1: rendered info-list-container ──────────────────────────
     dl = _find_price_dl(soup)
@@ -758,7 +761,6 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
         dt_elements = dl.select("dt")
         dd_elements = dl.select("dd")
 
-        price_data: dict[str, str] = {}
         for i in range(min(len(dt_elements), len(dd_elements))):
             key = dt_elements[i].get_text(" ", strip=True)
             value = _extract_price_from_dd(dd_elements[i])
@@ -828,12 +830,22 @@ def _parse_product_page(html_content: str) -> dict[str, Any]:
         _extract_card_metadata(soup, prices)
         return prices
 
-    logger.debug("Cardmarket: .info-list-container empty or absent – trying JSON fallback")
+    # dl was found but none of its dt/dd pairs matched known price labels.
+    if dl:
+        price_data_repr = {k: v for k, v in price_data.items()}
+        logger.warning(
+            "Cardmarket: price dl found but no prices extracted. "
+            "dl classes=%r  dt/dd pairs: %s",
+            " ".join(dl.get("class") or []),
+            price_data_repr,
+        )
+
+    logger.warning("Cardmarket: no prices from dl strategy – trying JSON fallback")
 
     # ── Strategy 2: embedded JSON in <script> tags ────────────────────────
     prices = _extract_json_prices(soup)
     if not prices:
-        logger.debug("Cardmarket: no pricing data found in page HTML or embedded JSON")
+        logger.warning("Cardmarket: no pricing data found in page HTML or embedded JSON")
     else:
         _extract_card_metadata(soup, prices)
     return prices
@@ -1088,6 +1100,106 @@ def _extract_json_prices(soup: BeautifulSoup) -> dict[str, Any]:
                 return prices
 
     return prices
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic logging helpers
+# ---------------------------------------------------------------------------
+
+# Known patterns in page titles/body that indicate the bot is being blocked.
+_BLOCK_PATTERNS = (
+    "just a moment",
+    "checking your browser",
+    "access denied",
+    "403 forbidden",
+    "cloudflare",
+    "ddos-guard",
+    "please wait",
+    "enable javascript",
+    "captcha",
+    "security check",
+    "ray id",
+    "cf-browser-verification",
+)
+
+
+def _log_parse_diagnostics(html: str, url: str, page_title: str | None = None) -> None:
+    """Log detailed diagnostics when price parsing fails.
+
+    Inspects *html* and emits WARNING-level logs covering:
+    - The page title and any detected block/bot-protection signals.
+    - The actual URL (useful when Cardmarket redirected the request).
+    - All ``<dl>`` elements found on the page and their class attributes.
+    - Every ``<dt>``/``<dd>`` pair discovered in the document.
+    - The first 1 500 characters of visible body text.
+
+    Also saves the full raw HTML to a temporary file under ``/tmp/`` so it can
+    be inspected manually or sent back for analysis.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # ── 1. Page title ─────────────────────────────────────────────────────
+    title_el = soup.find("title")
+    title_text = (page_title or (title_el.get_text(" ", strip=True) if title_el else "")) or "(no title)"
+    logger.warning("Cardmarket [diag] page title: %r  |  url: %s", title_text, url)
+
+    # ── 2. Bot/block detection ────────────────────────────────────────────
+    title_lower = title_text.lower()
+    body_sample = soup.get_text(" ", strip=True)[:3000].lower()
+    detected_signals = [p for p in _BLOCK_PATTERNS if p in title_lower or p in body_sample]
+    if detected_signals:
+        logger.warning(
+            "Cardmarket [diag] bot-block signals detected: %s", detected_signals
+        )
+    else:
+        logger.warning("Cardmarket [diag] no bot-block signals detected in page content")
+
+    # ── 3. All <dl> elements and their classes ────────────────────────────
+    all_dls = soup.find_all("dl")
+    if all_dls:
+        for i, dl in enumerate(all_dls):
+            classes = " ".join(dl.get("class") or [])
+            logger.warning(
+                "Cardmarket [diag] dl[%d] classes=%r  (dt count=%d, dd count=%d)",
+                i, classes, len(dl.select("dt")), len(dl.select("dd")),
+            )
+    else:
+        logger.warning("Cardmarket [diag] no <dl> elements found on page")
+
+    # ── 4. All dt/dd pairs in the document ───────────────────────────────
+    dt_els = soup.find_all("dt")
+    dd_els = soup.find_all("dd")
+    if dt_els:
+        logger.warning(
+            "Cardmarket [diag] %d <dt> elements found across whole page:", len(dt_els)
+        )
+        for i, (dt, dd) in enumerate(zip(dt_els, dd_els)):
+            dt_text = dt.get_text(" ", strip=True)
+            dd_text = dd.get_text(" ", strip=True)
+            logger.warning("  dt[%d]: %r  →  dd: %r", i, dt_text, dd_text)
+        if len(dt_els) > len(dd_els):
+            for i, dt in enumerate(dt_els[len(dd_els):], start=len(dd_els)):
+                logger.warning("  dt[%d]: %r  →  dd: (no matching dd)", i, dt.get_text(" ", strip=True))
+    else:
+        logger.warning("Cardmarket [diag] no <dt> elements found on page")
+
+    # ── 5. First 1 500 chars of body text ─────────────────────────────────
+    visible_text = soup.get_text(" ", strip=True)
+    snippet = visible_text[:1500]
+    logger.warning("Cardmarket [diag] body text (first 1500 chars):\n%s", snippet)
+
+    # ── 6. Save raw HTML to a temp file ──────────────────────────────────
+    try:
+        ts = int(time.time())
+        fname = f"/tmp/cardmarket_debug_{ts}.html"
+        with open(fname, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        logger.warning(
+            "Cardmarket [diag] full page HTML saved to: %s  (size=%d bytes)",
+            fname, len(html),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cardmarket [diag] could not save debug HTML: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1455,8 +1567,9 @@ class CardmarketScraper:
             title = await page.title()
             if "just a moment" not in title.lower() and "checking your browser" not in title.lower():
                 break
-            logger.debug(
-                "Cardmarket: Cloudflare challenge detected (%r) – waiting for resolution …", title
+            logger.warning(
+                "Cardmarket: Cloudflare challenge detected (%r) – waiting for resolution … (attempt %d/3)",
+                title, _attempt + 1,
             )
             await asyncio.sleep(random.uniform(4.0, 6.0))
         else:
@@ -1464,19 +1577,29 @@ class CardmarketScraper:
                 "Cardmarket: Cloudflare challenge did not resolve after retries for %s", url
             )
 
+        # Log page title and actual URL after potential redirect.
+        _page_title = await page.title()
+        _actual_url = page.url
+        logger.info(
+            "Cardmarket: page loaded – title=%r  actual_url=%s", _page_title, _actual_url
+        )
+
         # Wait for the price container to be rendered (dynamic content).
         found = False
         for sel in _PRICE_CONTAINER_SELS:
             try:
                 await page.wait_for_selector(sel, timeout=8_000, state="visible")
                 found = True
+                logger.info("Cardmarket: price container found via selector %r", sel)
                 break
             except Exception:  # noqa: BLE001
                 continue
 
         if not found:
-            logger.debug(
-                "Cardmarket: price container not visible within timeout for %s", url
+            logger.warning(
+                "Cardmarket: price container not visible within timeout for %s "
+                "(tried selectors: %s)",
+                url, _PRICE_CONTAINER_SELS,
             )
             await asyncio.sleep(random.uniform(2.0, 3.5))
 
@@ -1495,6 +1618,11 @@ class CardmarketScraper:
         html = await page.content()
         prices_dict = _parse_product_page(html)
         if not prices_dict:
+            logger.warning(
+                "Cardmarket: _parse_product_page returned no prices for %s – running diagnostics",
+                url,
+            )
+            _log_parse_diagnostics(html, _actual_url, _page_title)
             return None
 
         if _is_reverse_holo_url(url):
