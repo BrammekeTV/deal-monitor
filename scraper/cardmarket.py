@@ -394,6 +394,18 @@ _LANGUAGE_TO_CM_CODE: dict[str, str] = {
 # Populated at startup from corrections and by register_variant_hint().
 _VARIANT_HINTS: dict[tuple[str, str, str], str] = {}
 
+# ---------------------------------------------------------------------------
+# Promo slug prefix overrides
+# ---------------------------------------------------------------------------
+# Some promo sets (notably BW Black Star Promos) use a doubled prefix in their
+# Cardmarket product slugs.  For these sets the slug suffix is
+# ``{set_code}{promo_code}{number}`` rather than the normal
+# ``{set_code}{number}``.
+# e.g. Darkrai BW73  →  Darkrai-BWBW73  (set_code="BW", promo_prefix="BW")
+_PROMO_SLUG_PREFIX_OVERRIDE: dict[str, str] = {
+    "BW": "BWBW",
+}
+
 
 def register_variant_hint(
     card_name: str,
@@ -475,8 +487,11 @@ def build_cardmarket_url(
         # Explicit prefix supplied by caller (learned from correction database).
         num_suffix = f"{number_prefix}{bare_num}" if bare_num else number_prefix
     elif promo or "/" not in (collector_number or ""):
-        # Promo card: {card-slug}-{set_code}{number}
-        num_suffix = f"{set_code.upper()}{bare_num}" if bare_num else set_code.upper()
+        # Promo card: {card-slug}-{set_code_prefix}{number}
+        # Some sets (e.g. BW Black Star Promos) double the set code in the slug.
+        sc_upper = set_code.upper()
+        promo_prefix = _PROMO_SLUG_PREFIX_OVERRIDE.get(sc_upper, sc_upper)
+        num_suffix = f"{promo_prefix}{bare_num}" if bare_num else promo_prefix
     else:
         # Standard card: {card-slug}-{bare_number}
         num_suffix = bare_num
@@ -1845,7 +1860,7 @@ _SLUG_VERSION_RE = re.compile(
 _SLUG_NUM_SUFFIX_RE = re.compile(r'^[A-Z]{0,6}\d{2,4}$')
 
 # Number of numbered variants (V1…V_N) to probe beside the base slug.
-_VARIANT_COUNT = 2
+_VARIANT_COUNT = 10
 
 
 def generate_variant_urls(url: str) -> list[str]:

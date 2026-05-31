@@ -164,6 +164,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
             if self._paused:
                 logger.debug("MonitorCog: paused – waiting for resume")
                 self._resume_event.clear()
+                try:
+                    await self._update_status_message()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MonitorCog: failed to update status message (paused): %s", exc)
                 await self._resume_event.wait()
                 continue
 
@@ -870,7 +874,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 logger.warning("MonitorCog: could not edit status message: %s", exc)
                 return
 
-        # Send a new status message.
+        # Clear the channel before posting a fresh status message so there is
+        # always exactly one status embed in the channel.
+        try:
+            await channel.purge(limit=None)
+        except discord.HTTPException as exc:
+            logger.warning("MonitorCog: could not purge status channel: %s", exc)
+
         msg = await channel.send(embed=embed)
         self._status_message_id = msg.id
         logger.info("MonitorCog: status message created (id=%d)", msg.id)

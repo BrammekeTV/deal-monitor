@@ -359,3 +359,66 @@ class TestVintedListingFixes:
         assert info["card_name"] == "Blaine's Arcanine"
         assert info["collector_number"] == "1/132"
         assert info["set_name"] == "Gym Challenge"
+
+
+class TestIssue64HashCollectorNumber:
+    """Regression tests for issue #64 – '#N' style collector numbers."""
+
+    def test_wotc_hash_number(self):
+        """'Kadabra #46 Pokemon Base Set 2' should extract number 46 and set name."""
+        info = extract_card_info("Kadabra #46 Pokemon Base Set 2")
+        assert info["card_name"] == "Kadabra"
+        assert info["collector_number"] == "46"
+        assert info["set_name"] == "Base Set 2"
+        assert info["card_name_matched"] is True
+
+    def test_hash_number_with_space(self):
+        """'Pikachu # 25 Base Set' – space between # and digits is allowed."""
+        info = extract_card_info("Pikachu # 25 Base Set")
+        assert info["card_name"] == "Pikachu"
+        assert info["collector_number"] == "25"
+        assert info["card_name_matched"] is True
+
+    def test_hash_number_no_set(self):
+        """'Charizard #4' with no set info – set_name should be None."""
+        info = extract_card_info("Charizard #4")
+        assert info["card_name"] == "Charizard"
+        assert info["collector_number"] == "4"
+        assert info["set_name"] is None
+
+
+class TestIssue66BuriedSetName:
+    """Regression tests for issue #66 – set name buried in noisy text."""
+
+    def test_trainer_gallery_noisy_after(self):
+        """Set name 'Crown Zenith' buried after Trainer Gallery subset number."""
+        info = extract_card_info(
+            "Pikachu VMAX TG29/TG30 Trainer Gallery Oro Crown Zenith Galarian Gallery Ultra Rare"
+        )
+        assert info["card_name"] == "Pikachu VMAX"
+        assert info["collector_number"] == "TG29/TG30"
+        assert info["set_name"] == "Crown Zenith"
+
+
+class TestIssue67LeadingDashAndRarityAsSet:
+    """Regression tests for issue #67 – leading dash on card name and rarity as set name."""
+
+    def test_leading_dash_stripped(self):
+        """'Pokémon - Xatu 49/115 - Rare Holo' → card_name='Xatu' (no dash)."""
+        info = extract_card_info("Pokémon - Xatu 49/115 - Rare Holo")
+        assert info["card_name"] == "Xatu"
+        assert info["collector_number"] == "49/115"
+
+    def test_rarity_not_treated_as_set_name(self):
+        """'Rare Holo' after the collector number should NOT become the set name."""
+        info = extract_card_info("Pokémon - Xatu 49/115 - Rare Holo")
+        assert info["set_name"] is None
+        assert info["set_code"] is None
+
+    def test_rarity_suffix_alone_returns_none(self):
+        """_parse_set_info with only rarity text returns (None, None)."""
+        assert _parse_set_info("Rare Holo") == (None, None)
+        assert _parse_set_info("Holo Rare") == (None, None)
+        assert _parse_set_info("Holo") == (None, None)
+        assert _parse_set_info("Ultra Rare") == (None, None)
+

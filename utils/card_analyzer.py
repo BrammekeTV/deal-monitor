@@ -249,6 +249,10 @@ _SUBSET_NUMBER_RE = re.compile(
     r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{2,3}[a-z]?)\s*/\s*([A-Z]{0,3}\d{2,3}[a-z]?)(?![A-Za-z0-9])"
 )
 
+# Hash-style collector number: e.g. "#46" or "# 46".
+# Used in WOTC-era listings such as "Kadabra #46 Pokemon Base Set 2".
+_HASH_NUMBER_RE = re.compile(r"#\s*(\d{1,4})\b")
+
 # Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145"
 # Pattern: 2–6 uppercase letters (set code, typically ending in P for promos)
 # followed by optional whitespace and 1–4 digits.
@@ -272,9 +276,11 @@ _RARITY_SUFFIX_RE = re.compile(
     r"|Ultra\s+Rare"
     r"|Secret\s+Rare"
     r"|Shiny(?:\s+Rare)?"
+    r"|Rare\s+Holo"
     r"|Holo\s+Rare"
     r"|Reverse\s+Holo"
     r"|Holo"
+    r"|Rare"
     r"|1st\s+Edition"
     r"|First\s+Edition"
     r")\b\s*$",
@@ -548,6 +554,34 @@ def _find_known_set_name(text: str) -> str | None:
     return None
 
 
+def _search_known_set_name(text: str) -> str | None:
+    """Return the canonical set name if a known set name appears *anywhere* in *text*.
+
+    Unlike :func:`_find_known_set_name` which only matches at the start of the
+    text, this function scans the full string.  It is used as a fallback when
+    the set name is buried after extraneous tokens — for example::
+
+        "Trainer Gallery Oro Crown Zenith Galarian Gallery Ultra Rare"
+        → "Crown Zenith"
+
+    Returns the canonical name for the longest/first match, or ``None``.
+    """
+    normalised = " ".join(text.lower().split())
+    for lower_key, canonical in _KNOWN_SET_NAMES:
+        idx = normalised.find(lower_key)
+        if idx == -1:
+            continue
+        # Ensure the match sits at a word boundary (preceded by start or space,
+        # followed by end or non-alpha).
+        if idx > 0 and normalised[idx - 1] != " ":
+            continue
+        end_idx = idx + len(lower_key)
+        if end_idx < len(normalised) and normalised[end_idx].isalpha():
+            continue
+        return canonical
+    return None
+
+
 def _split_set_from_before(before: str) -> tuple[str, str]:
     """Split a set-name fragment that leaked into the *before* text.
 
@@ -778,6 +812,11 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
 
         before_clean, set_from_before = _split_set_from_before(before)
 
+        # Strip any leading separator characters left by language-prefix removal
+        # (e.g. "- Xatu" → "Xatu" when "Pokémon " was stripped but the dash
+        # that followed it was left behind).
+        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean)
+
         # Card name = text before number, minus any trailing rarity code.
         raw_name = _strip_rarity_suffixes(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
@@ -789,6 +828,29 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after_clean = _strip_after_number_noise(after)
         # Strip close-parenthesis / bracket noise that carries no set info
         # (e.g. when the collector number is wrapped in "(NN/NN)").
+        after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
+        set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
+        result["set_code"] = set_code
+        result["set_name"] = set_name
+        return result
+
+    # ── 1.5. Hash-style collector number: "#46", "# 46" ─────────────────────
+    hash_match = _HASH_NUMBER_RE.search(text)
+    if hash_match:
+        bare_num = hash_match.group(1)
+        result["collector_number"] = bare_num
+        before = text[: hash_match.start()].strip()
+        after = text[hash_match.end() :].strip()
+
+        before_clean, set_from_before = _split_set_from_before(before)
+        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean)
+
+        raw_name = _strip_rarity_suffixes(before_clean)
+        card_name, matched = _match_pokemon_name(raw_name)
+        result["card_name"] = card_name
+        result["card_name_matched"] = matched
+
+        after_clean = _strip_after_number_noise(after)
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
         result["set_code"] = set_code
@@ -883,6 +945,13 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     if not text:
         return None, None
 
+    # If the text is entirely composed of rarity/variant tokens (e.g.
+    # "Rare Holo", "Holo", "Ultra Rare"), it is not a set name — discard it.
+    # We check by stripping all rarity suffixes and seeing if nothing remains.
+    rarity_stripped = _strip_rarity_suffixes(" " + text).strip()
+    if not rarity_stripped:
+        return None, None
+
     # Try "set_code<space>set_name" pattern.
     m = _SET_CODE_RE.match(text)
     if m:
@@ -893,11 +962,11 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         # and treat the remainder as the set name.
         if _CONDITION_ABBREV_PREFIX_RE.match(candidate):
             remainder = m.group(2).strip()
-            known = _find_known_set_name(remainder)
+            known = _find_known_set_name(remainder) or _search_known_set_name(remainder)
             return None, (known or remainder) or None
         # Not a known set code – treat the whole text as the set name.
         raw = re.sub(r"^[\s\-–—]+", "", text).strip()
-        known = _find_known_set_name(raw)
+        known = _find_known_set_name(raw) or _search_known_set_name(raw)
         return None, (known or raw) or None
 
     # Try set code only (no set name after it).
@@ -910,12 +979,12 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         if _CONDITION_ABBREV_PREFIX_RE.match(stripped):
             return None, None
         # Not a known set code – check if it matches a known set name.
-        known = _find_known_set_name(stripped)
+        known = _find_known_set_name(stripped) or _search_known_set_name(stripped)
         return None, (known or stripped) or None
 
     # No set code – strip any leading separator and treat remainder as set name.
     raw = re.sub(r"^[\s\-–—]+", "", text).strip()
-    known = _find_known_set_name(raw)
+    known = _find_known_set_name(raw) or _search_known_set_name(raw)
     return None, (known or raw) or None
 
 
