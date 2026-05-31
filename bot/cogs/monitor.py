@@ -26,7 +26,7 @@ import asyncio
 import dataclasses
 import random
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import discord
@@ -48,6 +48,7 @@ from services.card_identifier import identify_card
 from services.cardmarket_resolver import CardmarketResolver
 from services.price_comparison import compare_prices
 from utils.card_analyzer import is_non_card_item
+from utils.card_analyzer import is_graded_listing, is_japanese_listing, is_lot_listing
 from utils.embed_builder import (
     build_error_embed,
     build_profit_alert_embed,
@@ -89,9 +90,6 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         # Background task handle
         self._task: asyncio.Task | None = None
-
-        # Timestamp of the last review-queue expiry cleanup.
-        self._last_cleanup: datetime | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -191,17 +189,21 @@ class MonitorCog(commands.Cog, name="Monitor"):
         logger.info("MonitorCog: starting scrape cycle")
 
         # Periodic review-queue expiry (once per day, when configured).
-        expiry_days = getattr(settings, "review_queue_expiry_days", 30)
+        expiry_days = int(
+            getattr(
+                settings,
+                "pending_ttl_days",
+                getattr(settings, "review_queue_expiry_days", 3),
+            )
+        )
         if expiry_days > 0:
-            now = datetime.now(timezone.utc)
-            if self._last_cleanup is None or (now - self._last_cleanup) >= timedelta(hours=24):
-                expired_count = await self.db.expire_old_review_items(expiry_days)
-                if expired_count:
-                    logger.info(
-                        "MonitorCog: expired %d stale review queue entries (>%d days)",
-                        expired_count, expiry_days,
-                    )
-                self._last_cleanup = now
+            expired_count = await self.db.expire_old_review_items(expiry_days)
+            if expired_count:
+                logger.info(
+                    "MonitorCog: expired %d stale review queue entries (>%d days)",
+                    expired_count,
+                    expiry_days,
+                )
 
         for term in settings.search_terms:
             if self._paused:
@@ -254,6 +256,36 @@ class MonitorCog(commands.Cog, name="Monitor"):
             listing.title[:60], listing.price,
         )
 
+        min_price = float(getattr(settings, "min_price_eur", 0.50))
+        max_price = float(getattr(settings, "max_price_eur", 500.00))
+        if listing.price < min_price or listing.price > max_price:
+            logger.info(
+                "MonitorCog: listing outside configured price range (%.2f-%.2f): €%.2f",
+                min_price,
+                max_price,
+                listing.price,
+            )
+            await self.db.add_review_item(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                failure_reason="price_out_of_range",
+                status="skipped",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
         # ── 1b. Non-card pre-filter ───────────────────────────────────────
         # Skip and log non-TCG-card items (merchandise, accessories, etc.)
         if is_non_card_item(listing.title, listing.description or ""):
@@ -269,6 +301,73 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 currency=listing.currency,
                 seller_name=listing.seller_name,
                 failure_reason="non_card_item",
+                status="skipped",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
+        # ── 1c. Lot / graded / Japanese pre-filters ───────────────────────
+        if is_lot_listing(listing.title, listing.description or ""):
+            await self.db.add_review_item(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                failure_reason="lot_listing",
+                status="skipped",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
+        if is_graded_listing(listing.title, listing.description or ""):
+            await self.db.add_review_item(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                failure_reason="graded_listing",
+                status="skipped",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
+        if is_japanese_listing(listing.title, listing.description or ""):
+            await self.db.add_review_item(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                failure_reason="japanese_listing",
                 status="skipped",
             )
             await self.db.mark_seen(
@@ -301,6 +400,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 fingerprint,
                 [],
                 failure_reason="unresolvable_no_identifiers",
+                status="expired",
             )
             await self.db.mark_seen(
                 listing_id=listing.listing_id,
@@ -508,6 +608,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         matching_attempts: list[dict],
         *,
         failure_reason: str | None = None,
+        status: str = "pending",
     ) -> None:
         """Send a listing to the review queue Discord channel."""
         from utils.embed_builder import build_review_embed
@@ -546,7 +647,11 @@ class MonitorCog(commands.Cog, name="Monitor"):
             fingerprint=fingerprint.fingerprint_hash(),
             failure_reason=failure_reason,
             matching_attempts=matching_attempts,
+            status=status,
         )
+
+        if status != "pending":
+            return
 
         # Post to review channel.
         review_channel = self._get_review_channel()

@@ -28,6 +28,13 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_DEFAULT_FILTER_SETTINGS: dict[str, str] = {
+    "pending_ttl_days": "3",
+    "slug_confidence_threshold": "0.6",
+    "min_price_eur": "0.50",
+    "max_price_eur": "500.00",
+}
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -206,6 +213,7 @@ class Database:
         await self._conn.commit()
         # Migrate existing error_log table: add discord_message_id if missing.
         await self._migrate()
+        await self.ensure_default_filters()
         logger.info("Database opened: %s", self._path)
 
     async def _migrate(self) -> None:
@@ -706,6 +714,20 @@ class Database:
             await self._conn.execute(  # type: ignore[union-attr]
                 "DELETE FROM filter_settings WHERE key = ?", (key,)
             )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    async def ensure_default_filters(self) -> None:
+        """Populate default runtime filter settings when missing."""
+        async with self._lock:
+            for key, value in _DEFAULT_FILTER_SETTINGS.items():
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO filter_settings (key, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(key) DO NOTHING
+                    """,
+                    (key, value),
+                )
             await self._conn.commit()  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
