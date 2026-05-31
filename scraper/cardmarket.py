@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote_plus, urlparse, urlunparse, urlencode, parse_qs
 
+import aiohttp
 from bs4 import BeautifulSoup
 from playwright.async_api import Browser, BrowserContext, Page
 
@@ -1333,6 +1334,8 @@ class CardmarketScraper:
         that simultaneously has a Mint (MT) condition badge *and* a PSA grade
         in its description that matches *psa_grade* exactly.
 
+        Tries FlareSolverr first; falls back to Playwright when unavailable.
+
         Returns the price (float > 0) when a match is found, or ``None`` when
         no matching listing is available (caller should fall back to the
         standard From price).
@@ -1342,6 +1345,23 @@ class CardmarketScraper:
             "Cardmarket: searching for PSA %d MT listing at %s", psa_grade, normalised_url
         )
 
+        # ── FlareSolverr path ─────────────────────────────────────────────
+        fs_html = await self._fetch_via_flaresolverr(normalised_url)
+        if fs_html:
+            price = _parse_psa_listing_price(fs_html, psa_grade)
+            if price:
+                logger.info(
+                    "Cardmarket [FlareSolverr]: PSA %d MT listing found at €%.2f for %s",
+                    psa_grade, price, normalised_url,
+                )
+            else:
+                logger.info(
+                    "Cardmarket [FlareSolverr]: no PSA %d MT listing found at %s",
+                    psa_grade, normalised_url,
+                )
+            return price
+
+        # ── Playwright fallback ───────────────────────────────────────────
         context = await self._new_context()
         page = await context.new_page()
         try:
@@ -1394,11 +1414,53 @@ class CardmarketScraper:
         Performs a two-step search: searches Cardmarket, finds the first
         product link, then scrapes the product page.
 
+        Tries FlareSolverr for the search step and the subsequent product page
+        fetch when available.  Falls back to Playwright when FlareSolverr is
+        not reachable or does not return usable results.
+
         Returns a non-empty ``dict`` on success, ``None`` on failure.
         """
         search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
         logger.info("Cardmarket: searching '%s'", query)
 
+        # ── FlareSolverr path ─────────────────────────────────────────────
+        fs_search_html = await self._fetch_via_flaresolverr(search_url)
+        if fs_search_html:
+            product_url = _extract_first_product_url_from_html(fs_search_html)
+            if product_url:
+                logger.debug(
+                    "Cardmarket [FlareSolverr]: found product URL %s for '%s'",
+                    product_url, query,
+                )
+                # _fetch_product_page tries FlareSolverr first; only uses the
+                # Playwright page when FlareSolverr is unavailable or fails.
+                fs_ctx = await self._new_context()
+                fs_page = await fs_ctx.new_page()
+                try:
+                    prices_dict = await self._fetch_product_page(fs_page, product_url)
+                finally:
+                    try:
+                        await fs_ctx.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if prices_dict:
+                    logger.debug(
+                        "Cardmarket [FlareSolverr]: '%s' → %s", query, prices_dict
+                    )
+                    return prices_dict
+                logger.warning(
+                    "Cardmarket [FlareSolverr]: no prices from product page for '%s' – "
+                    "falling back to Playwright",
+                    query,
+                )
+            else:
+                logger.warning(
+                    "Cardmarket [FlareSolverr]: no product link in search results for "
+                    "'%s' – falling back to Playwright",
+                    query,
+                )
+
+        # ── Playwright fallback ───────────────────────────────────────────
         context = await self._new_context()
         page = await context.new_page()
         try:
@@ -1462,9 +1524,15 @@ class CardmarketScraper:
     ) -> dict[str, Any] | None:
         """Navigate to *url*, wait for dynamic content, and parse prices.
 
-        Pre-warms the browser context by visiting the Cardmarket homepage first
-        so that Cloudflare session cookies are established before hitting the
-        product page URL.
+        Tries FlareSolverr first (if configured) to bypass Cloudflare without
+        launching a full Playwright browser session.  If FlareSolverr returns
+        usable HTML the result is parsed immediately and the Playwright path is
+        skipped entirely.
+
+        When FlareSolverr is unavailable or returns no prices, falls back to
+        the existing Playwright flow which pre-warms the browser context by
+        visiting the Cardmarket homepage first so that Cloudflare session
+        cookies are established before hitting the product page URL.
 
         When *url* contains ``isReverseHolo=Y`` the method additionally waits
         for the individual article/offer rows to be rendered and records the
@@ -1473,6 +1541,27 @@ class CardmarketScraper:
         ``info-list-container`` includes non-reverse-holo listings, whereas the
         article rows are already filtered to reverse-holo-only.
         """
+        # ── FlareSolverr path ─────────────────────────────────────────────
+        fs_html = await self._fetch_via_flaresolverr(url)
+        if fs_html:
+            prices_dict = _parse_product_page(fs_html)
+            if prices_dict:
+                logger.info(
+                    "Cardmarket [FlareSolverr]: prices parsed for %s", url
+                )
+                if _is_reverse_holo_url(url):
+                    first_listing = _parse_first_listing_price(fs_html)
+                    if first_listing is not None:
+                        prices_dict["first_listing_price"] = first_listing
+                return prices_dict
+            logger.warning(
+                "Cardmarket [FlareSolverr]: HTML received but no prices parsed for %s "
+                "– falling back to Playwright",
+                url,
+            )
+            _log_parse_diagnostics(fs_html, url)
+
+        # ── Playwright fallback ───────────────────────────────────────────
         # Pre-warm: visit the Cardmarket category page first so that Cloudflare
         # sets the cf_clearance session cookie before we request the product page.
         try:
@@ -1602,6 +1691,83 @@ class CardmarketScraper:
                 await asyncio.sleep(0.8)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Cardmarket: cookie accept skipped: %s", exc)
+
+    # ------------------------------------------------------------------
+    # FlareSolverr integration
+    # ------------------------------------------------------------------
+
+    async def _fetch_via_flaresolverr(self, url: str) -> str | None:
+        """Fetch *url* via FlareSolverr and return the rendered HTML.
+
+        Sends a ``request.get`` command to the FlareSolverr API, which uses a
+        real headless browser to bypass Cloudflare and similar bot-protection
+        systems.  Returns the rendered HTML string on success, or ``None`` when
+        FlareSolverr is unavailable or the request fails.
+
+        The FlareSolverr URL is read from ``settings.flaresolverr_url``
+        (``FLARESOLVERR_URL`` env var or config default ``http://localhost:8191``).
+        """
+        from config.settings import settings  # noqa: PLC0415 (lazy to avoid circular import)
+        flaresolverr_url = settings.flaresolverr_url
+        if not flaresolverr_url:
+            return None
+
+        api_url = f"{flaresolverr_url.rstrip('/')}/v1"
+        payload = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": 60000,
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=70)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(api_url, json=payload) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "Cardmarket [FlareSolverr]: HTTP %d from API for %s",
+                            resp.status, url,
+                        )
+                        return None
+                    data = await resp.json(content_type=None)
+                    if data.get("status") == "ok":
+                        html = data.get("solution", {}).get("response", "")
+                        if html:
+                            logger.info(
+                                "Cardmarket [FlareSolverr]: successfully fetched %s "
+                                "(solution status %s)",
+                                url, data.get("status"),
+                            )
+                            # Persist cookies returned by FlareSolverr so that
+                            # subsequent Playwright contexts can reuse them.
+                            solution_cookies = data.get("solution", {}).get("cookies", [])
+                            if solution_cookies and not self._saved_storage_state:
+                                # Convert FlareSolverr cookie dicts to Playwright format.
+                                pw_cookies: list[dict] = []
+                                for c in solution_cookies:
+                                    pw_cookies.append({
+                                        "name": c.get("name", ""),
+                                        "value": c.get("value", ""),
+                                        "domain": c.get("domain", ".cardmarket.com"),
+                                        "path": c.get("path", "/"),
+                                        "secure": bool(c.get("secure", False)),
+                                        "httpOnly": bool(c.get("httpOnly", False)),
+                                    })
+                                self._saved_storage_state = {"cookies": pw_cookies}
+                            return html
+                        logger.warning(
+                            "Cardmarket [FlareSolverr]: empty response body for %s", url
+                        )
+                    else:
+                        logger.warning(
+                            "Cardmarket [FlareSolverr]: non-ok status for %s – %s",
+                            url, data.get("message", data.get("status")),
+                        )
+        except asyncio.TimeoutError:
+            logger.warning("Cardmarket [FlareSolverr]: timeout fetching %s", url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cardmarket [FlareSolverr]: request failed for %s – %s", url, exc)
+        return None
 
     async def _new_context(self) -> BrowserContext:
         widths = [1280, 1366, 1440, 1920]
@@ -1743,7 +1909,25 @@ def generate_variant_urls(url: str) -> list[str]:
     return result
 
 
-def _remove_country_filter(url: str) -> str:
+def _extract_first_product_url_from_html(html: str) -> str | None:
+    """Extract the first Cardmarket product URL from a search-results HTML string.
+
+    Mirrors the logic of ``CardmarketScraper._find_first_product_url`` but
+    operates on raw HTML rather than a live Playwright page, so it can be used
+    with HTML returned by FlareSolverr.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for link in soup.select(_PRODUCT_LINK_SEL):
+        href = link.get("href", "")
+        if not href:
+            continue
+        if href.count("/") >= _MIN_PRODUCT_PATH_DEPTH:
+            full_url = href if href.startswith("http") else _CM_BASE + href
+            return full_url
+    return None
+
+
+
     """Return *url* with the sellerCountry parameter removed."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
