@@ -1928,6 +1928,7 @@ def _extract_first_product_url_from_html(html: str) -> str | None:
 
 
 
+def _remove_country_filter(url: str) -> str:
     """Return *url* with the sellerCountry parameter removed."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
