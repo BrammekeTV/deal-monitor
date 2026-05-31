@@ -48,14 +48,14 @@ class TestExtractCardInfo:
         assert info["set_name"] == "Obsidian Flames"
 
     def test_title_with_sv_set_code(self):
-        """Scarlet & Violet set code format (SV1a)."""
+        """Scarlet & Violet mixed-case set code format (e.g. SV2a)."""
         info = extract_card_info(
-            "Karte Pokemon Mewtwo ex 232/165 SV1a Scarlet & Violet 151"
+            "Karte Pokemon Mewtwo ex 232/165 SV2a 151"
         )
         assert info["card_name"] == "Mewtwo ex"
         assert info["collector_number"] == "232/165"
-        assert info["set_code"] == "SV1a"
-        assert info["set_name"] == "Scarlet & Violet 151"
+        assert info["set_code"] == "SV2a"
+        assert info["set_name"] == "151"
 
     def test_title_no_language_prefix(self):
         """Title without a language prefix should still parse correctly."""
@@ -103,7 +103,7 @@ class TestExtractCardInfo:
 
     def test_empty_title_returns_nones(self):
         info = extract_card_info("")
-        assert all(v is None for v in info.values())
+        assert all(v is None for k, v in info.items() if k != "card_name_matched")
 
     def test_title_with_only_garbage(self):
         """Titles with no recognisable card data return None for all fields."""
@@ -185,11 +185,103 @@ class TestParseSetInfo:
         assert name is None
 
     def test_set_code_with_dash_separator(self):
-        code, name = _parse_set_info("– SV1a Scarlet & Violet 151")
-        assert code == "SV1a"
-        assert name == "Scarlet & Violet 151"
+        code, name = _parse_set_info("– SV2a 151")
+        assert code == "SV2a"
+        assert name == "151"
 
     def test_set_code_only(self):
         code, name = _parse_set_info("OBF")
         assert code == "OBF"
         assert name is None
+
+
+class TestSubsetCollectorNumber:
+    """Tests for subset/sub-set collector number formats (e.g. TG09/TG30, SV49/SV94)."""
+
+    def test_trainer_gallery_format(self):
+        """Trainer Gallery numbers like TG09/TG30 (Silver Tempest)."""
+        info = extract_card_info("Umbreon TG25/TG30 Silver Tempest")
+        assert info["card_name"] == "Umbreon"
+        assert info["collector_number"] == "TG25/TG30"
+        assert info["card_name_matched"] is True
+
+    def test_shiny_vault_format(self):
+        """Shiny Vault numbers like SV49/SV94 (Hidden Fates)."""
+        info = extract_card_info("Charizard SV49/SV94 Hidden Fates")
+        assert info["card_name"] == "Charizard"
+        assert info["collector_number"] == "SV49/SV94"
+        assert info["card_name_matched"] is True
+
+    def test_crown_zenith_gallery_format(self):
+        """Crown Zenith Galarian Gallery numbers like GG12/GG70."""
+        info = extract_card_info("Pikachu GG12/GG70 Crown Zenith")
+        assert info["card_name"] == "Pikachu"
+        assert info["collector_number"] == "GG12/GG70"
+        assert info["card_name_matched"] is True
+
+    def test_subset_number_with_set_name_after(self):
+        """Set name after a subset collector number is captured."""
+        info = extract_card_info("Mew TG29/TG30 Silver Tempest")
+        assert info["collector_number"] == "TG29/TG30"
+        assert info["set_name"] == "Silver Tempest"
+
+
+class TestPokemonNameMatching:
+    """Tests for Pokémon name parsing with prefixes and suffixes."""
+
+    def test_bare_name_matched(self):
+        info = extract_card_info("Pikachu 001/025 Happy Birthday")
+        assert info["card_name"] == "Pikachu"
+        assert info["card_name_matched"] is True
+
+    def test_name_with_suffix(self):
+        info = extract_card_info("Charizard ex 006/197 OBF Obsidian Flames")
+        assert info["card_name"] == "Charizard ex"
+        assert info["card_name_matched"] is True
+
+    def test_name_with_vmax_suffix(self):
+        info = extract_card_info("Umbreon VMAX 215/203 Evolving Skies")
+        assert info["card_name"] == "Umbreon VMAX"
+        assert info["card_name_matched"] is True
+
+    def test_name_with_prefix(self):
+        info = extract_card_info("Alolan Ninetales 012/072 Shining Fates")
+        assert info["card_name"] == "Alolan Ninetales"
+        assert info["card_name_matched"] is True
+
+    def test_name_with_prefix_and_suffix(self):
+        info = extract_card_info("Radiant Charizard 011/078 Pokemon GO")
+        assert info["card_name"] == "Radiant Charizard"
+        assert info["card_name_matched"] is True
+
+    def test_multiword_pokemon_name(self):
+        info = extract_card_info("Iron Hands ex 130/182 PAR Paradox Rift")
+        assert info["card_name"] == "Iron Hands ex"
+        assert info["card_name_matched"] is True
+
+    def test_unknown_name_not_matched(self):
+        """A made-up name should still be returned but marked as not matched."""
+        info = extract_card_info("Fictosaur ex 001/100 OBF Obsidian Flames")
+        assert info["card_name"] == "Fictosaur ex"
+        assert info["card_name_matched"] is False
+
+
+class TestSetCodeValidation:
+    """Tests that unknown set codes are not returned as set_code."""
+
+    def test_unknown_code_treated_as_set_name(self):
+        """A token that doesn't match any known set code goes to set_name."""
+        code, name = _parse_set_info("NM Obsidian Flames")
+        assert code is None
+        assert "NM" in name
+
+    def test_known_code_accepted(self):
+        code, name = _parse_set_info("OBF Obsidian Flames")
+        assert code == "OBF"
+        assert name == "Obsidian Flames"
+
+    def test_unknown_code_only_treated_as_set_name(self):
+        """Standalone unknown token goes to set_name, not set_code."""
+        code, name = _parse_set_info("NM")
+        assert code is None
+        assert name == "NM"
