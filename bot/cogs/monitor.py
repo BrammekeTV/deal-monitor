@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 
 import discord
 from discord.ext import commands
-from playwright.async_api import async_playwright
+from camoufox.async_api import AsyncCamoufox
 
 from config.settings import settings
 from database.db import Database
@@ -85,7 +85,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._vinted: VintedScraper | None = None
         self._cardmarket: CardmarketScraper | None = None
         self._resolver: CardmarketResolver | None = None
-        self._playwright = None
+        self._camoufox: AsyncCamoufox | None = None
         self._browser = None
 
         # Background task handle
@@ -104,11 +104,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._vinted = VintedScraper()
         await self._vinted.setup()
 
-        # Initialise Playwright browser for Cardmarket scraping.
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=settings.headless
+        # Initialise Camoufox (patched Firefox) browser for Cardmarket scraping.
+        # Camoufox bypasses Cloudflare bot detection via a hardened Firefox binary
+        # with randomised fingerprints; it returns a standard Playwright Browser.
+        self._camoufox = AsyncCamoufox(
+            headless=settings.headless,
+            os="windows",
+            locale="nl-NL",
         )
+        self._browser = await self._camoufox.__aenter__()
         self._cardmarket = CardmarketScraper(self._browser)
 
         # Initialise resolver with DB.
@@ -130,10 +134,8 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         if self._vinted:
             await self._vinted.teardown()
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        if self._camoufox:
+            await self._camoufox.__aexit__(None, None, None)
 
         logger.info("MonitorCog: stopped")
 
