@@ -9,7 +9,7 @@ a profitable buying opportunity.
 
 Vinted buyer fees:
   Protection charge = 5% of item price + €0.70
-  Shipping          = €2.89 – €5.79 (range; worst-case used for profitability check)
+  Shipping          = €2.89 – €7.09 (range; worst-case used for profitability check)
 
 Decision rule:
   total_cost_max < Cardmarket From price  →  profitable  →  send Discord alert
@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 VINTED_PROTECTION_FEE_PCT: float = 0.05    # 5 % of item price
 VINTED_PROTECTION_FEE_FIXED: float = 0.70  # fixed €0.70 on top
 VINTED_SHIPPING_MIN: float = 2.89          # cheapest shipping tier
-VINTED_SHIPPING_MAX: float = 5.79          # most expensive shipping tier
+VINTED_SHIPPING_MAX: float = 7.09          # most expensive shipping tier
 
 
 def _protection_fee(item_price: float) -> float:
