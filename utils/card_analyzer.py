@@ -536,6 +536,13 @@ _CONDITION_WORD_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex to strip a leading English condition full word/phrase.
+# Multi-word phrases are listed before single-word ones so they match first.
+_CONDITION_FULL_PREFIX_RE = re.compile(
+    r"^(near\s+mint|light\s+played|excellent|played|mint|poor|good)\b",
+    re.IGNORECASE,
+)
+
 # Regex to strip a leading condition abbreviation.
 # Excludes EX (set code), PL (Platinum set code), HP (Holon Phantoms set code).
 _CONDITION_ABBREV_PREFIX_RE = re.compile(
@@ -685,11 +692,13 @@ def _strip_after_number_noise(text: str) -> str:
     2. After a language code was stripped, any separator characters are removed.
     3. After a language code was stripped, a condition word is stripped if found
        (état, etat, zustand, conditie …).
-    4. After a language code was stripped, a condition abbreviation is stripped
-       if found (NM, LP, GD, PO, VG).  These are *only* stripped after a
-       language code; standalone stripping in other contexts is handled by
-       ``_parse_set_info``.
-    5. Any remaining leading separators/whitespace are stripped.
+    4. After a language code was stripped, an English condition full word or phrase
+       is stripped if found (Mint, Near Mint, Excellent, Good, Light Played,
+       Played, Poor).  These are *only* stripped after a language code; standalone
+       stripping in other contexts is handled by ``_parse_set_info``.
+    5. After a language code was stripped, a condition abbreviation is stripped
+       if found (NM, LP, GD, PO, VG).  Same language-code prerequisite applies.
+    6. Any remaining leading separators/whitespace are stripped.
 
     Returns the remaining text (may be empty string).
     """
@@ -710,6 +719,10 @@ def _strip_after_number_noise(text: str) -> str:
         if m:
             stripped = stripped[m.end():].lstrip()
             stripped = re.sub(r"^[\s\-–—•·|/\\]+", "", stripped)
+        # Strip English condition full word/phrase (e.g. "Near Mint", "Mint").
+        m = _CONDITION_FULL_PREFIX_RE.match(stripped)
+        if m:
+            stripped = stripped[m.end():].lstrip()
         # Strip condition abbreviation (e.g. "NM", "LP") — only after lang code.
         m = _CONDITION_ABBREV_PREFIX_RE.match(stripped)
         if m:
@@ -1056,6 +1069,15 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     rarity_stripped = _strip_rarity_suffixes(" " + text).strip()
     if not rarity_stripped:
         return None, None
+
+    # If the text starts with an English condition full word/phrase (e.g.
+    # "Mint Obsidian Flames", "Near Mint Obsidian Flames"), strip the condition
+    # token and treat the remainder as the set name.
+    cm = _CONDITION_FULL_PREFIX_RE.match(text)
+    if cm:
+        remainder = text[cm.end():].strip()
+        known = (_find_known_set_name(remainder) or _search_known_set_name(remainder)) if remainder else None
+        return None, known or None
 
     # Try "set_code<space>set_name" pattern.
     m = _SET_CODE_RE.match(text)

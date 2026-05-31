@@ -136,7 +136,7 @@ _CONDITION_RE = re.compile(
     r"|\((nm|ex|gd|lp|pl|po|m)\)"
     # Foreign-language condition label followed by abbreviation:
     # French "état", Dutch "staat", German "zustand", Spanish "estado", Italian "stato"
-    r"|(?:état|etat|staat|zustand|estado|stato|condition)\s*[:\s]\s*(nm|ex|gd|lp|pl|po|m)\b"
+    r"|(?:état|etat|staat|zustand|estado|stato|condition|conditie|condizione)\s*[:\s]\s*(nm|ex|gd|lp|pl|po|m)\b"
     # Standalone safe abbreviations (word-bounded; excludes EX and M which are
     # too ambiguous with card types – EX is handled by the dash-separator rule below)
     r"|\b(nm|gd|lp|pl|po)\b"
