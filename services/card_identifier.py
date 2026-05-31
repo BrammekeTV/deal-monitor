@@ -130,8 +130,18 @@ _CONDITION_MAP: dict[str, int] = {
 }
 # Multi-word phrases must be checked before single-word tokens.
 _CONDITION_RE = re.compile(
+    # Full-word conditions (English)
     r"\b(near\s+mint|light\s+played|excellent|played|mint|poor|good)\b"
-    r"|\((nm|ex|gd|lp|pl|po|m)\)",
+    # Parenthesised abbreviations: (NM), (EX), (GD), etc.
+    r"|\((nm|ex|gd|lp|pl|po|m)\)"
+    # Foreign-language condition label followed by abbreviation:
+    # French "état", Dutch "staat", German "zustand", Spanish "estado", Italian "stato"
+    r"|(?:état|etat|staat|zustand|estado|stato|condition)\s*[:\s]\s*(nm|ex|gd|lp|pl|po|m)\b"
+    # Standalone safe abbreviations (word-bounded; excludes EX and M which are
+    # too ambiguous with card types – EX is handled by the dash-separator rule below)
+    r"|\b(nm|gd|lp|pl|po)\b"
+    # EX as a dash-delimited segment in a title, e.g. "Aquapolis - EX - Pokemon TCG"
+    r"|(?:^|\s+-\s+)(ex)(?=\s+-|\s*,|\s*$)",
     re.I,
 )
 
@@ -329,7 +339,9 @@ def identify_card(title: str, description: str | None = None) -> CardFingerprint
         # not contain a recognisable condition keyword.
         cm = _CONDITION_RE.search(translate_listing_title(description))
     if cm:
-        raw_condition = (cm.group(1) or cm.group(2) or "").strip().lower()
+        raw_condition = (
+            cm.group(1) or cm.group(2) or cm.group(3) or cm.group(4) or cm.group(5) or ""
+        ).strip().lower()
         # Normalise "near mint" / "light played" spacing variants.
         raw_condition = re.sub(r"\s+", " ", raw_condition)
         code = _CONDITION_MAP.get(raw_condition)

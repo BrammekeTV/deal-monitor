@@ -180,15 +180,16 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     stack_trace=traceback.format_exc(),
                 )
 
+            # Calculate next run time before updating the status message so the
+            # status embed always shows the correct upcoming schedule.
+            delay = random.randint(settings.interval_min, settings.interval_max)
+            self._next_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
+
             # Update the persistent status message (if a status channel is set).
             try:
                 await self._update_status_message()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("MonitorCog: failed to update status message: %s", exc)
-
-            # Random sleep between cycles.
-            delay = random.randint(settings.interval_min, settings.interval_max)
-            self._next_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
             logger.debug("MonitorCog: sleeping %d seconds before next cycle", delay)
             await asyncio.sleep(delay)
 
@@ -409,7 +410,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 fingerprint,
                 [],
                 failure_reason="unresolvable_no_identifiers",
-                status="expired",
+                status="pending",
             )
             await self.db.mark_seen(
                 listing_id=listing.listing_id,
@@ -585,7 +586,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # ── 7. Post profit alert or skip ──────────────────────────────────
         if comparison.is_profitable:
             self._listings_profitable += 1
-            await self._send_profit_alert(listing, cm_data, comparison, resolved)
+            await self._send_profit_alert(listing, cm_data, comparison, resolved, fingerprint)
         else:
             logger.info(
                 "MonitorCog: not profitable – Vinted €%.2f vs CM €%.2f for '%s'",
@@ -593,7 +594,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 comparison.cardmarket_from_price,
                 listing.title[:60],
             )
-            await self._send_identified_not_profitable(listing, cm_data, comparison, resolved)
+            await self._send_identified_not_profitable(listing, cm_data, comparison, resolved, fingerprint)
 
         # ── 8. Mark as seen ───────────────────────────────────────────────
         await self.db.mark_seen(
@@ -703,6 +704,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         cm_data,
         comparison,
         resolved,
+        fingerprint=None,
     ) -> None:
         """Post a profit alert embed to the deals channel."""
         embed = build_profit_alert_embed(
@@ -711,6 +713,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             comparison,
             match_confidence=resolved.confidence,
             match_source=resolved.source,
+            fingerprint=fingerprint,
         )
         channel = self._get_deals_channel()
         if channel:
@@ -728,6 +731,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         cm_data,
         comparison,
         resolved,
+        fingerprint=None,
     ) -> None:
         """Post a non-profitable identified listing embed to the match channel."""
         from utils.embed_builder import build_not_profitable_embed
@@ -736,7 +740,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         if channel is None:
             return
 
-        embed = build_not_profitable_embed(listing, cm_data, comparison)
+        embed = build_not_profitable_embed(listing, cm_data, comparison, fingerprint=fingerprint)
         try:
             await channel.send(embed=embed)
         except discord.HTTPException as exc:

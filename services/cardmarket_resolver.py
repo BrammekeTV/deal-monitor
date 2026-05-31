@@ -566,11 +566,11 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "forces temporelles": "TEF",
     "mascarade crépusculaire": "TWM",
     # HeartGold & SoulSilver
-    "heartgold soulsilver": "HGSS",
-    "heart gold soul silver": "HGSS",
+    "heartgold soulsilver": "HS",
+    "heart gold soul silver": "HS",
     # Platinum era
     "platinum": "PLA",
-    "supreme victors": "STS",
+    "supreme victors": "SV",
     "stormfront": "SF",
     # McDonald's promos
     "mcdonald": "MCD",
@@ -578,6 +578,51 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     # Jungle / Fossil / Base aliases already present above as BS/JU/FO
     "jungle": "JU",
     "fossil": "FO",
+    # Base Set era extras
+    "base set 2": "B2",
+    "gym heroes": "G1",
+    "gym challenge": "G2",
+    "legendary collection": "LC",
+    # EX era sets (e2 block)
+    "aquapolis": "AQ",
+    "skyridge": "SK",
+    "expedition base set": "EX",
+    # EX era main block
+    "ruby sapphire": "RS",
+    "ruby & sapphire": "RS",
+    "ruby and sapphire": "RS",
+    "sandstorm": "SS",
+    "dragon": "DR",
+    "team magma vs team aqua": "MA",
+    "hidden legends": "HL",
+    "firered leafgreen": "FR",
+    "fire red leaf green": "FR",
+    "team rocket returns": "TRR",
+    "deoxys": "DX",
+    "emerald": "EM",
+    "unseen forces": "UF",
+    "delta species": "DS",
+    "legend maker": "LM",
+    "holon phantoms": "HP",
+    "crystal guardians": "CG",
+    "dragon frontiers": "DF",
+    "power keepers": "PK",
+    # Diamond & Pearl era
+    "diamond pearl": "DP",
+    "diamond & pearl": "DP",
+    "diamond and pearl": "DP",
+    "mysterious treasures": "MT",
+    "secret wonders": "SW",
+    "great encounters": "GE",
+    "majestic dawn": "MD",
+    "legends awakened": "LA",
+    "rising rivals": "RR",
+    "arceus": "AR",
+    # HeartGold & SoulSilver continuation
+    "unleashed": "UL",
+    "undaunted": "UD",
+    "triumphant": "TM",
+    "call of legends": "CL",
     # GO
     "pokemon go": "GO",
     # Black & White era

@@ -1269,6 +1269,10 @@ class CardmarketScraper:
 
     def __init__(self, browser: Browser) -> None:
         self._browser = browser
+        # Persisted storage state (cookies + localStorage) from a successful
+        # scrape.  Re-used when creating new contexts so that Cloudflare's
+        # cf_clearance cookie survives across requests.
+        self._saved_storage_state: dict | None = None
 
     # ------------------------------------------------------------------
     # Primary API: scrape by product URL
@@ -1299,8 +1303,12 @@ class CardmarketScraper:
         await page.add_init_script(_STEALTH_SCRIPT)
         try:
             prices_dict = await self._fetch_product_page(page, normalised_url)
+            # Persist cookies/storage so Cloudflare recognises us on the next request.
+            try:
+                self._saved_storage_state = await context.storage_state()
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
-            await context.close()
             tb = traceback.format_exc()
             raise CardmarketScrapeError(
                 url=normalised_url,
@@ -1348,6 +1356,10 @@ class CardmarketScraper:
             await page2.add_init_script(_STEALTH_SCRIPT)
             try:
                 prices_dict2 = await self._fetch_product_page(page2, url_no_country)
+                try:
+                    self._saved_storage_state = await context2.storage_state()
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001
                 prices_dict2 = None
             finally:
@@ -1680,7 +1692,7 @@ class CardmarketScraper:
         chrome_versions = ["124.0.0.0", "125.0.0.0", "131.0.0.0", "132.0.0.0", "136.0.0.0"]
         chrome_ver = random.choice(chrome_versions)
         major = chrome_ver.split(".")[0]
-        return await self._browser.new_context(
+        ctx = await self._browser.new_context(
             viewport={"width": w, "height": int(w * 0.5625)},
             locale="nl-NL",
             timezone_id="Europe/Amsterdam",
@@ -1706,6 +1718,16 @@ class CardmarketScraper:
                 "Sec-CH-UA-Platform": '"Windows"',
             },
         )
+        # Restore persisted cookies/storage so Cloudflare recognises the browser
+        # across requests and does not re-challenge on every new context.
+        if self._saved_storage_state:
+            try:
+                cookies = self._saved_storage_state.get("cookies", [])
+                if cookies:
+                    await ctx.add_cookies(cookies)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Cardmarket: could not restore saved cookies: %s", exc)
+        return ctx
 
 
 # ---------------------------------------------------------------------------
