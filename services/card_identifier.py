@@ -60,25 +60,77 @@ _GRADE_RE = re.compile(
 # ---------------------------------------------------------------------------
 # Language keywords
 # ---------------------------------------------------------------------------
+# Full-word language names and common abbreviations/ISO codes.
+# Longer keys must be listed before shorter ones so that multi-word names
+# (e.g. "português") are matched before single-letter codes.
 _LANGUAGE_MAP: dict[str, str] = {
+    # Full names
     "english": "English",
     "japanese": "Japanese",
     "deutsch": "German",
     "german": "German",
     "french": "French",
     "français": "French",
+    "portuguese": "Portuguese",
+    "português": "Portuguese",
     "spanish": "Spanish",
     "español": "Spanish",
     "italian": "Italian",
     "italiano": "Italian",
-    "portuguese": "Portuguese",
     "korean": "Korean",
+    "russian": "Russian",
+    "русский": "Russian",
     "dutch": "Dutch",
     "nederlands": "Dutch",
+    # ISO/abbreviation codes – two-letter, matched as standalone tokens only
+    "en": "English",
+    "ja": "Japanese",
+    "de": "German",
+    "fr": "French",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
+    "ko": "Korean",
+    "ru": "Russian",
     "nl": "Dutch",
 }
+# Build regex with longer keys first to avoid short codes shadowing full words.
+_sorted_lang_keys = sorted(_LANGUAGE_MAP.keys(), key=len, reverse=True)
 _LANGUAGE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(k) for k in _LANGUAGE_MAP) + r")\b",
+    r"\b(" + "|".join(re.escape(k) for k in _sorted_lang_keys) + r")\b",
+    re.I,
+)
+
+# ---------------------------------------------------------------------------
+# Card condition keywords
+# ---------------------------------------------------------------------------
+# Cardmarket minCondition codes: Mint=1, Near Mint=2, Excellent=3, Good=4,
+# Light Played=5, Played=6.  Poor (7) has no minCondition filter (shows all).
+_CONDITION_MAP: dict[str, int] = {
+    "mint": 1,
+    "(m)": 1,
+    "near mint": 2,
+    "(nm)": 2,
+    "nm": 2,
+    "excellent": 3,
+    "(ex)": 3,
+    "good": 4,
+    "(gd)": 4,
+    "gd": 4,
+    "light played": 5,
+    "(lp)": 5,
+    "lp": 5,
+    "played": 6,
+    "(pl)": 6,
+    "pl": 6,
+    "poor": 7,
+    "(po)": 7,
+    "po": 7,
+}
+# Multi-word phrases must be checked before single-word tokens.
+_CONDITION_RE = re.compile(
+    r"\b(near\s+mint|light\s+played|excellent|played|mint|poor|good)\b"
+    r"|\((nm|ex|gd|lp|pl|po|m)\)",
     re.I,
 )
 
@@ -118,6 +170,8 @@ class CardFingerprint:
     is_promo: bool = False
     grade_authority: str | None = None  # PSA / BGS / CGC
     grade_value: str | None = None
+    condition: str | None = None          # Mint / Near Mint / Excellent / Good / Light Played / Played / Poor
+    condition_code: int | None = None     # Cardmarket minCondition value (1-7); None or 7 = no filter
 
     # Raw title stored for fallback matching
     raw_title: str = ""
@@ -138,6 +192,8 @@ class CardFingerprint:
             "is_promo": self.is_promo,
             "grade_authority": self.grade_authority,
             "grade_value": self.grade_value,
+            "condition": self.condition,
+            "condition_code": self.condition_code,
         }
 
     def to_json(self) -> str:
@@ -259,6 +315,29 @@ def identify_card(title: str) -> CardFingerprint:
     if gm:
         fp.grade_authority = gm.group(1).upper()
         fp.grade_value = gm.group(2)
+
+    # --- Condition ---
+    cm = _CONDITION_RE.search(title)
+    if cm:
+        raw_condition = (cm.group(1) or cm.group(2) or "").strip().lower()
+        # Normalise "near mint" / "light played" spacing variants.
+        raw_condition = re.sub(r"\s+", " ", raw_condition)
+        code = _CONDITION_MAP.get(raw_condition)
+        if code is None:
+            # Try parenthesized form e.g. "(nm)" → "nm" without parens.
+            code = _CONDITION_MAP.get(f"({raw_condition})")
+        if code is not None:
+            _CONDITION_LABEL: dict[int, str] = {
+                1: "Mint",
+                2: "Near Mint",
+                3: "Excellent",
+                4: "Good",
+                5: "Light Played",
+                6: "Played",
+                7: "Poor",
+            }
+            fp.condition = _CONDITION_LABEL.get(code)
+            fp.condition_code = code
 
     logger.debug(
         "Fingerprint for '%s': %s", title[:60], fp.normalised_key()

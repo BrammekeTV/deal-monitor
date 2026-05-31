@@ -23,6 +23,7 @@ Every cycle (random interval between interval_min and interval_max seconds):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import random
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,7 @@ from scraper.cardmarket import (
     CardmarketScraper,
     contains_psa,
     extract_psa_grade,
+    generate_variant_urls,
     validate_cardmarket_url,
 )
 from scraper.vinted import VintedScraper
@@ -350,6 +352,18 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # ── 3b. URL validation (for constructed URLs only) ────────────────
         if resolved.needs_validation:
             url_ok = await validate_cardmarket_url(resolved.url)
+            if not url_ok:
+                # Try V1/V2 variant URLs before giving up.
+                for variant_url in generate_variant_urls(resolved.url):
+                    if await validate_cardmarket_url(variant_url):
+                        logger.info(
+                            "MonitorCog: primary URL invalid, using variant: %s",
+                            variant_url,
+                        )
+                        resolved = dataclasses.replace(resolved, url=variant_url)
+                        url_ok = True
+                        break
+
             if not url_ok:
                 logger.warning(
                     "MonitorCog: constructed URL returned 404, sending to review: %s",

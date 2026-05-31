@@ -334,6 +334,11 @@ class CardmarketResolver:
             if lc and lc not in ("1", "11"):
                 lang_code = lc
 
+        # Determine minCondition filter (omit for Poor=7 or unknown).
+        min_condition: int | None = None
+        if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6:
+            min_condition = fingerprint.condition_code
+
         # Helper: look up a learned prefix for a given set_code.
         def _get_prefix(sc: str) -> str | None:
             rule = self._prefix_rules.get(sc.upper())
@@ -356,6 +361,7 @@ class CardmarketResolver:
                 url,
                 language=lang_code,
                 is_reverse_holo=bool(fingerprint.is_reverse_holo),
+                min_condition=min_condition,
             )
 
         # ── 1: Try with explicit set code ─────────────────────────────────
@@ -564,6 +570,26 @@ _SET_NAME_TO_CODE: dict[str, str] = {
     "fossil": "FO",
     # GO
     "pokemon go": "GO",
+    # Black & White era
+    "black white": "BLW",
+    "black & white": "BLW",
+    "emerging powers": "EPO",
+    "noble victories": "NVI",
+    "next destinies": "NXD",
+    "dark explorers": "DEX",
+    "dragons exalted": "DRX",
+    "boundaries crossed": "BCR",
+    "plasma storm": "PLS",
+    "plasma freeze": "PLF",
+    "plasma blast": "PLB",
+    "legendary treasures": "LTR",
+    # Mega Evolution / Japanese Era 2024–2025
+    "mega evolution": "MEG",
+    "phantasmal flames": "PFL",
+    "ascended heroes": "ASC",
+    "perfect order": "POR",
+    "chaos rising": "CRI",
+    "pitch black": "PBL",
 }
 
 

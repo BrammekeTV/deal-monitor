@@ -806,3 +806,61 @@ class TestIsReverseHoloUrl:
 
     def test_empty_url(self) -> None:
         assert _is_reverse_holo_url("") is False
+
+
+# ---------------------------------------------------------------------------
+# generate_variant_urls
+# ---------------------------------------------------------------------------
+
+from scraper.cardmarket import generate_variant_urls  # noqa: E402
+
+_SINGLES_BASE = "https://www.cardmarket.com/en/Pokemon/Products/Singles"
+
+
+class TestGenerateVariantUrls:
+    """Tests for generate_variant_urls()."""
+
+    def _url(self, slug: str, qs: str = "sellerCountry=23&language=1") -> str:
+        return f"{_SINGLES_BASE}/Ascended-Heroes/{slug}?{qs}"
+
+    def test_base_slug_returns_v1_and_v2(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-ASC224"))
+        assert self._url("Salazzle-V1-ASC224") in result
+        assert self._url("Salazzle-V2-ASC224") in result
+
+    def test_base_slug_not_in_result(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-ASC224"))
+        assert self._url("Salazzle-ASC224") not in result
+
+    def test_v1_slug_returns_base_and_v2(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-V1-ASC224"))
+        assert self._url("Salazzle-ASC224") in result
+        assert self._url("Salazzle-V2-ASC224") in result
+
+    def test_v1_slug_not_in_result(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-V1-ASC224"))
+        assert self._url("Salazzle-V1-ASC224") not in result
+
+    def test_v2_slug_returns_base_and_v1(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-V2-ASC224"))
+        assert self._url("Salazzle-ASC224") in result
+        assert self._url("Salazzle-V1-ASC224") in result
+
+    def test_query_params_preserved(self) -> None:
+        url = self._url("Salazzle-ASC224", "sellerCountry=23&language=1")
+        for variant in generate_variant_urls(url):
+            assert "sellerCountry=23" in variant
+            assert "language=1" in variant
+
+    def test_numeric_only_suffix(self) -> None:
+        url = f"{_SINGLES_BASE}/Scarlet-Violet/Charizard-ex-125?language=1"
+        result = generate_variant_urls(url)
+        assert f"{_SINGLES_BASE}/Scarlet-Violet/Charizard-ex-V1-125?language=1" in result
+        assert f"{_SINGLES_BASE}/Scarlet-Violet/Charizard-ex-V2-125?language=1" in result
+
+    def test_no_number_suffix_returns_empty(self) -> None:
+        url = f"{_SINGLES_BASE}/Scarlet-Violet/Pikachu?language=1"
+        assert generate_variant_urls(url) == []
+
+    def test_empty_url_returns_empty(self) -> None:
+        assert generate_variant_urls("") == []

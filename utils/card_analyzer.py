@@ -192,6 +192,18 @@ _RARITY_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches a grade-certifier + grade-number token that acts as a "break point"
+# when parsing noisy titles with no collector number.
+# e.g. "PSA 9", "CGC 9.5", "BGS 10"
+_GRADE_BREAK_RE = re.compile(
+    r"\b(?:PSA|BGS|CGC|SGC|GMA)\s*\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+
+# Matches a standalone 4-digit calendar year used as a break point in noisy
+# titles.  Requires that the year is NOT preceded or followed by another digit.
+_YEAR_BREAK_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
 # Set code: a short alphanumeric token that appears right after the collector
 # number (with an optional "–" or "-" separator).
 # Pattern: starts uppercase, 2–6 chars total, last char may be lowercase/digit.
@@ -269,6 +281,24 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
     # No match – return the original (cleaned) text as-is.
     original = " ".join(text.split()).strip()
     return original or None, False
+
+
+def _verify_pokemon_in_text(text: str) -> bool:
+    """Return True if at least one known Pokémon name appears anywhere in *text*.
+
+    Scans all contiguous word sequences within *text* and checks each against
+    the known Pokémon name map.  This allows the caller to confirm that a card
+    name candidate like ``"Stargazer Pikachu & Friends"`` contains a valid
+    Pokémon name (``"Pikachu"``) even though the full phrase is not itself a
+    Pokémon name.
+    """
+    words = text.split()
+    for i in range(len(words)):
+        for j in range(i + 1, len(words) + 1):
+            fragment = " ".join(words[i:j]).lower()
+            if fragment in _POKEMON_NAME_MAP:
+                return True
+    return False
 
 
 def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None]:
@@ -381,8 +411,35 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["collector_number"] = promo_number
         return result
 
-    # ── 4. No collector number – best-effort card name only ───────────────
+    # ── 4. No collector number – best-effort card name + set info ────────
     raw_name = _RARITY_SUFFIX_RE.sub("", text).strip()
+
+    # Try to split the title at the first "break point" — a grade certifier
+    # (e.g. "CGC 9") or a standalone calendar year (e.g. "2012") — so that
+    # the card name and any set info can be extracted from the noise-free
+    # portions of the title.
+    bp_grade = _GRADE_BREAK_RE.search(raw_name)
+    bp_year = _YEAR_BREAK_RE.search(raw_name)
+    bp_candidates = [m for m in (bp_grade, bp_year) if m is not None]
+
+    if bp_candidates:
+        break_match = min(bp_candidates, key=lambda m: m.start())
+        candidate = raw_name[: break_match.start()].strip()
+        remainder = raw_name[break_match.end() :].strip()
+
+        if candidate and _verify_pokemon_in_text(candidate):
+            result["card_name"] = candidate
+            result["card_name_matched"] = True
+            # Strip any leading year from the remainder, then try set info.
+            if remainder:
+                remainder_clean = re.sub(r"\s+", " ", _YEAR_BREAK_RE.sub("", remainder, count=1)).strip()
+                if remainder_clean:
+                    set_code, set_name = _parse_set_info(remainder_clean)
+                    result["set_code"] = set_code
+                    result["set_name"] = set_name
+            return result
+
+    # Fallback: no break point found, or no Pokémon name in the candidate.
     card_name, matched = _match_pokemon_name(raw_name)
     result["card_name"] = card_name
     result["card_name_matched"] = matched
