@@ -584,12 +584,12 @@ async def validate_cardmarket_url(url: str) -> bool:
                 if resp.status == 404:
                     logger.warning("validate_cardmarket_url: 404 for %s", url)
                     return False
-                if resp.status == 403:
-                    # Cardmarket blocks automated HEAD requests with 403 even for
-                    # valid product pages; treat as URL exists.
+                if resp.status in (403, 405):
+                    # Cardmarket blocks automated HEAD requests with 403 or 405
+                    # (Method Not Allowed) even for valid product pages; treat as URL exists.
                     logger.debug(
-                        "validate_cardmarket_url: 403 (anti-bot block) for %s — treating as valid",
-                        url,
+                        "validate_cardmarket_url: %d (anti-bot block) for %s — treating as valid",
+                        resp.status, url,
                     )
                     return True
                 if resp.status >= 400:
