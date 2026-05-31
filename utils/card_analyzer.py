@@ -533,8 +533,8 @@ def _strip_after_number_noise(text: str) -> str:
        (état, etat, zustand, conditie …).
     4. After a language code was stripped, a condition abbreviation is stripped
        if found (NM, LP, GD, PO, VG).  These are *only* stripped after a
-       language code to avoid removing legitimate tokens like "NM Obsidian
-       Flames" where "NM" could be the abbreviated set code.
+       language code; standalone stripping in other contexts is handled by
+       ``_parse_set_info``.
     5. Any remaining leading separators/whitespace are stripped.
 
     Returns the remaining text (may be empty string).
@@ -818,6 +818,12 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         candidate = m.group(1)
         if candidate.upper() in KNOWN_SET_CODES:
             return candidate, m.group(2).strip() or None
+        # If the leading token is a condition abbreviation (e.g. "NM"), strip it
+        # and treat the remainder as the set name.
+        if _CONDITION_ABBREV_PREFIX_RE.match(candidate):
+            remainder = m.group(2).strip()
+            known = _find_known_set_name(remainder)
+            return None, (known or remainder) or None
         # Not a known set code – treat the whole text as the set name.
         raw = re.sub(r"^[\s\-–—]+", "", text).strip()
         known = _find_known_set_name(raw)
@@ -829,6 +835,9 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         stripped = text.lstrip(" \t-–—").strip()
         if stripped.upper() in KNOWN_SET_CODES:
             return stripped or None, None
+        # A standalone condition abbreviation yields no set info.
+        if _CONDITION_ABBREV_PREFIX_RE.match(stripped):
+            return None, None
         # Not a known set code – check if it matches a known set name.
         known = _find_known_set_name(stripped)
         return None, (known or stripped) or None

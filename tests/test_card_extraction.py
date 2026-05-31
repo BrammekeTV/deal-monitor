@@ -269,22 +269,22 @@ class TestPokemonNameMatching:
 class TestSetCodeValidation:
     """Tests that unknown set codes are not returned as set_code."""
 
-    def test_unknown_code_treated_as_set_name(self):
-        """A token that doesn't match any known set code goes to set_name."""
+    def test_condition_prefix_stripped_from_set_name(self):
+        """NM is a condition token; the remainder becomes the set name."""
         code, name = _parse_set_info("NM Obsidian Flames")
         assert code is None
-        assert "NM" in name
+        assert name == "Obsidian Flames"
 
     def test_known_code_accepted(self):
         code, name = _parse_set_info("OBF Obsidian Flames")
         assert code == "OBF"
         assert name == "Obsidian Flames"
 
-    def test_unknown_code_only_treated_as_set_name(self):
-        """Standalone unknown token goes to set_name, not set_code."""
+    def test_standalone_condition_token_returns_no_set(self):
+        """A standalone condition abbreviation returns no set info."""
         code, name = _parse_set_info("NM")
         assert code is None
-        assert name == "NM"
+        assert name is None
 
 
 class TestNoisyTitleNoCollectorNumber:
