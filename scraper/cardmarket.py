@@ -84,10 +84,79 @@ _MIN_PRODUCT_PATH_DEPTH = 6
 
 # JavaScript snippet injected into every new page to hide automation signals.
 _STEALTH_SCRIPT = """
+// Mask webdriver flag
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+
+// Realistic plugins list (headless Chrome normally has none)
+(function() {
+    const pluginData = [
+        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+        {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+    ];
+    const plugins = Object.create(PluginArray.prototype);
+    pluginData.forEach((p, i) => {
+        const plugin = Object.create(Plugin.prototype);
+        Object.defineProperty(plugin, 'name', {value: p.name});
+        Object.defineProperty(plugin, 'filename', {value: p.filename});
+        Object.defineProperty(plugin, 'description', {value: p.description});
+        Object.defineProperty(plugin, 'length', {value: 0});
+        Object.defineProperty(plugins, i, {value: plugin});
+    });
+    Object.defineProperty(plugins, 'length', {value: pluginData.length});
+    Object.defineProperty(navigator, 'plugins', {get: () => plugins});
+})();
+
+// Languages
 Object.defineProperty(navigator, 'languages', {get: () => ['nl-NL', 'nl', 'en-GB', 'en']});
-window.chrome = {runtime: {}};
+
+// Realistic chrome object
+window.chrome = {
+    app: {isInstalled: false, getDetails: function(){}, getIsInstalled: function(){}, runningState: function(){}},
+    runtime: {
+        PlatformOs: {MAC:'mac',WIN:'win',ANDROID:'android',CROS:'cros',LINUX:'linux',OPENBSD:'openbsd'},
+        PlatformArch: {ARM:'arm',X86_32:'x86-32',X86_64:'x86-64',MIPS:'mips',MIPS64:'mips64'},
+        OnInstalledReason: {INSTALL:'install',UPDATE:'update',CHROME_UPDATE:'chrome_update',SHARED_MODULE_UPDATE:'shared_module_update'},
+        OnRestartRequiredReason: {APP_UPDATE:'app_update',OS_UPDATE:'os_update',PERIODIC:'periodic'},
+        RequestUpdateCheckStatus: {THROTTLED:'throttled',NO_UPDATE:'no_update',UPDATE_AVAILABLE:'update_available'}
+    },
+    loadTimes: function() {
+        return {
+            requestTime: (performance.timing ? performance.timing.navigationStart/1000 : Date.now()/1000),
+            startLoadTime: 0, commitLoadTime: 0, finishDocumentLoadTime: 0,
+            finishLoadTime: 0, firstPaintTime: 0, firstPaintAfterLoadTime: 0,
+            navigationType: 'Other', wasFetchedViaSpdy: false, wasNpnNegotiated: false,
+            npnNegotiatedProtocol: '', wasAlternateProtocolAvailable: false, connectionInfo: 'http/1.1'
+        };
+    },
+    csi: function() { return {onloadT: 0, pageT: 0, startE: 0, tran: 0}; }
+};
+
+// Permissions API – return 'prompt' for notification queries
+const _origPermQuery = navigator.permissions && navigator.permissions.query.bind(navigator.permissions);
+if (_origPermQuery) {
+    Object.defineProperty(navigator, 'permissions', {
+        value: {
+            query: function(params) {
+                if (params && params.name === 'notifications') {
+                    return Promise.resolve({state: Notification.permission, onchange: null});
+                }
+                return _origPermQuery(params);
+            }
+        }
+    });
+}
+
+// Connection info
+try {
+    Object.defineProperty(navigator, 'connection', {
+        get: () => ({downlink: 10, effectiveType: '4g', rtt: 50, saveData: false, onchange: null})
+    });
+} catch(e) {}
+
+// Hardware
+try { Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8}); } catch(e) {}
+try { Object.defineProperty(navigator, 'deviceMemory', {get: () => 8}); } catch(e) {}
 """
 
 # Default filter parameters added to product URLs.
@@ -1336,6 +1405,10 @@ class CardmarketScraper:
     ) -> dict[str, Any] | None:
         """Navigate to *url*, wait for dynamic content, and parse prices.
 
+        Pre-warms the browser context by visiting the Cardmarket homepage first
+        so that Cloudflare session cookies are established before hitting the
+        product page URL.
+
         When *url* contains ``isReverseHolo=Y`` the method additionally waits
         for the individual article/offer rows to be rendered and records the
         price from the first row as ``first_listing_price`` in the returned
@@ -1343,8 +1416,37 @@ class CardmarketScraper:
         ``info-list-container`` includes non-reverse-holo listings, whereas the
         article rows are already filtered to reverse-holo-only.
         """
-        await page.goto(url, wait_until="load", timeout=30_000)
+        # Pre-warm: visit the Cardmarket category page first so that Cloudflare
+        # sets the cf_clearance session cookie before we request the product page.
+        try:
+            await page.goto(
+                "https://www.cardmarket.com/en/Pokemon/Products/Singles",
+                wait_until="domcontentloaded",
+                timeout=20_000,
+            )
+            await self._accept_cookies(page)
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+        except Exception:  # noqa: BLE001
+            pass  # Pre-warm is best-effort; continue regardless
+
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         await self._accept_cookies(page)
+
+        # Detect Cloudflare challenge page ("Just a moment…") and wait for it
+        # to auto-resolve.  Cloudflare's passive JS challenge typically resolves
+        # within a few seconds when the browser executes the challenge script.
+        for _attempt in range(3):
+            title = await page.title()
+            if "just a moment" not in title.lower() and "checking your browser" not in title.lower():
+                break
+            logger.debug(
+                "Cardmarket: Cloudflare challenge detected (%r) – waiting for resolution …", title
+            )
+            await asyncio.sleep(random.uniform(4.0, 6.0))
+        else:
+            logger.warning(
+                "Cardmarket: Cloudflare challenge did not resolve after retries for %s", url
+            )
 
         # Wait for the price container to be rendered (dynamic content).
         found = False
@@ -1419,6 +1521,7 @@ class CardmarketScraper:
         w = random.choice(widths)
         chrome_versions = ["124.0.0.0", "125.0.0.0", "131.0.0.0", "132.0.0.0", "136.0.0.0"]
         chrome_ver = random.choice(chrome_versions)
+        major = chrome_ver.split(".")[0]
         return await self._browser.new_context(
             viewport={"width": w, "height": int(w * 0.5625)},
             locale="nl-NL",
@@ -1438,6 +1541,11 @@ class CardmarketScraper:
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-User": "?1",
                 "Sec-Fetch-Dest": "document",
+                "Sec-CH-UA": (
+                    f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not/A)Brand";v="8"'
+                ),
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
             },
         )
 
