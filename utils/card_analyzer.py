@@ -294,6 +294,277 @@ _NOT_PROMO_TOKENS: frozenset[str] = frozenset({
     "SAR", "CHR", "CSR", "SSR", "RR", "AR", "SR", "UR", "IR", "HR", "PR",
 })
 
+# ---------------------------------------------------------------------------
+# Subset prefix → set inference
+# ---------------------------------------------------------------------------
+
+# When a subset collector number (e.g. "GG41/GG70") is found and no set info
+# appears after it, we can infer the set from the prefix when it is unambiguous.
+_SUBSET_PREFIX_TO_SET: dict[str, tuple[str, str]] = {
+    # Crown Zenith Galarian Gallery cards (GG01–GG70) only appear in Crown Zenith.
+    "GG": ("CRZ", "Crown Zenith"),
+}
+
+# ---------------------------------------------------------------------------
+# Known set names for title matching
+# ---------------------------------------------------------------------------
+
+# List of (lowercase_key, canonical_display_name) tuples.
+# Sorted longest-first so longer names (e.g. "team rocket returns") are matched
+# before shorter overlapping names (e.g. "team rocket").
+# Used in _find_known_set_name() to identify the set name from a title fragment
+# even when it is followed by extra noise words.
+_KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
+    [
+        # Scarlet & Violet Era
+        ("scarlet & violet", "Scarlet & Violet"),
+        ("scarlet violet", "Scarlet & Violet"),
+        ("paldea evolved", "Paldea Evolved"),
+        ("obsidian flames", "Obsidian Flames"),
+        ("paradox rift", "Paradox Rift"),
+        ("paldean fates", "Paldean Fates"),
+        ("temporal forces", "Temporal Forces"),
+        ("twilight masquerade", "Twilight Masquerade"),
+        ("shrouded fable", "Shrouded Fable"),
+        ("stellar crown", "Stellar Crown"),
+        ("surging sparks", "Surging Sparks"),
+        ("prismatic evolutions", "Prismatic Evolutions"),
+        ("journey together", "Journey Together"),
+        ("destined rivals", "Destined Rivals"),
+        ("151", "151"),
+        # Sword & Shield Era
+        ("sword & shield", "Sword & Shield"),
+        ("sword shield", "Sword & Shield"),
+        ("rebel clash", "Rebel Clash"),
+        ("darkness ablaze", "Darkness Ablaze"),
+        ("champion's path", "Champion's Path"),
+        ("champions path", "Champion's Path"),
+        ("vivid voltage", "Vivid Voltage"),
+        ("shining fates", "Shining Fates"),
+        ("battle styles", "Battle Styles"),
+        ("chilling reign", "Chilling Reign"),
+        ("evolving skies", "Evolving Skies"),
+        ("celebrations", "Celebrations"),
+        ("fusion strike", "Fusion Strike"),
+        ("brilliant stars", "Brilliant Stars"),
+        ("astral radiance", "Astral Radiance"),
+        ("pokémon go", "Pokémon GO"),
+        ("pokemon go", "Pokémon GO"),
+        ("lost origin", "Lost Origin"),
+        ("silver tempest", "Silver Tempest"),
+        ("crown zenith", "Crown Zenith"),
+        # Sun & Moon Era
+        ("sun & moon", "Sun & Moon"),
+        ("sun moon", "Sun & Moon"),
+        ("guardians rising", "Guardians Rising"),
+        ("burning shadows", "Burning Shadows"),
+        ("shining legends", "Shining Legends"),
+        ("crimson invasion", "Crimson Invasion"),
+        ("ultra prism", "Ultra Prism"),
+        ("forbidden light", "Forbidden Light"),
+        ("celestial storm", "Celestial Storm"),
+        ("dragon majesty", "Dragon Majesty"),
+        ("lost thunder", "Lost Thunder"),
+        ("team up", "Team Up"),
+        ("detective pikachu", "Detective Pikachu"),
+        ("unbroken bonds", "Unbroken Bonds"),
+        ("unified minds", "Unified Minds"),
+        ("hidden fates", "Hidden Fates"),
+        ("cosmic eclipse", "Cosmic Eclipse"),
+        # XY Era
+        ("kalos starter set", "Kalos Starter Set"),
+        ("flashfire", "Flashfire"),
+        ("furious fists", "Furious Fists"),
+        ("phantom forces", "Phantom Forces"),
+        ("primal clash", "Primal Clash"),
+        ("double crisis", "Double Crisis"),
+        ("roaring skies", "Roaring Skies"),
+        ("ancient origins", "Ancient Origins"),
+        ("breakthrough", "Breakthrough"),
+        ("breakpoint", "Breakpoint"),
+        ("generations", "Generations"),
+        ("fates collide", "Fates Collide"),
+        ("steam siege", "Steam Siege"),
+        ("evolutions", "Evolutions"),
+        ("xy", "XY"),
+        # Black & White Era
+        ("black & white", "Black & White"),
+        ("black white", "Black & White"),
+        ("emerging powers", "Emerging Powers"),
+        ("noble victories", "Noble Victories"),
+        ("next destinies", "Next Destinies"),
+        ("dark explorers", "Dark Explorers"),
+        ("dragons exalted", "Dragons Exalted"),
+        ("dragon vault", "Dragon Vault"),
+        ("boundaries crossed", "Boundaries Crossed"),
+        ("plasma storm", "Plasma Storm"),
+        ("plasma freeze", "Plasma Freeze"),
+        ("plasma blast", "Plasma Blast"),
+        ("legendary treasures", "Legendary Treasures"),
+        # Diamond & Pearl Era
+        ("diamond & pearl", "Diamond & Pearl"),
+        ("diamond pearl", "Diamond & Pearl"),
+        ("mysterious treasures", "Mysterious Treasures"),
+        ("secret wonders", "Secret Wonders"),
+        ("great encounters", "Great Encounters"),
+        ("majestic dawn", "Majestic Dawn"),
+        ("legends awakened", "Legends Awakened"),
+        ("stormfront", "Stormfront"),
+        ("platinum", "Platinum"),
+        ("rising rivals", "Rising Rivals"),
+        ("supreme victors", "Supreme Victors"),
+        ("heartgold & soulsilver", "HeartGold SoulSilver"),
+        ("heartgold soulsilver", "HeartGold SoulSilver"),
+        ("unleashed", "Unleashed"),
+        ("undaunted", "Undaunted"),
+        ("triumphant", "Triumphant"),
+        ("call of legends", "Call of Legends"),
+        # EX Era
+        ("ruby & sapphire", "Ruby & Sapphire"),
+        ("ruby sapphire", "Ruby & Sapphire"),
+        ("sandstorm", "Sandstorm"),
+        ("team magma vs team aqua", "Team Magma vs Team Aqua"),
+        ("hidden legends", "Hidden Legends"),
+        ("firered & leafgreen", "FireRed & LeafGreen"),
+        ("firered leafgreen", "FireRed & LeafGreen"),
+        ("team rocket returns", "Team Rocket Returns"),
+        ("deoxys", "Deoxys"),
+        ("emerald", "Emerald"),
+        ("unseen forces", "Unseen Forces"),
+        ("delta species", "Delta Species"),
+        ("legend maker", "Legend Maker"),
+        ("holon phantoms", "Holon Phantoms"),
+        ("crystal guardians", "Crystal Guardians"),
+        ("dragon frontiers", "Dragon Frontiers"),
+        ("power keepers", "Power Keepers"),
+        # Neo Era
+        ("neo genesis", "Neo Genesis"),
+        ("neo discovery", "Neo Discovery"),
+        ("neo revelation", "Neo Revelation"),
+        ("neo destiny", "Neo Destiny"),
+        ("legendary collection", "Legendary Collection"),
+        ("aquapolis", "Aquapolis"),
+        ("skyridge", "Skyridge"),
+        # Base Set Era
+        ("base set 2", "Base Set 2"),
+        ("base set", "Base Set"),
+        ("jungle", "Jungle"),
+        ("fossil", "Fossil"),
+        ("team rocket", "Team Rocket"),
+        ("gym heroes", "Gym Heroes"),
+        ("gym challenge", "Gym Challenge"),
+        # Japanese sets
+        ("vstar universe", "VSTAR Universe"),
+        ("star birth", "Star Birth"),
+        ("vmax climax", "VMAX Climax"),
+        ("incandescent arcana", "Incandescent Arcana"),
+        # Misc / promos
+        ("southern islands", "Southern Islands"),
+        ("wizards black star promos", "Wizards Black Star Promos"),
+        ("nintendo black star promos", "Nintendo Black Star Promos"),
+        ("dp black star promos", "DP Black Star Promos"),
+        ("hgss black star promos", "HGSS Black Star Promos"),
+        ("bw black star promos", "BW Black Star Promos"),
+        ("xy black star promos", "XY Black Star Promos"),
+        ("sm black star promos", "SM Black Star Promos"),
+        ("swsh black star promos", "SWSH Black Star Promos"),
+        ("sv black star promos", "SV Black Star Promos"),
+    ],
+    key=lambda x: len(x[0]),
+    reverse=True,
+)
+
+# ---------------------------------------------------------------------------
+# After-number noise stripping
+# ---------------------------------------------------------------------------
+
+# Regex to strip a leading 2-letter ISO language code that sellers include
+# after the collector number to indicate card language (e.g. "JP", "EN", "FR").
+_LANG_CODE_PREFIX_RE = re.compile(
+    r"^(JP|JA|EN|FR|DE|NL|ES|IT|KO|RU|PT)\b",
+    re.IGNORECASE,
+)
+
+# Regex to strip a leading condition word (translated/foreign "condition").
+_CONDITION_WORD_PREFIX_RE = re.compile(
+    r"^(état|etat|zustand|condición|conditie|condition|staat)\b",
+    re.IGNORECASE,
+)
+
+# Regex to strip a leading condition abbreviation.
+# Excludes EX (set code), PL (Platinum set code), HP (Holon Phantoms set code).
+_CONDITION_ABBREV_PREFIX_RE = re.compile(
+    r"^(NM|LP|GD|PO|VG)\b",
+    re.IGNORECASE,
+)
+
+
+def _find_known_set_name(text: str) -> str | None:
+    """Return the canonical set name if *text* starts with a known set name.
+
+    Scans ``_KNOWN_SET_NAMES`` (longest-first) and returns the canonical name
+    if the text starts with that name and is followed by end-of-string or a
+    non-alphanumeric character (word boundary).  Trailing noise words such as
+    "Holo Vintage Originale" are therefore ignored.
+
+    Returns ``None`` if no known set name is found.
+    """
+    normalised = " ".join(text.lower().split())
+    for lower_key, canonical in _KNOWN_SET_NAMES:
+        if normalised.startswith(lower_key):
+            rest = normalised[len(lower_key):]
+            if not rest or not rest[0].isalpha():
+                return canonical
+    return None
+
+
+def _strip_after_number_noise(text: str) -> str:
+    """Strip language-code and condition tokens from text that follows a
+    collector number in a Vinted (or similar) listing title.
+
+    Sellers often append tokens like "JP • État NM" or "EN NM" after the card
+    number to indicate the card language and condition.  These tokens must not
+    be mistaken for a set name.
+
+    Stripping rules (applied left-to-right after removing leading separators):
+    1. A 2-letter ISO language code is stripped if found (JP, JA, EN, FR …).
+    2. After a language code was stripped, any separator characters are removed.
+    3. After a language code was stripped, a condition word is stripped if found
+       (état, etat, zustand, conditie …).
+    4. After a language code was stripped, a condition abbreviation is stripped
+       if found (NM, LP, GD, PO, VG).  These are *only* stripped after a
+       language code; standalone stripping in other contexts is handled by
+       ``_parse_set_info``.
+    5. Any remaining leading separators/whitespace are stripped.
+
+    Returns the remaining text (may be empty string).
+    """
+    # Remove leading separators and whitespace.
+    stripped = re.sub(r"^[\s\-–—•·|/\\]+", "", text)
+
+    lang_found = False
+    m = _LANG_CODE_PREFIX_RE.match(stripped)
+    if m:
+        stripped = stripped[m.end():].lstrip()
+        lang_found = True
+
+    if lang_found:
+        # Strip any separator between lang code and condition.
+        stripped = re.sub(r"^[\s\-–—•·|/\\]+", "", stripped)
+        # Strip condition word (e.g. "état", "zustand").
+        m = _CONDITION_WORD_PREFIX_RE.match(stripped)
+        if m:
+            stripped = stripped[m.end():].lstrip()
+            stripped = re.sub(r"^[\s\-–—•·|/\\]+", "", stripped)
+        # Strip condition abbreviation (e.g. "NM", "LP") — only after lang code.
+        m = _CONDITION_ABBREV_PREFIX_RE.match(stripped)
+        if m:
+            stripped = stripped[m.end():].lstrip()
+
+    # Final cleanup of any leftover leading separators.
+    stripped = re.sub(r"^[\s\-–—•·|/\\]+", "", stripped)
+    return stripped
+
 
 def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
     """Try to parse *text* as ``[prefix] [pokemon_name] [suffix]``.
@@ -451,7 +722,7 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["card_name_matched"] = matched
 
         # Set info = text after number.
-        set_code, set_name = _parse_set_info(after)
+        set_code, set_name = _parse_set_info(_strip_after_number_noise(after))
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -468,7 +739,18 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["card_name"] = card_name
         result["card_name_matched"] = matched
 
-        set_code, set_name = _parse_set_info(after)
+        set_code, set_name = _parse_set_info(_strip_after_number_noise(after))
+
+        # When no set info could be found from the text following the subset
+        # number, try to infer the set from the subset prefix (e.g. "GG" → Crown
+        # Zenith).  The prefix is the leading letter run of group(1).
+        if set_code is None and set_name is None:
+            prefix_m = re.match(r"[A-Z]+", subset_match.group(1))
+            if prefix_m:
+                inferred = _SUBSET_PREFIX_TO_SET.get(prefix_m.group(0).upper())
+                if inferred:
+                    set_code, set_name = inferred
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -536,9 +818,16 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         candidate = m.group(1)
         if candidate.upper() in KNOWN_SET_CODES:
             return candidate, m.group(2).strip() or None
+        # If the leading token is a condition abbreviation (e.g. "NM"), strip it
+        # and treat the remainder as the set name.
+        if _CONDITION_ABBREV_PREFIX_RE.match(candidate):
+            remainder = m.group(2).strip()
+            known = _find_known_set_name(remainder)
+            return None, (known or remainder) or None
         # Not a known set code – treat the whole text as the set name.
-        set_name = re.sub(r"^[\s\-–—]+", "", text).strip()
-        return None, set_name or None
+        raw = re.sub(r"^[\s\-–—]+", "", text).strip()
+        known = _find_known_set_name(raw)
+        return None, (known or raw) or None
 
     # Try set code only (no set name after it).
     m = _SET_CODE_ONLY_RE.match(text)
@@ -546,12 +835,17 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
         stripped = text.lstrip(" \t-–—").strip()
         if stripped.upper() in KNOWN_SET_CODES:
             return stripped or None, None
-        # Not a known set code – treat it as a set name.
-        return None, stripped or None
+        # A standalone condition abbreviation yields no set info.
+        if _CONDITION_ABBREV_PREFIX_RE.match(stripped):
+            return None, None
+        # Not a known set code – check if it matches a known set name.
+        known = _find_known_set_name(stripped)
+        return None, (known or stripped) or None
 
     # No set code – strip any leading separator and treat remainder as set name.
-    set_name = re.sub(r"^[\s\-–—]+", "", text).strip()
-    return None, set_name or None
+    raw = re.sub(r"^[\s\-–—]+", "", text).strip()
+    known = _find_known_set_name(raw)
+    return None, (known or raw) or None
 
 
 # ---------------------------------------------------------------------------

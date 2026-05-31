@@ -269,22 +269,22 @@ class TestPokemonNameMatching:
 class TestSetCodeValidation:
     """Tests that unknown set codes are not returned as set_code."""
 
-    def test_unknown_code_treated_as_set_name(self):
-        """A token that doesn't match any known set code goes to set_name."""
+    def test_condition_prefix_stripped_from_set_name(self):
+        """NM is a condition token; the remainder becomes the set name."""
         code, name = _parse_set_info("NM Obsidian Flames")
         assert code is None
-        assert "NM" in name
+        assert name == "Obsidian Flames"
 
     def test_known_code_accepted(self):
         code, name = _parse_set_info("OBF Obsidian Flames")
         assert code == "OBF"
         assert name == "Obsidian Flames"
 
-    def test_unknown_code_only_treated_as_set_name(self):
-        """Standalone unknown token goes to set_name, not set_code."""
+    def test_standalone_condition_token_returns_no_set(self):
+        """A standalone condition abbreviation returns no set info."""
         code, name = _parse_set_info("NM")
         assert code is None
-        assert name == "NM"
+        assert name is None
 
 
 class TestNoisyTitleNoCollectorNumber:
@@ -330,3 +330,32 @@ class TestNoisyTitleNoCollectorNumber:
         info = extract_card_info("Pikachu V")
         assert info["card_name"] == "Pikachu V"
         assert info["card_name_matched"] is True
+
+
+class TestVintedListingFixes:
+    """Regression tests for the three Vinted listing parsing bugs."""
+
+    def test_gg_subset_prefix_infers_crown_zenith(self):
+        """GG41/GG70 with no set text after the number → Crown Zenith inferred."""
+        info = extract_card_info("Raikou GG41/GG70")
+        assert info["collector_number"] == "GG41/GG70"
+        assert info["set_code"] == "CRZ"
+        assert info["set_name"] == "Crown Zenith"
+
+    def test_jp_etat_nm_stripped_from_set(self):
+        """'JP • État NM' after the collector number must not become the set name."""
+        info = extract_card_info("Reshiram ex 029/193 JP • État NM")
+        assert info["card_name"] == "Reshiram ex"
+        assert info["collector_number"] == "029/193"
+        # Language+condition noise should be stripped; no set info remains.
+        assert info["set_code"] is None
+        assert info["set_name"] is None
+
+    def test_gym_challenge_trailing_noise_stripped(self):
+        """Trailing noise words after a known set name must be discarded."""
+        info = extract_card_info(
+            "Pokémon Blaine's Arcanine 1/132 – Gym Challenge Holo Vintage Originale"
+        )
+        assert info["card_name"] == "Blaine's Arcanine"
+        assert info["collector_number"] == "1/132"
+        assert info["set_name"] == "Gym Challenge"
