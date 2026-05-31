@@ -374,7 +374,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     fingerprint,
                     matching_attempts,
                     failure_reason=(
-                        f"Constructed Cardmarket URL returned 404/403: {resolved.url}"
+                        f"Constructed Cardmarket URL returned 404: {resolved.url}"
                     ),
                 )
                 await self.db.mark_seen(

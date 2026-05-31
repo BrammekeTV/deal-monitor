@@ -549,9 +549,10 @@ async def validate_cardmarket_url(url: str) -> bool:
     """Perform a lightweight HEAD request to check that *url* resolves on Cardmarket.
 
     Returns ``True`` if the URL returns a 2xx/3xx status, or ``False`` when a
-    4xx (typically 404) is received.  Network errors are treated as *not*
-    resolved (returns ``False``) and are logged at WARNING level rather than
-    raising.
+    404 is received.  A 403 is treated as valid because Cardmarket frequently
+    blocks automated HEAD requests with 403 even for existing product pages.
+    Network errors are treated as *not* resolved (returns ``False``) and are
+    logged at WARNING level rather than raising.
 
     Uses ``aiohttp`` with a short timeout (10 s) so that a bad URL does not
     stall the processing pipeline for long.
@@ -571,6 +572,14 @@ async def validate_cardmarket_url(url: str) -> bool:
                 if resp.status == 404:
                     logger.warning("validate_cardmarket_url: 404 for %s", url)
                     return False
+                if resp.status == 403:
+                    # Cardmarket blocks automated HEAD requests with 403 even for
+                    # valid product pages; treat as URL exists.
+                    logger.debug(
+                        "validate_cardmarket_url: 403 (anti-bot block) for %s — treating as valid",
+                        url,
+                    )
+                    return True
                 if resp.status >= 400:
                     logger.warning(
                         "validate_cardmarket_url: unexpected status %d for %s",
