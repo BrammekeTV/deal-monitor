@@ -1168,6 +1168,7 @@ class CardmarketPriceData:
     # Metadata
     set_name: str | None = None
     card_number: str | None = None
+    id_expansion: int | None = None
 
     def is_valid(self) -> bool:
         """True if the from_price was successfully scraped."""

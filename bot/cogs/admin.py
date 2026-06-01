@@ -100,6 +100,59 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------
+    # /catalog_ids  — list all mapped Product and Expansion IDs
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="catalog_ids",
+        description="[Admin] List all mapped Cardmarket Product and Expansion IDs",
+    )
+    @_ADMIN_ONLY
+    async def list_catalog_ids(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        rows = await self.db.get_all_catalog_id_slugs()
+
+        if not rows:
+            await interaction.followup.send("No mapped IDs found yet.", ephemeral=True)
+            return
+
+        product_rows = [r for r in rows if r.get("id_product")]
+        expansion_rows = [r for r in rows if r.get("id_expansion")]
+
+        embed = discord.Embed(
+            title=f"Mapped Cardmarket IDs ({len(rows)} total)",
+            colour=discord.Colour.green(),
+        )
+
+        if product_rows:
+            lines = [
+                f"`{r['id_product']}` — `{r['product_slug'] or '—'}`"
+                for r in product_rows[:20]
+            ]
+            if len(product_rows) > 20:
+                lines.append(f"… and {len(product_rows) - 20} more")
+            embed.add_field(
+                name=f"🃏 Product IDs ({len(product_rows)})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        if expansion_rows:
+            lines = [
+                f"`{r['id_expansion']}` — `{r['set_slug'] or '—'}`"
+                for r in expansion_rows[:20]
+            ]
+            if len(expansion_rows) > 20:
+                lines.append(f"… and {len(expansion_rows) - 20} more")
+            embed.add_field(
+                name=f"📦 Expansion IDs ({len(expansion_rows)})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
     # /delete_mapping  — remove a mapping by ID
     # ------------------------------------------------------------------
 

@@ -570,6 +570,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     dutch_sellers_available=True,
                     set_name=catalog_price.set_name,
                     card_number=catalog_price.card_number,
+                    id_expansion=catalog_price.id_expansion,
                 )
                 from services.cardmarket_resolver import ResolvedUrl  # noqa: PLC0415
                 resolved = ResolvedUrl(
@@ -872,11 +873,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             return
 
+        # Look up mapped expansion ID for the identified set (if any).
+        id_expansion = await self._lookup_expansion_id(fingerprint)
+
         embed = build_review_embed(
             listing,
             fingerprint=fingerprint,
             failure_reason=failure_reason,
             matching_attempts=matching_attempts,
+            id_expansion=id_expansion,
         )
 
         try:
@@ -931,7 +936,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             return
 
-        embed = build_unidentified_embed(listing, fingerprint=fingerprint)
+        # Look up mapped expansion ID for the identified set (if any).
+        id_expansion = await self._lookup_expansion_id(fingerprint)
+
+        embed = build_unidentified_embed(listing, fingerprint=fingerprint, id_expansion=id_expansion)
 
         try:
             msg = await channel.send(embed=embed)
@@ -951,6 +959,30 @@ class MonitorCog(commands.Cog, name="Monitor"):
     # ------------------------------------------------------------------
     # Discord posting helpers
     # ------------------------------------------------------------------
+
+    async def _lookup_expansion_id(self, fingerprint) -> int | None:
+        """Return the mapped idExpansion for the fingerprint's set, or None.
+
+        Converts the fingerprint's set name (or set code) to a Cardmarket
+        set slug and looks it up in the catalog_id_slugs table.
+        """
+        import re
+
+        set_name = getattr(fingerprint, "set_name", None)
+        if not set_name:
+            return None
+        # Replicate the slug conversion from cardmarket_catalog._expansion_name_to_slug
+        slug = set_name.replace("é", "e").replace("É", "E")
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", slug).strip("-")
+        if not slug:
+            return None
+        try:
+            row = await self.db.find_catalog_id_by_set_slug(slug)
+            if row:
+                return row.get("id_expansion")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("MonitorCog: expansion ID lookup failed for slug '%s': %s", slug, exc)
+        return None
 
     async def _send_profit_alert(
         self,
@@ -1022,6 +1054,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
         to the error_log row so that users can reply to the message with the
         correct Cardmarket URL.
         """
+        # Look up mapped expansion ID for the identified set (if any).
+        id_expansion = await self._lookup_expansion_id(fingerprint) if fingerprint else None
+
         embed = build_error_embed(
             listing_title=listing_title,
             listing_url=listing_url,
@@ -1031,6 +1066,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             http_status=http_status,
             stack_trace=stack_trace,
             fingerprint=fingerprint,
+            id_expansion=id_expansion,
         )
         channel = self._get_log_channel()
         if channel:
