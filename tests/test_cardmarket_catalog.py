@@ -307,7 +307,7 @@ class TestGetPriceData:
         result = cat.get_price_data(product)
         assert result is not None
         assert result.product_url is not None
-        assert "cardmarket.com" in result.product_url
+        assert result.product_url.startswith("https://www.cardmarket.com")
         assert "Obsidian-Flames" in result.product_url
 
 
