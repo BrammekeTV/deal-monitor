@@ -205,7 +205,7 @@ class ReviewCog(commands.Cog, name="Review"):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Listen for Cardmarket URL replies in the review or log channel."""
+        """Listen for Cardmarket URL replies in the review, unidentified, or log channel."""
         if message.author.bot:
             return
 
@@ -214,9 +214,12 @@ class ReviewCog(commands.Cog, name="Review"):
             return
 
         review_channel_id = settings.discord_review_channel_id
+        unidentified_channel_id = settings.discord_unidentified_channel_id
         log_channel_id = settings.discord_log_channel_id
 
         if review_channel_id and message.channel.id == review_channel_id:
+            await self._handle_review_reply(message)
+        elif unidentified_channel_id and message.channel.id == unidentified_channel_id:
             await self._handle_review_reply(message)
         elif log_channel_id and message.channel.id == log_channel_id:
             await self._handle_correction_reply(message)

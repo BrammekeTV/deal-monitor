@@ -23,6 +23,7 @@ from utils.pokemon_data import (
     CARD_PREFIXES,
     CARD_SUFFIXES,
     KNOWN_SET_CODES,
+    POKEMON_NAMES,
     _POKEMON_NAME_MAP,
 )
 
@@ -30,6 +31,30 @@ if TYPE_CHECKING:
     from scraper.base import Listing
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Pokemon name pre-filter
+# ---------------------------------------------------------------------------
+# Compiled once at import time.  Sorted longest-first so multi-word names
+# (e.g. "Brute Bonnet", "Iron Bundle") are matched before any overlapping
+# shorter name fragment.
+_POKEMON_NAMES_RE = re.compile(
+    r"(?<![A-Za-z])(?:"
+    + "|".join(re.escape(n) for n in sorted(_POKEMON_NAME_MAP.keys(), key=len, reverse=True))
+    + r")(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+
+def has_pokemon_name(title: str) -> bool:
+    """Return True when *title* contains a recognised Pokemon name.
+
+    Checks against :data:`POKEMON_NAMES` / :data:`_POKEMON_NAME_MAP` using a
+    pre-compiled regex with letter-boundary anchors so that short names such as
+    "Mew" are not spuriously matched inside longer unrelated words.
+    """
+    return bool(_POKEMON_NAMES_RE.search(title))
+
 
 # ---------------------------------------------------------------------------
 # Constants

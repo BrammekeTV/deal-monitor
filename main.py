@@ -55,6 +55,12 @@ async def main() -> None:
             "DISCORD_REVIEW_CHANNEL_ID is not set – unresolved listings will not be posted."
         )
 
+    if not settings.discord_unidentified_channel_id:
+        logger.warning(
+            "DISCORD_UNIDENTIFIED_CHANNEL_ID is not set – listings not found in the "
+            "catalog or learning DB will not be posted to any channel."
+        )
+
     if not settings.discord_log_channel_id:
         logger.warning(
             "DISCORD_LOG_CHANNEL_ID is not set – scraping errors will only be logged locally."

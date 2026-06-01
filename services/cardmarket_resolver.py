@@ -178,6 +178,26 @@ class CardmarketResolver:
         )
         return None
 
+    def resolve_db_only(
+        self,
+        fingerprint: CardFingerprint,
+        raw_title: str,
+    ) -> ResolvedUrl | None:
+        """Resolve *fingerprint* using only the learned-mapping database.
+
+        Unlike :meth:`resolve`, this method does **not** attempt to construct
+        a URL from the fingerprint.  It returns ``None`` when the card is not
+        found in the learning database so the caller can send the listing to
+        the unidentified channel rather than attempting a browser scrape of a
+        guessed URL.
+        """
+        result = self._lookup_in_db(fingerprint, raw_title)
+        if result is None:
+            logger.debug(
+                "CardmarketResolver: no DB mapping for '%s'", raw_title[:60]
+            )
+        return result
+
     # ------------------------------------------------------------------
     # Learning database lookup
     # ------------------------------------------------------------------
