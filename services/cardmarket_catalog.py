@@ -443,7 +443,7 @@ class CardmarketCatalog:
             products_list: list[dict] = (
                 raw_products.get("productList")
                 or raw_products.get("products")
-                or next(iter(raw_products.values()), [])
+                or next((v for v in raw_products.values() if isinstance(v, list)), [])
             )
         elif isinstance(raw_products, list):
             products_list = raw_products
@@ -458,7 +458,7 @@ class CardmarketCatalog:
             prices_list: list[dict] = (
                 raw_prices.get("priceGuide")
                 or raw_prices.get("prices")
-                or next(iter(raw_prices.values()), [])
+                or next((v for v in raw_prices.values() if isinstance(v, list)), [])
             )
         elif isinstance(raw_prices, list):
             prices_list = raw_prices

@@ -178,6 +178,17 @@ class TestCatalogIngest:
         cat._ingest(products, prices)
         assert cat.product_count == 1
 
+    def test_ingest_dict_with_leading_int_value(self):
+        """Dicts whose first value is an integer (e.g. version/count) must not
+        raise 'int object is not iterable'."""
+        cat = self._make_catalog()
+        # Put an integer-valued key first, then the actual list under an
+        # unrecognised key so the generic list-scan fallback is exercised.
+        products = {"version": 6, "data": _make_products({"idProduct": 1})}
+        prices = {"version": 6, "data": _make_prices({"idProduct": 1})}
+        cat._ingest(products, prices)
+        assert cat.product_count == 1
+
     def test_loaded_at_updated(self):
         cat = self._make_catalog()
         before = time.time()
