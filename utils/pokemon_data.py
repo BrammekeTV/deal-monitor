@@ -338,7 +338,6 @@ CARD_PREFIXES: tuple[str, ...] = (
     "Ross's",
     "Red's",
     "N's",
-    "Oakley's",
     "Mega",
     "Dark",
     "Light",

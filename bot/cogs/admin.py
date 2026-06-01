@@ -31,6 +31,8 @@ class AdminCog(commands.Cog, name="Admin"):
     def __init__(self, bot: commands.Bot, db: Database) -> None:
         self.bot = bot
         self.db = db
+        # Maps message_id → True when that message awaits a 🗑️ purge reaction.
+        self._pending_purge_messages: dict[int, bool] = {}
 
     # ------------------------------------------------------------------
     # /status  (also exposed in MonitorCog but available here too)
@@ -179,7 +181,7 @@ class AdminCog(commands.Cog, name="Admin"):
             return
 
         lines = [
-            f"`[{r['id']}]` `{r['id_expansion']}` — `{r['set_slug'] or '—'}`"
+            f"`[{r['id']}]` `{r['id_expansion']}` — `{r['set_slug'] or '—'}` ×{r.get('match_count', 1)}"
             for r in expansion_rows[:20]
         ]
         if len(expansion_rows) > 20:
@@ -217,6 +219,105 @@ class AdminCog(commands.Cog, name="Admin"):
                 f"⚠️ No catalog ID mapping with row ID `{row_id}` found.",
                 ephemeral=True,
             )
+
+    # ------------------------------------------------------------------
+    # /catalog_low_confidence  — show low-confidence expansion ID mappings
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="catalog_low_confidence",
+        description="[Admin] Show expansion ID mappings with low confidence (multiple IDs per slug)",
+    )
+    @_ADMIN_ONLY
+    async def catalog_low_confidence(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=False)
+        rows = await self.db.get_low_confidence_expansion_slugs()
+
+        # Only surface rows where a slug is claimed by more than one expansion ID.
+        conflict_rows = [r for r in rows if r.get("id_count_for_slug", 1) > 1]
+
+        if not conflict_rows:
+            await interaction.followup.send(
+                "✅ No conflicting expansion ID mappings found. All slugs are mapped by a single ID.",
+            )
+            return
+
+        lines: list[str] = []
+        for r in conflict_rows[:25]:
+            pct = int(r["confidence"] * 100)
+            lines.append(
+                f"`[{r['id']}]` `{r['id_expansion']}` → `{r['set_slug']}` "
+                f"×{r['match_count']} / {r['total_for_slug']} ({pct}%)"
+            )
+        if len(conflict_rows) > 25:
+            lines.append(f"… and {len(conflict_rows) - 25} more")
+
+        embed = discord.Embed(
+            title=f"⚠️ Low-confidence expansion ID mappings ({len(conflict_rows)} rows)",
+            description=(
+                "These slugs are claimed by more than one expansion ID.\n"
+                "React with 🗑️ to automatically purge the lowest-match-count row for each slug."
+            ),
+            colour=discord.Colour.orange(),
+        )
+        embed.add_field(
+            name="Row ID · Expansion ID · Slug · Matches (% of total)",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+        msg = await interaction.followup.send(embed=embed)
+        # followup.send returns the sent Message object only for non-ephemeral responses.
+        if msg is not None:
+            try:
+                await msg.add_reaction("🗑️")
+                self._pending_purge_messages[msg.id] = True
+            except discord.HTTPException:
+                pass
+
+    # ------------------------------------------------------------------
+    # Reaction listener – 🗑️ on low-confidence message triggers purge
+    # ------------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Purge lowest-match-count expansion rows when admin reacts with 🗑️."""
+        if str(payload.emoji) != "🗑️":
+            return
+        if payload.message_id not in self._pending_purge_messages:
+            return
+        if payload.user_id == self.bot.user.id:  # type: ignore[union-attr]
+            return
+
+        # Verify the reacting user has administrator permissions.
+        guild = self.bot.get_guild(payload.guild_id)  # type: ignore[arg-type]
+        if guild is None:
+            return
+        member = guild.get_member(payload.user_id)
+        if member is None or not member.guild_permissions.administrator:
+            return
+
+        del self._pending_purge_messages[payload.message_id]
+
+        deleted = await self.db.purge_lowest_count_expansion_rows()
+        channel = self.bot.get_channel(payload.channel_id)
+        if channel is None:
+            return
+
+        if not deleted:
+            await channel.send("ℹ️ No rows were purged (no conflicting slug mappings found).")  # type: ignore[union-attr]
+            return
+
+        summary_lines = [
+            f"`[{r['id']}]` `{r['id_expansion']}` → `{r['set_slug']}` ×{r['match_count']}"
+            for r in deleted
+        ]
+        embed = discord.Embed(
+            title=f"🗑️ Purged {len(deleted)} low-confidence expansion mapping(s)",
+            description="\n".join(summary_lines[:25]),
+            colour=discord.Colour.red(),
+        )
+        await channel.send(embed=embed)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
     # /delete_mapping  — remove a mapping by ID

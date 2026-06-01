@@ -193,7 +193,8 @@ CREATE TABLE IF NOT EXISTS catalog_id_slugs (
     id_expansion    INTEGER UNIQUE,
     set_slug        TEXT,
     cardmarket_url  TEXT,
-    date_learned    TEXT
+    date_learned    TEXT,
+    match_count     INTEGER DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_catalog_id_slugs_id_product ON catalog_id_slugs(id_product);
@@ -260,6 +261,15 @@ class Database:
                 logger.debug("Database: migrated error_log – added %s column", col)
             except Exception:  # noqa: BLE001
                 pass
+
+        try:
+            await self._conn.execute(  # type: ignore[union-attr]
+                "ALTER TABLE catalog_id_slugs ADD COLUMN match_count INTEGER DEFAULT 1"
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            logger.debug("Database: migrated catalog_id_slugs – added match_count column")
+        except Exception:  # noqa: BLE001
+            pass
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -863,12 +873,13 @@ class Database:
             if id_expansion is not None and set_slug:
                 await self._conn.execute(  # type: ignore[union-attr]
                     """
-                    INSERT INTO catalog_id_slugs (id_expansion, set_slug, cardmarket_url, date_learned)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO catalog_id_slugs (id_expansion, set_slug, cardmarket_url, date_learned, match_count)
+                    VALUES (?, ?, ?, ?, 1)
                     ON CONFLICT(id_expansion) DO UPDATE SET
                         set_slug       = excluded.set_slug,
                         cardmarket_url = excluded.cardmarket_url,
-                        date_learned   = excluded.date_learned
+                        date_learned   = excluded.date_learned,
+                        match_count    = match_count + 1
                     """,
                     (id_expansion, set_slug, cardmarket_url, now),
                 )
@@ -917,6 +928,82 @@ class Database:
             )
             await self._conn.commit()  # type: ignore[union-attr]
             return cur.rowcount > 0
+
+    async def get_low_confidence_expansion_slugs(self) -> list[dict[str, Any]]:
+        """Return expansion slug rows annotated with a confidence score.
+
+        Confidence is defined as::
+
+            match_count / total_match_count_for_slug
+
+        where *total_match_count_for_slug* is the sum of ``match_count`` over
+        all rows that share the same ``set_slug``.  A slug mapped by only one
+        expansion ID always has confidence 1.0.  When multiple IDs share the
+        same slug the individual confidences sum to 1.0, so the least-matched
+        ID will have confidence < 0.5.
+
+        Only rows where ``id_expansion IS NOT NULL`` and ``set_slug IS NOT NULL``
+        are considered.  Results are ordered by confidence ascending so the
+        lowest-confidence rows appear first.
+        """
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT
+                c.id,
+                c.id_expansion,
+                c.set_slug,
+                c.match_count,
+                c.cardmarket_url,
+                c.date_learned,
+                SUM(c.match_count) OVER (PARTITION BY c.set_slug) AS total_for_slug,
+                COUNT(*)          OVER (PARTITION BY c.set_slug) AS id_count_for_slug,
+                CAST(c.match_count AS REAL) /
+                    SUM(c.match_count) OVER (PARTITION BY c.set_slug) AS confidence
+            FROM catalog_id_slugs c
+            WHERE c.id_expansion IS NOT NULL
+              AND c.set_slug IS NOT NULL
+            ORDER BY confidence ASC, c.set_slug
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def purge_lowest_count_expansion_rows(self) -> list[dict[str, Any]]:
+        """Delete expansion rows that have the lowest ``match_count`` for their
+        ``set_slug``, but only for slugs that are claimed by more than one
+        expansion ID.
+
+        Returns the list of deleted rows.
+        """
+        async with self._lock:
+            # Find all multi-ID slugs and the minimum match_count within each.
+            async with self._conn.execute(  # type: ignore[union-attr]
+                """
+                SELECT c.id, c.id_expansion, c.set_slug, c.match_count
+                FROM catalog_id_slugs c
+                INNER JOIN (
+                    SELECT set_slug, MIN(match_count) AS min_count
+                    FROM   catalog_id_slugs
+                    WHERE  id_expansion IS NOT NULL
+                      AND  set_slug IS NOT NULL
+                    GROUP  BY set_slug
+                    HAVING COUNT(*) > 1
+                ) agg ON c.set_slug = agg.set_slug
+                       AND c.match_count = agg.min_count
+                WHERE c.id_expansion IS NOT NULL
+                """
+            ) as cur:
+                rows = [dict(r) for r in await cur.fetchall()]
+
+            if rows:
+                ids = [r["id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                await self._conn.execute(  # type: ignore[union-attr]
+                    f"DELETE FROM catalog_id_slugs WHERE id IN ({placeholders})", ids
+                )
+                await self._conn.commit()  # type: ignore[union-attr]
+
+        return rows
 
     # ------------------------------------------------------------------
     # Review queue maintenance

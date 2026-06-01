@@ -190,9 +190,26 @@ class TestParseSetInfo:
         assert name == "151"
 
     def test_set_code_only(self):
+        # When only a set code is given, _parse_set_info should return both the
+        # code and its canonical display name (fixes issues #113–#116).
         code, name = _parse_set_info("OBF")
         assert code == "OBF"
-        assert name is None
+        assert name == "Obsidian Flames"
+
+    def test_set_code_only_surging_sparks(self):
+        code, name = _parse_set_info("SSP")
+        assert code == "SSP"
+        assert name == "Surging Sparks"
+
+    def test_set_code_only_aquapolis(self):
+        code, name = _parse_set_info("AQ")
+        assert code == "AQ"
+        assert name == "Aquapolis"
+
+    def test_set_code_only_ex_power_keepers(self):
+        code, name = _parse_set_info("PK")
+        assert code == "PK"
+        assert name == "EX Power Keepers"
 
 
 class TestSubsetCollectorNumber:
@@ -514,3 +531,26 @@ class TestConditionFullWordStripping:
         assert info["collector_number"] == "006/197"
         assert info["set_code"] is None
         assert info["set_name"] is None
+
+
+class TestIssue111PipeSeparatedTitle:
+    """Issue #111 – card name wrongly includes rarity tokens when a pipe is used as separator."""
+
+    def test_pipe_separated_reverse_holo(self):
+        """'Oddish | Reverse Holo | EX Unseen Forces | 64/115' → card_name == 'Oddish'."""
+        info = extract_card_info("Oddish | Reverse Holo | EX Unseen Forces | 64/115")
+        assert info["card_name"] == "Oddish"
+        assert info["collector_number"] == "64/115"
+        assert info["card_name_matched"] is True
+
+    def test_pipe_separated_holo(self):
+        """Pipe-delimited title with plain Holo rarity strips correctly."""
+        info = extract_card_info("Charizard | Holo | Base Set | 4/102")
+        assert info["card_name"] == "Charizard"
+        assert info["collector_number"] == "4/102"
+
+    def test_pipe_separated_ultra_rare(self):
+        """Pipe-delimited title with Ultra Rare strips correctly."""
+        info = extract_card_info("Mewtwo | Ultra Rare | Scarlet & Violet | 205/198")
+        assert info["card_name"] == "Mewtwo"
+        assert info["collector_number"] == "205/198"
