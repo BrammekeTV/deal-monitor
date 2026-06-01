@@ -9,6 +9,7 @@ Contains:
 - CARD_SUFFIXES         – known card-name suffixes (GX, EX, ex, V, …).
 - CARD_PREFIXES         – known card-name prefixes (Alolan, Shining, …).
 - KNOWN_SET_CODES       – frozenset of all recognised set codes (uppercase).
+- SET_CODE_TO_SET_NAME  – mapping from set code to canonical display name.
 """
 
 from __future__ import annotations
@@ -222,13 +223,20 @@ _POKEMON_NAME_MAP: dict[str, str] = {n.lower(): n for n in POKEMON_NAMES}
 # ---------------------------------------------------------------------------
 
 CARD_SUFFIXES: tuple[str, ...] = (
-    "VUNION",    # 6
-    "VSTAR",     # 5
-    "VMAX",      # 4
-    "GX",        # 2
-    "EX",        # 2 – older-era (uppercase)
-    "ex",        # 2 – SV-era (lowercase)
-    "V",         # 1
+    "δ Delta Species",  # 16 – Delta Species tag
+    "V-UNION",    # 7 – hyphenated form
+    "VUNION",     # 6 – compact form (kept for backwards compatibility)
+    "LEGEND",     # 6
+    "VSTAR",      # 5
+    "BREAK",      # 5
+    "VMAX",       # 4
+    "LV.X",       # 4
+    "GX",         # 2
+    "EX",         # 2 – older-era (uppercase)
+    "ex",         # 2 – SV-era (lowercase)
+    "V",          # 1
+    "◇",          # 1 – Prism Star
+    "☆",          # 1 – Shiny / alternate symbol
 )
 
 # ---------------------------------------------------------------------------
@@ -236,39 +244,301 @@ CARD_SUFFIXES: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 CARD_PREFIXES: tuple[str, ...] = (
-    # Trainer / character prefixes (possessive, longer matches first)
-    "Lt. Surge's",
+    # Multi-word possessive prefixes (longest first)
+    "Tree of Beginning's",
+    "Rescue Team DX's",
+    "Reverse World's",
+    "Crystal Tower's",
+    "Poké-lun TV's",
     "Team Rocket's",
+    "Team Magma's",
+    "Team Japan's",
+    "Team Aqua's",
+    "Real World's",
+    "Mega Tokyo's",
+    "Alto Mare's",
+    "Team GR's",
+    "Icy Sky's",
+    "PokéPark's",
+    "Lt. Surge's",
+    # Single-word possessive prefixes (longer names first)
+    "Illusion's",
+    "Imakuni?'s",
+    "Folklore's",
+    "Yokohama's",
+    "Kanazawa's",
     "Giovanni's",
-    "Giovanni's",
-    "Sabrina's",
-    "Blaine's",
-    "Brock's",
-    "Erika's",
-    "Koga's",
-    "Misty's",
-    "Cynthia's",
-    "Rocket's",
+    "Lizabeth's",
+    "LaRousse's",
     "Trainer's",
-    # Regional / form prefixes
-    "Hisuian",
+    "Phantom's",
+    "Sapporo's",
+    "Shibuya's",
+    "Falkner's",
+    "Kathryn's",
+    "Rebecca's",
+    "Oakley's",
+    "Tohoku's",
+    "Blaine's",
+    "Butler's",
+    "Easter's",
+    "Forina's",
+    "Marnie's",
+    "Samiya's",
+    "Audrey's",
+    "Cynthia's",
+    "Jasmine's",
+    "Sabrina's",
+    "Whitney's",
+    "PokéTV's",
+    "Rocket's",
     "Galarian",
     "Paldean",
+    "Hisuian",
+    "Steven's",
+    "Aaron's",
+    "Arven's",
+    "Bruno's",
+    "Bugsy's",
+    "Chuck's",
+    "Clair's",
+    "Erika's",
+    "Ethan's",
+    "Holon's",
+    "Ilene's",
+    "Karen's",
+    "Kidd's",
+    "Koga's",
+    "Lance's",
+    "Larry's",
+    "Lillie's",
+    "Misty's",
+    "Morty's",
+    "Pryce's",
+    "Rota's",
+    "Brock's",
+    "Annie's",
+    "Ancient",
     "Alolan",
-    # Special card types
+    "Future",
     "Radiant",
     "Shining",
-    "Ancient",
-    "Future",
     "Shadow",
-    "Light",
+    "Primal",
+    "Iono's",
+    "Hop's",
+    "Ash's",
+    "May's",
+    "Sea's",
+    "Sky's",
+    "Shep's",
+    "Sid's",
+    "Will's",
+    "Rafe's",
+    "Ross's",
+    "Red's",
+    "N's",
+    "Oakley's",
+    "Mega",
     "Dark",
+    "Light",
+    "M",
 )
 
 # ---------------------------------------------------------------------------
 # Known set codes (uppercase) — derived from the _SET_CODE_TO_SLUG mapping
 # in scraper/cardmarket.py.  Keep in sync when new sets are added.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Set code → canonical display name mapping.
+# Used in card_analyzer to resolve a bare set code to a human-readable name.
+# Keys are uppercase set codes; values are the canonical English set names.
+# ---------------------------------------------------------------------------
+
+SET_CODE_TO_SET_NAME: dict[str, str] = {
+    # Promos
+    "WP": "Wizards Black Star Promos",
+    "NP": "Nintendo Black Star Promos",
+    "DPPR": "DP Black Star Promos",
+    "BWP": "BW Black Star Promos",
+    "XYP": "XY Black Star Promos",
+    "XYPR": "XY Black Star Promos",
+    "SMP": "SM Black Star Promos",
+    "SWSHP": "SWSH Black Star Promos",
+    "SVP": "SV Black Star Promos",
+    # Misc / special sets
+    "SI": "Southern Islands",
+    "SVE": "SV Energies",
+    # Mega Evolution Era
+    "MEG": "Mega Evolution",
+    "PFL": "Phantasmal Flames",
+    "ASC": "Ascended Heroes",
+    "POR": "Perfect Order",
+    "CRI": "Chaos Rising",
+    "PBL": "Pitch Black",
+    # Scarlet & Violet Era
+    "SVI": "Scarlet & Violet", "SV1": "Scarlet & Violet",
+    "PAL": "Paldea Evolved", "SV2": "Paldea Evolved",
+    "OBF": "Obsidian Flames", "SV3": "Obsidian Flames",
+    "MEW": "151", "SV3PT5": "151",
+    "PAR": "Paradox Rift", "SV4": "Paradox Rift",
+    "PAF": "Paldean Fates", "SV4PT5": "Paldean Fates",
+    "TEF": "Temporal Forces", "SV5": "Temporal Forces",
+    "TWM": "Twilight Masquerade", "SV6": "Twilight Masquerade",
+    "SFA": "Shrouded Fable", "SV6PT5": "Shrouded Fable",
+    "SCR": "Stellar Crown", "SV7": "Stellar Crown",
+    "SSP": "Surging Sparks", "SV8": "Surging Sparks",
+    "PRE": "Prismatic Evolutions", "SV8PT5": "Prismatic Evolutions",
+    "JTG": "Journey Together", "SV9": "Journey Together",
+    "DRI": "Destined Rivals", "SV10": "Destined Rivals",
+    "BLK": "Black Bolt",
+    "WHT": "White Flare",
+    # French SV aliases
+    "EV1": "Scarlet & Violet",
+    "EV2": "Paldea Evolved",
+    "EV3": "Obsidian Flames",
+    "EV3PT5": "151",
+    "EV4": "Paradox Rift",
+    "EV4PT5": "Paldean Fates",
+    "EV5": "Temporal Forces",
+    "EV6": "Twilight Masquerade",
+    "EV6PT5": "Shrouded Fable",
+    "EV7": "Stellar Crown",
+    "EV8": "Surging Sparks",
+    "EV8PT5": "Prismatic Evolutions",
+    # Sword & Shield Era
+    "SSH": "Sword & Shield", "SWSH1": "Sword & Shield",
+    "RCL": "Rebel Clash", "SWSH2": "Rebel Clash",
+    "DAA": "Darkness Ablaze", "SWSH3": "Darkness Ablaze",
+    "CPA": "Champion's Path",
+    "VIV": "Vivid Voltage", "SWSH4": "Vivid Voltage",
+    "SHF": "Shining Fates", "SWSH45": "Shining Fates",
+    "BST": "Battle Styles", "SWSH5": "Battle Styles",
+    "CRE": "Chilling Reign", "SWSH6": "Chilling Reign",
+    "EVS": "Evolving Skies", "SWSH7": "Evolving Skies",
+    "CEL": "Celebrations", "CEL25": "Celebrations",
+    "FST": "Fusion Strike", "SWSH8": "Fusion Strike",
+    "BRS": "Brilliant Stars", "SWSH9": "Brilliant Stars",
+    "ASR": "Astral Radiance", "SWSH10": "Astral Radiance",
+    "PGO": "Pokémon GO", "GO": "Pokémon GO",
+    "LOR": "Lost Origin", "SWSH11": "Lost Origin",
+    "SIT": "Silver Tempest", "SWSH12": "Silver Tempest",
+    "CRZ": "Crown Zenith",
+    # Sun & Moon Era
+    "SUM": "Sun & Moon", "SM1": "Sun & Moon",
+    "GRI": "Guardians Rising", "SM2": "Guardians Rising",
+    "BUS": "Burning Shadows", "SM3": "Burning Shadows",
+    "SLG": "Shining Legends",
+    "CIN": "Crimson Invasion", "SM4": "Crimson Invasion",
+    "UPR": "Ultra Prism", "SM5": "Ultra Prism",
+    "FLI": "Forbidden Light", "SM6": "Forbidden Light",
+    "CES": "Celestial Storm", "SM7": "Celestial Storm",
+    "DRM": "Dragon Majesty",
+    "LOT": "Lost Thunder", "SM8": "Lost Thunder",
+    "TEU": "Team Up", "SM9": "Team Up",
+    "DET": "Detective Pikachu",
+    "UNB": "Unbroken Bonds", "SM10": "Unbroken Bonds",
+    "UNM": "Unified Minds", "SM11": "Unified Minds",
+    "HIF": "Hidden Fates",
+    "CEC": "Cosmic Eclipse", "SM12": "Cosmic Eclipse",
+    # XY Era
+    "XY": "XY", "XY1": "XY",
+    "KSS": "Kalos Starter Set",
+    "FLF": "Flashfire",
+    "FFI": "Furious Fists",
+    "PHF": "Phantom Forces",
+    "PRC": "Primal Clash",
+    "DCR": "Double Crisis",
+    "ROS": "Roaring Skies",
+    "AOR": "Ancient Origins",
+    "BKT": "Breakthrough",
+    "BKP": "Breakpoint",
+    "GEN": "Generations",
+    "FCO": "Fates Collide",
+    "STS": "Steam Siege", "STE": "Steam Siege",
+    "EVO": "Evolutions",
+    # Black & White Era
+    "BLW": "Black & White",
+    "EPO": "Emerging Powers",
+    "NVI": "Noble Victories",
+    "NXD": "Next Destinies",
+    "DEX": "Dark Explorers", "DEX2": "Dark Explorers",
+    "DRX": "Dragons Exalted",
+    "DRV": "Dragon Vault",
+    "BCR": "Boundaries Crossed",
+    "PLS": "Plasma Storm",
+    "PLF": "Plasma Freeze",
+    "PLB": "Plasma Blast",
+    "LTR": "Legendary Treasures",
+    # Diamond & Pearl Era
+    "DP": "Diamond & Pearl",
+    "MT": "Mysterious Treasures",
+    "SW": "Secret Wonders",
+    "GE": "Great Encounters",
+    "MD": "Majestic Dawn",
+    "LA": "Legends Awakened",
+    "SF": "Stormfront",
+    "PL": "Platinum", "PLA": "Platinum", "PLAT": "Platinum",
+    "RR": "Rising Rivals",
+    "AR": "Arceus",
+    "HS": "HeartGold SoulSilver",
+    "UL": "Unleashed",
+    "UD": "Undaunted",
+    "TM": "Triumphant",
+    "CL": "Call of Legends",
+    # EX Era
+    "RS": "Ruby & Sapphire",
+    "SS": "Sandstorm",
+    "DR": "Dragon",
+    "MA": "Team Magma vs Team Aqua",
+    "HL": "Hidden Legends",
+    "RG": "FireRed & LeafGreen", "FR": "FireRed & LeafGreen",
+    "TRR": "Team Rocket Returns",
+    "DX": "Deoxys",
+    "EM": "Emerald",
+    "UF": "Unseen Forces",
+    "DS": "Delta Species",
+    "LM": "Legend Maker",
+    "HP": "Holon Phantoms",
+    "CG": "Crystal Guardians",
+    "DF": "Dragon Frontiers",
+    "PK": "EX Power Keepers",
+    # Neo Era
+    "N1": "Neo Genesis",
+    "N2": "Neo Discovery",
+    "N3": "Neo Revelation",
+    "N4": "Neo Destiny",
+    "LC": "Legendary Collection",
+    "EX": "Expedition Base Set",
+    "AQ": "Aquapolis",
+    "SK": "Skyridge",
+    # Base Set Era
+    "BS": "Base Set",
+    "JU": "Jungle",
+    "FO": "Fossil",
+    "B2": "Base Set 2",
+    "TR": "Team Rocket",
+    "G1": "Gym Heroes",
+    "G2": "Gym Challenge",
+    # Japanese sets
+    "S12A": "VSTAR Universe",
+    "SV2A": "151",
+    "S9": "Star Birth",
+    "S8B": "VMAX Climax",
+    "S8A": "Incandescent Arcana",
+    # McDonald's Collections
+    "MCD": "McDonald's Collection",
+    "MCDO": "McDonald's Collection",
+    "MCDP": "McDonald's Collection",
+    "M19": "McDonald's Collection 2019",
+    "M20": "McDonald's Collection 2020",
+    "M21": "McDonald's Collection 2021",
+    "M22": "McDonald's Collection 2022",
+    "M23": "McDonald's Collection 2023",
+    "M24": "McDonald's Collection 2024",
+    "M25": "McDonald's Collection 2025",
+}
 
 KNOWN_SET_CODES: frozenset[str] = frozenset(
     {
