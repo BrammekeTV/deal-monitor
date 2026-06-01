@@ -879,6 +879,23 @@ class Database:
             row = await cur.fetchone()
         return row["set_slug"] if row else None
 
+    async def get_all_catalog_id_slugs(self) -> list[dict[str, Any]]:
+        """Return all rows from catalog_id_slugs ordered by id."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM catalog_id_slugs ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def find_catalog_id_by_set_slug(self, set_slug: str) -> dict[str, Any] | None:
+        """Return the catalog_id_slugs row whose set_slug matches *set_slug*, or ``None``."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM catalog_id_slugs WHERE set_slug = ?",
+            (set_slug,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
     # ------------------------------------------------------------------
     # Review queue maintenance
     # ------------------------------------------------------------------

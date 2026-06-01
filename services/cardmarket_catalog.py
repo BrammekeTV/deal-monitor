@@ -90,6 +90,7 @@ class CatalogPriceData:
     # Metadata
     set_name: str | None = None
     card_number: str | None = None
+    id_expansion: int | None = None
 
     def is_valid(self) -> bool:
         return self.from_price is not None and self.from_price > 0
@@ -391,6 +392,9 @@ class CardmarketCatalog:
         # Build the product URL from catalog metadata.
         product_url = self._build_product_url(product)
 
+        raw_expansion_id = product.get("idExpansion")
+        id_expansion: int | None = int(raw_expansion_id) if raw_expansion_id is not None else None
+
         return CatalogPriceData(
             product_id=pid,
             product_name=product.get("name"),
@@ -402,6 +406,7 @@ class CardmarketCatalog:
             product_url=product_url,
             set_name=product.get("expansionName"),
             card_number=product.get("number"),
+            id_expansion=id_expansion,
         )
 
     def get_product_by_id(self, product_id: int) -> dict[str, Any] | None:

@@ -75,7 +75,9 @@ def build_profit_alert_embed(
         f"**URL:** [View on Cardmarket]({cm_data.product_url})",
     ]
     if cm_data.product_id:
-        cm_lines.append(f"**ID:** {cm_data.product_id}")
+        cm_lines.append(f"**idProduct:** `{cm_data.product_id}`")
+    if cm_data.id_expansion:
+        cm_lines.append(f"**idExpansion:** `{cm_data.id_expansion}`")
     cm_lines.append(f"**From Price:** €{cm_data.from_price:.2f}")
     if cm_data.price_trend:
         cm_lines.append(f"**Price Trend:** €{cm_data.price_trend:.2f}")
@@ -197,6 +199,10 @@ def build_not_profitable_embed(
     )
 
     cm_detail_lines = []
+    if cm_data.product_id:
+        cm_detail_lines.append(f"idProduct: `{cm_data.product_id}`")
+    if cm_data.id_expansion:
+        cm_detail_lines.append(f"idExpansion: `{cm_data.id_expansion}`")
     if cm_data.price_trend:
         cm_detail_lines.append(f"Price Trend: €{cm_data.price_trend:.2f}")
     if cm_data.avg_30_days:
@@ -266,6 +272,7 @@ def build_review_embed(
     fingerprint: "CardFingerprint | None" = None,
     failure_reason: str | None = None,
     matching_attempts: list[dict] | None = None,
+    id_expansion: int | None = None,
 ) -> discord.Embed:
     """Build an embed for a listing that could not be automatically identified.
 
@@ -311,6 +318,10 @@ def build_review_embed(
         fp_lines = [
             f"Card Name: {_val(fingerprint.card_name)}",
             f"Set: {_val(fingerprint.set_name)}",
+        ]
+        if id_expansion is not None:
+            fp_lines.append(f"idExpansion: **`{id_expansion}`**")
+        fp_lines += [
             f"Set Code: {_val(fingerprint.set_code)}",
             f"Number: {_val(fingerprint.collector_number)}",
             f"Condition: {_val(fingerprint.condition)}",
@@ -368,6 +379,7 @@ def build_review_embed(
 def build_unidentified_embed(
     listing: "Listing",
     fingerprint: "CardFingerprint | None" = None,
+    id_expansion: int | None = None,
 ) -> discord.Embed:
     """Build an embed for a listing not found in the product catalog or learning DB.
 
@@ -409,6 +421,10 @@ def build_unidentified_embed(
         fp_lines = [
             f"Card Name: {_val(fingerprint.card_name)}",
             f"Set: {_val(fingerprint.set_name)}",
+        ]
+        if id_expansion is not None:
+            fp_lines.append(f"idExpansion: **`{id_expansion}`**")
+        fp_lines += [
             f"Set Code: {_val(fingerprint.set_code)}",
             f"Number: {_val(fingerprint.collector_number)}",
             f"Condition: {_val(fingerprint.condition)}",
@@ -534,6 +550,7 @@ def build_error_embed(
     http_status: int | None = None,
     stack_trace: str | None = None,
     fingerprint: "CardFingerprint | None" = None,
+    id_expansion: int | None = None,
 ) -> discord.Embed:
     """Build a structured error embed for the logging channel.
 
@@ -572,6 +589,10 @@ def build_error_embed(
         fp_lines = [
             f"Card Name: {_val(fingerprint.card_name)}",
             f"Set: {_val(fingerprint.set_name)}",
+        ]
+        if id_expansion is not None:
+            fp_lines.append(f"idExpansion: **`{id_expansion}`**")
+        fp_lines += [
             f"Set Code: {_val(fingerprint.set_code)}",
             f"Collector Number: {_val(fingerprint.collector_number)}",
             f"Condition: {_val(fingerprint.condition)}",
