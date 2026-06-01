@@ -11,6 +11,7 @@ Tables:
   correction_log      – URL corrections supplied by users via Discord reply
   slug_prefix_rules   – learned set-prefix patterns (e.g. Team Rocket → TR prefix)
   filter_settings     – runtime-adjustable bot settings
+  catalog_id_slugs    – idProduct/idExpansion → URL slug mappings (from unidentified channel)
 """
 
 from __future__ import annotations
@@ -184,6 +185,19 @@ CREATE TABLE IF NOT EXISTS slug_overrides (
 );
 
 CREATE INDEX IF NOT EXISTS idx_slug_overrides_fingerprint ON slug_overrides(fingerprint);
+
+CREATE TABLE IF NOT EXISTS catalog_id_slugs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_product      INTEGER UNIQUE,
+    product_slug    TEXT,
+    id_expansion    INTEGER UNIQUE,
+    set_slug        TEXT,
+    cardmarket_url  TEXT,
+    date_learned    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_id_slugs_id_product ON catalog_id_slugs(id_product);
+CREATE INDEX IF NOT EXISTS idx_catalog_id_slugs_id_expansion ON catalog_id_slugs(id_expansion);
 
 CREATE TABLE IF NOT EXISTS filter_settings (
     key   TEXT PRIMARY KEY,
@@ -799,6 +813,71 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Catalog ID slug mappings (idProduct / idExpansion → URL slugs)
+    # ------------------------------------------------------------------
+
+    async def store_catalog_id_slugs(
+        self,
+        *,
+        id_product: int | None,
+        product_slug: str | None,
+        id_expansion: int | None,
+        set_slug: str | None,
+        cardmarket_url: str | None = None,
+    ) -> None:
+        """Persist idProduct → product_slug and idExpansion → set_slug mappings.
+
+        Each ID is stored in its own row so that a product mapping and an
+        expansion mapping can be updated independently.  Existing rows are
+        updated when the slug changes.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            if id_product is not None and product_slug:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO catalog_id_slugs (id_product, product_slug, cardmarket_url, date_learned)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id_product) DO UPDATE SET
+                        product_slug   = excluded.product_slug,
+                        cardmarket_url = excluded.cardmarket_url,
+                        date_learned   = excluded.date_learned
+                    """,
+                    (id_product, product_slug, cardmarket_url, now),
+                )
+            if id_expansion is not None and set_slug:
+                await self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO catalog_id_slugs (id_expansion, set_slug, cardmarket_url, date_learned)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id_expansion) DO UPDATE SET
+                        set_slug       = excluded.set_slug,
+                        cardmarket_url = excluded.cardmarket_url,
+                        date_learned   = excluded.date_learned
+                    """,
+                    (id_expansion, set_slug, cardmarket_url, now),
+                )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    async def get_catalog_product_slug(self, id_product: int) -> str | None:
+        """Return the stored product slug for *id_product*, or ``None``."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT product_slug FROM catalog_id_slugs WHERE id_product = ?",
+            (id_product,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["product_slug"] if row else None
+
+    async def get_catalog_expansion_slug(self, id_expansion: int) -> str | None:
+        """Return the stored set slug for *id_expansion*, or ``None``."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT set_slug FROM catalog_id_slugs WHERE id_expansion = ?",
+            (id_expansion,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["set_slug"] if row else None
 
     # ------------------------------------------------------------------
     # Review queue maintenance

@@ -195,6 +195,10 @@ class ReviewCog(commands.Cog, name="Review"):
     def __init__(self, bot: commands.Bot, db: Database) -> None:
         self.bot = bot
         self.db = db
+        # Tracks bot messages that are awaiting a product ID reply in the
+        # unidentified channel.  Key: bot Discord message ID (int).
+        # Value: dict with 'review_item', 'cm_url', 'product_slug', 'set_slug'.
+        self._pending_product_ids: dict[int, dict] = {}
 
     def _get_monitor(self) -> "MonitorCog | None":
         return self.bot.cogs.get("Monitor")  # type: ignore[return-value]
@@ -220,9 +224,52 @@ class ReviewCog(commands.Cog, name="Review"):
         if review_channel_id and message.channel.id == review_channel_id:
             await self._handle_review_reply(message)
         elif unidentified_channel_id and message.channel.id == unidentified_channel_id:
-            await self._handle_review_reply(message)
+            await self._handle_unidentified_reply(message)
         elif log_channel_id and message.channel.id == log_channel_id:
             await self._handle_correction_reply(message)
+
+    async def _handle_unidentified_reply(self, message: discord.Message) -> None:
+        """Handle a reply in the unidentified channel.
+
+        Two-step flow:
+        1. User replies to an unidentified-listing embed with a Cardmarket URL.
+           → Bot scrapes CM, posts the scraped info, and asks for the idProduct.
+        2. User replies to the bot's "awaiting product ID" message with a number.
+           → Bot looks up prices.json, stores ID→slug mappings, resolves the item.
+        """
+        referenced_id = message.reference.message_id  # type: ignore[union-attr]
+
+        # Step 2: reply to one of our "awaiting product ID" messages.
+        if referenced_id in self._pending_product_ids:
+            await self._handle_unidentified_product_id_reply(
+                message, self._pending_product_ids[referenced_id]
+            )
+            return
+
+        # Step 1: reply to the original unidentified listing embed.
+        referenced_id_str = str(referenced_id)
+        review_item = await self.db.get_review_item_by_message(referenced_id_str)
+        if review_item is None:
+            return  # Not a reply to a known review message.
+
+        if review_item.get("status") == "resolved":
+            return
+
+        cm_url = _extract_cardmarket_url(message.content)
+        if not cm_url:
+            await message.reply(
+                "⚠️ No valid Cardmarket product URL found in your message.\n"
+                "Please reply with a URL like: "
+                "`https://www.cardmarket.com/en/Pokemon/Products/Singles/...`",
+                mention_author=False,
+            )
+            return
+
+        await self._handle_unidentified_url_step(
+            message=message,
+            review_item=review_item,
+            cardmarket_url=cm_url,
+        )
 
     async def _handle_review_reply(self, message: discord.Message) -> None:
         """Handle a reply in the review channel (unresolvable listing)."""
@@ -254,6 +301,269 @@ class ReviewCog(commands.Cog, name="Review"):
             cardmarket_url=cm_url,
             submitted_by=message.author,
             reply_message=message,
+        )
+
+    # ------------------------------------------------------------------
+    # Unidentified channel – two-step ID mapping flow
+    # ------------------------------------------------------------------
+
+    async def _handle_unidentified_url_step(
+        self,
+        message: discord.Message,
+        review_item: dict,
+        cardmarket_url: str,
+    ) -> None:
+        """Step 1 of the unidentified-channel flow: user supplied a CM URL.
+
+        Scrapes Cardmarket, posts the result, then asks the user to supply
+        the ``idProduct`` so the catalog ID → URL-slug mapping can be stored.
+        """
+        normalised_url = normalize_cardmarket_url(cardmarket_url)
+
+        # Extract URL path segments for slug derivation.
+        url_path = urlparse(normalised_url).path.rstrip("/")
+        path_parts = url_path.split("/")
+        product_slug: str | None = None
+        set_slug: str | None = None
+        try:
+            singles_idx = path_parts.index("Singles")
+            set_slug = path_parts[singles_idx + 1] if singles_idx + 1 < len(path_parts) else None
+            product_slug = path_parts[-1] if len(path_parts) > singles_idx + 1 else None
+        except (ValueError, IndexError):
+            pass
+
+        logger.info(
+            "ReviewCog (unidentified): step-1 URL '%s' slug=%r set=%r (submitted by %s)",
+            normalised_url, product_slug, set_slug, message.author.display_name,
+        )
+
+        monitor = self._get_monitor()
+        if monitor is None or monitor.cardmarket_scraper is None:
+            await message.reply(
+                "⚠️ The Cardmarket scraper is not available right now. "
+                "Please try again in a moment.",
+                mention_author=False,
+            )
+            return
+
+        try:
+            cm_data = await monitor.cardmarket_scraper.scrape_url(normalised_url)
+        except CardmarketScrapeError as exc:
+            logger.warning(
+                "ReviewCog (unidentified): Cardmarket scrape failed for '%s': %s",
+                normalised_url, exc,
+            )
+            await message.reply(
+                f"⚠️ Failed to scrape Cardmarket: **{exc.message}**\n"
+                f"Step: `{exc.step}`\n"
+                "Please verify the URL is a valid Cardmarket product page and try again.",
+                mention_author=False,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "ReviewCog (unidentified): unexpected error scraping '%s': %s",
+                normalised_url, exc, exc_info=True,
+            )
+            await message.reply(
+                f"⚠️ An unexpected error occurred while scraping Cardmarket: {exc}",
+                mention_author=False,
+            )
+            return
+
+        # Build a summary embed from the scraped data.
+        embed = discord.Embed(
+            title=f"🃏 {cm_data.product_name or 'Cardmarket product'}",
+            url=normalised_url,
+            colour=0x00AAFF,
+        )
+        if cm_data.from_price is not None:
+            embed.add_field(name="From price", value=f"€{cm_data.from_price:.2f}", inline=True)
+        if cm_data.price_trend is not None:
+            embed.add_field(name="Trend", value=f"€{cm_data.price_trend:.2f}", inline=True)
+        if cm_data.avg_30_days is not None:
+            embed.add_field(name="Avg 30d", value=f"€{cm_data.avg_30_days:.2f}", inline=True)
+        if product_slug:
+            embed.add_field(name="Product slug", value=f"`{product_slug}`", inline=True)
+        if set_slug:
+            embed.add_field(name="Set slug", value=f"`{set_slug}`", inline=True)
+        embed.set_footer(text="Cardmarket data · step 1 of 2")
+
+        try:
+            bot_msg = await message.reply(embed=embed, mention_author=False)
+        except discord.HTTPException as exc:
+            logger.error("ReviewCog (unidentified): failed to post step-1 embed: %s", exc)
+            return
+
+        # Ask the user for the idProduct.
+        try:
+            prompt_msg = await bot_msg.reply(
+                "Please reply to **this message** with the Cardmarket **`idProduct`** "
+                f"for `{product_slug or normalised_url}` so it can be mapped.\n"
+                "You can find `idProduct` in the Cardmarket page source or API response.",
+                mention_author=False,
+            )
+        except discord.HTTPException as exc:
+            logger.error("ReviewCog (unidentified): failed to send product-ID prompt: %s", exc)
+            return
+
+        # Store pending state keyed by the prompt message so the user replies to it.
+        self._pending_product_ids[prompt_msg.id] = {
+            "review_item": review_item,
+            "cm_url": normalised_url,
+            "cm_data": cm_data,
+            "product_slug": product_slug,
+            "set_slug": set_slug,
+            "submitted_by": message.author,
+        }
+        logger.info(
+            "ReviewCog (unidentified): awaiting idProduct for msg %s (product_slug=%r)",
+            prompt_msg.id, product_slug,
+        )
+
+    async def _handle_unidentified_product_id_reply(
+        self,
+        message: discord.Message,
+        pending: dict,
+    ) -> None:
+        """Step 2 of the unidentified-channel flow: user supplied an idProduct.
+
+        Looks up the product in the catalog, posts prices.json info, stores
+        the idProduct → product_slug and idExpansion → set_slug mappings, then
+        resolves the review queue item.
+        """
+        # Parse idProduct from the message (first integer found).
+        product_id_match = re.search(r"\b(\d{4,9})\b", message.content)
+        if not product_id_match:
+            await message.reply(
+                "⚠️ Could not find a valid `idProduct` (a numeric ID, e.g. `299451`) "
+                "in your message. Please reply with just the number.",
+                mention_author=False,
+            )
+            return
+
+        product_id = int(product_id_match.group(1))
+        review_item = pending["review_item"]
+        cm_url: str = pending["cm_url"]
+        product_slug: str | None = pending["product_slug"]
+        set_slug: str | None = pending["set_slug"]
+        submitted_by = pending.get("submitted_by") or message.author
+
+        logger.info(
+            "ReviewCog (unidentified): step-2 idProduct=%d slug=%r set=%r (submitted by %s)",
+            product_id, product_slug, set_slug, message.author.display_name,
+        )
+
+        # Look up catalog data for this idProduct.
+        monitor = self._get_monitor()
+        catalog = monitor.catalog if monitor else None
+        id_expansion: int | None = None
+        price_data = None
+
+        if catalog and catalog.is_loaded:
+            product = catalog.get_product_by_id(product_id)
+            if product:
+                id_expansion = product.get("idExpansion")
+                if id_expansion is not None:
+                    id_expansion = int(id_expansion)
+                price_data = catalog.get_price_data(product)
+            else:
+                logger.warning(
+                    "ReviewCog (unidentified): idProduct=%d not found in catalog", product_id
+                )
+
+        # Build the response embed with prices.json data.
+        embed = discord.Embed(
+            title=f"📦 Catalog data for idProduct {product_id}",
+            url=cm_url,
+            colour=0x00FF7F,
+        )
+
+        if price_data is not None:
+            if price_data.product_name:
+                embed.add_field(name="Name", value=price_data.product_name, inline=False)
+            if price_data.from_price is not None:
+                embed.add_field(name="LOW (from)", value=f"€{price_data.from_price:.2f}", inline=True)
+            if price_data.price_trend is not None:
+                embed.add_field(name="TREND", value=f"€{price_data.price_trend:.2f}", inline=True)
+            if price_data.avg_30_days is not None:
+                embed.add_field(name="AVG30", value=f"€{price_data.avg_30_days:.2f}", inline=True)
+            if price_data.avg_7_days is not None:
+                embed.add_field(name="AVG7", value=f"€{price_data.avg_7_days:.2f}", inline=True)
+            if price_data.avg_1_day is not None:
+                embed.add_field(name="AVG1", value=f"€{price_data.avg_1_day:.2f}", inline=True)
+            if price_data.set_name:
+                embed.add_field(name="Set", value=price_data.set_name, inline=True)
+        else:
+            embed.description = (
+                "⚠️ This `idProduct` was not found in the local catalog. "
+                "The mapping will still be stored."
+            )
+
+        # Show ID → slug mappings.
+        mapping_lines = []
+        if product_slug:
+            mapping_lines.append(f"**idProduct:** `{product_id}`\n> mapped to `{product_slug}`")
+        if id_expansion is not None and set_slug:
+            mapping_lines.append(f"**idExpansion:** `{id_expansion}`\n> mapped to `{set_slug}`")
+        if mapping_lines:
+            embed.add_field(
+                name="🗺️ Mappings stored",
+                value="\n".join(mapping_lines),
+                inline=False,
+            )
+
+        embed.set_footer(text=f"Resolved by {message.author.display_name} · step 2 of 2")
+
+        try:
+            await message.reply(embed=embed, mention_author=False)
+        except discord.HTTPException as exc:
+            logger.error("ReviewCog (unidentified): failed to post step-2 embed: %s", exc)
+
+        # Persist the ID → slug mappings.
+        await self.db.store_catalog_id_slugs(
+            id_product=product_id,
+            product_slug=product_slug,
+            id_expansion=id_expansion,
+            set_slug=set_slug,
+            cardmarket_url=cm_url,
+        )
+
+        # Store the card mapping in the learning database.
+        listing_id = review_item["listing_id"]
+        listing_title = review_item["title"]
+        fingerprint = identify_card(listing_title)
+        cm_data = pending.get("cm_data")
+        if monitor and monitor.resolver and cm_data:
+            await monitor.resolver.store_mapping(
+                fingerprint=fingerprint,
+                raw_title=listing_title,
+                cardmarket_url=cm_data.product_url or cm_url,
+                product_name=cm_data.product_name,
+                product_id=str(product_id),
+                validated_by=f"user:{submitted_by.display_name}",
+                confidence=1.0,
+                listing_url=review_item["url"],
+                seller_name=review_item.get("seller_name"),
+                price=float(review_item.get("price") or 0.0),
+            )
+
+        # Resolve the review queue item.
+        await self.db.resolve_review_item(
+            listing_id,
+            cardmarket_url=cm_url,
+            resolved_by=message.author.display_name,
+        )
+
+        # Remove from pending state.
+        ref_id = message.reference.message_id  # type: ignore[union-attr]
+        self._pending_product_ids.pop(ref_id, None)
+
+        logger.info(
+            "ReviewCog (unidentified): resolved listing '%s' idProduct=%d idExpansion=%s "
+            "slug=%r set=%r by %s",
+            listing_title[:60], product_id, id_expansion, product_slug, set_slug,
+            message.author.display_name,
         )
 
     async def _handle_correction_reply(self, message: discord.Message) -> None:

@@ -177,6 +177,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
         return self._resolver
 
     @property
+    def catalog(self) -> CardmarketCatalog | None:
+        return self._catalog
+
+    @property
     def cardmarket_scraper(self) -> CardmarketScraper | None:
         return self._cardmarket
 
