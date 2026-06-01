@@ -170,6 +170,26 @@ class TestCatalogIngest:
         assert 7 in cat._price_guide
         assert cat._price_guide[7]["LOW"] == 3.50
 
+    def test_price_guide_lowercase_keys_normalised_to_uppercase(self):
+        """S3 price guide may now use lowercase keys; _ingest must normalise them."""
+        cat = self._make_catalog()
+        lowercase_price = {
+            "idProduct": 8,
+            "low": 2.25,
+            "trend": 6.12,
+            "avg1": 6.89,
+            "avg7": 7.34,
+            "avg30": 7.85,
+        }
+        cat._ingest(_make_products({"idProduct": 8}), [lowercase_price])
+        assert 8 in cat._price_guide
+        entry = cat._price_guide[8]
+        assert entry["LOW"] == 2.25
+        assert entry["TREND"] == 6.12
+        assert entry["AVG1"] == 6.89
+        assert entry["AVG7"] == 7.34
+        assert entry["AVG30"] == 7.85
+
     def test_ingest_accepts_wrapped_dict_format(self):
         """Some catalog downloads may wrap the list in a dict."""
         cat = self._make_catalog()
@@ -320,6 +340,32 @@ class TestGetPriceData:
         assert result.product_url is not None
         assert result.product_url.startswith("https://www.cardmarket.com")
         assert "Obsidian-Flames" in result.product_url
+
+    def test_returns_price_data_with_lowercase_price_keys(self):
+        """Price guide entries with lowercase keys (new S3 format) must work."""
+        product = {
+            "idProduct": 888506,
+            "name": "Fennekin [Call for Family | Steady Firebreathing]",
+            "idExpansion": 6232,
+            "expansionName": "Chaos Rising",
+        }
+        price = {
+            "idProduct": 888506,
+            "idCategory": 51,
+            "low": 2.25,
+            "trend": 6.12,
+            "avg1": 6.89,
+            "avg7": 7.34,
+            "avg30": 7.85,
+        }
+        cat = self._loaded_catalog(product, price)
+        result = cat.get_price_data(product)
+        assert result is not None
+        assert result.from_price == 2.25
+        assert result.price_trend == 6.12
+        assert result.avg_1_day == 6.89
+        assert result.avg_7_days == 7.34
+        assert result.avg_30_days == 7.85
 
 
 # ---------------------------------------------------------------------------
