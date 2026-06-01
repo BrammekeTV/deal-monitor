@@ -316,6 +316,19 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_mapping_counts_per_set(self) -> list[dict[str, Any]]:
+        """Return the count of learned mappings grouped by set_code, ordered by count desc."""
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT COALESCE(set_code, '(unknown)') AS set_code, COUNT(*) AS count
+            FROM card_mappings
+            GROUP BY set_code
+            ORDER BY count DESC, set_code ASC
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def add_mapping(
         self,
         *,
