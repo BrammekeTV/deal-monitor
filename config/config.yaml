@@ -109,6 +109,12 @@ discord:
   # Can also be set via DISCORD_REVIEW_CHANNEL_ID env var.
   review_channel_id: 0
 
+  # Discord channel ID for listings that could not be matched via the product
+  # catalog or the learning database.  Users reply here with the correct
+  # Cardmarket product URL or ID so the bot can learn for future runs.
+  # Can also be set via DISCORD_UNIDENTIFIED_CHANNEL_ID env var.
+  unidentified_channel_id: 0
+
   # Discord channel ID for error and scraping failure reports.
   # Can also be set via DISCORD_LOG_CHANNEL_ID env var.
   log_channel_id: 0

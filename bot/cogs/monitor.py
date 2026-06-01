@@ -55,11 +55,12 @@ from services.cardmarket_catalog import CardmarketCatalog
 from services.cardmarket_resolver import CardmarketResolver
 from services.price_comparison import compare_prices
 from utils.card_analyzer import is_non_card_item
-from utils.card_analyzer import is_graded_listing, is_japanese_listing, is_lot_listing
+from utils.card_analyzer import is_graded_listing, is_japanese_listing, is_lot_listing, has_pokemon_name
 from utils.embed_builder import (
     build_error_embed,
     build_profit_alert_embed,
     build_status_embed,
+    build_unidentified_embed,
 )
 from utils.logger import get_logger
 
@@ -460,7 +461,24 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             return
 
-        # ── 2. Card identification ────────────────────────────────────────
+        # ── 1d. Pokemon name pre-filter ───────────────────────────────────
+        # Skip listings whose title contains no recognizable Pokemon name.
+        if not has_pokemon_name(listing.title):
+            logger.debug(
+                "MonitorCog: no Pokemon name found in '%s' – skipping",
+                listing.title[:80],
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=None,
+            )
+            return
+
         fingerprint = identify_card(listing.title, description=listing.description)
 
         # ── 2b. Unresolvable guard ────────────────────────────────────────
@@ -596,12 +614,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 )
                 return
 
-        # ── 4. Cardmarket URL resolution (browser fallback) ───────────────
-        resolved = await self._resolver.resolve(fingerprint, listing.title)  # type: ignore[union-attr]
+        # ── 4. Cardmarket URL resolution (DB only) ────────────────────────
+        # Only look up the learning database — do not construct/guess a URL.
+        # If the card is not known yet, route to the unidentified channel so
+        # a user can supply the correct Cardmarket product URL.
+        resolved = self._resolver.resolve_db_only(fingerprint, listing.title)  # type: ignore[union-attr]
 
         if resolved is None:
-            # No mapping found → send to review queue.
-            await self._send_to_review(listing, fingerprint, matching_attempts)
+            # Not found in catalog or DB → ask user to identify it.
+            await self._send_to_unidentified(listing, fingerprint)
             await self.db.mark_seen(
                 listing_id=listing.listing_id,
                 title=listing.title,
@@ -869,6 +890,60 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 listing.listing_id, exc,
             )
 
+    async def _send_to_unidentified(
+        self,
+        listing: "Listing",
+        fingerprint,
+    ) -> None:
+        """Send a listing to the unidentified channel.
+
+        Called when a listing passes all filters but is not found in the
+        Cardmarket product catalog or the learning database.  A user can
+        reply with the correct Cardmarket URL to identify it.
+        """
+        failure_reason = "not_in_catalog_or_db"
+
+        # Add to DB review queue so review.py can process the reply.
+        await self.db.add_review_item(
+            listing_id=listing.listing_id,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price,
+            currency=listing.currency,
+            seller_name=listing.seller_name,
+            description=listing.description,
+            images=listing.images,
+            fingerprint=fingerprint.fingerprint_hash(),
+            failure_reason=failure_reason,
+            matching_attempts=[],
+            status="pending",
+        )
+
+        channel = self._get_unidentified_channel()
+        if channel is None:
+            logger.debug(
+                "MonitorCog: unidentified channel not configured – skipping post for %s",
+                listing.listing_id,
+            )
+            return
+
+        embed = build_unidentified_embed(listing, fingerprint=fingerprint)
+
+        try:
+            msg = await channel.send(embed=embed)
+            await self.db.set_review_discord_message(
+                listing.listing_id, str(msg.id), str(channel.id)
+            )
+            logger.info(
+                "MonitorCog: sent listing %s to unidentified channel (msg %s)",
+                listing.listing_id, msg.id,
+            )
+        except discord.HTTPException as exc:
+            logger.error(
+                "MonitorCog: failed to post unidentified message for %s: %s",
+                listing.listing_id, exc,
+            )
+
     # ------------------------------------------------------------------
     # Discord posting helpers
     # ------------------------------------------------------------------
@@ -982,6 +1057,15 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
     def _get_review_channel(self) -> discord.TextChannel | None:
         ch_id = settings.discord_review_channel_id
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        return ch
+
+    def _get_unidentified_channel(self) -> discord.TextChannel | None:
+        ch_id = settings.discord_unidentified_channel_id
         if not ch_id:
             return None
         ch = self.bot.get_channel(ch_id)

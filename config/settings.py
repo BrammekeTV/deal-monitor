@@ -63,6 +63,10 @@ class Settings:
             os.getenv("DISCORD_REVIEW_CHANNEL_ID")
             or _deep_get(raw, "discord", "review_channel_id", default=0)
         )
+        self.discord_unidentified_channel_id: int = int(
+            os.getenv("DISCORD_UNIDENTIFIED_CHANNEL_ID")
+            or _deep_get(raw, "discord", "unidentified_channel_id", default=0)
+        )
         self.discord_log_channel_id: int = int(
             os.getenv("DISCORD_LOG_CHANNEL_ID")
             or _deep_get(raw, "discord", "log_channel_id", default=0)

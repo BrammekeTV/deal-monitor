@@ -362,7 +362,82 @@ def build_review_embed(
 
 
 # ---------------------------------------------------------------------------
-# Review resolved embed
+# Unidentified listing embed (not found in catalog or learning DB)
+# ---------------------------------------------------------------------------
+
+def build_unidentified_embed(
+    listing: "Listing",
+    fingerprint: "CardFingerprint | None" = None,
+) -> discord.Embed:
+    """Build an embed for a listing not found in the product catalog or learning DB.
+
+    Users should reply with the correct Cardmarket product URL or product ID
+    so the bot can identify the card, scrape pricing, and learn the mapping.
+    """
+    embed = discord.Embed(
+        title=f"❓ Unidentified Listing: {listing.title[:200]}",
+        url=listing.url,
+        colour=_COLOUR_REVIEW,
+        timestamp=datetime.now(timezone.utc),
+        description=(
+            "This listing was **not found** in the Cardmarket product catalog "
+            "or the learning database.\n\n"
+            "**Reply to this message with the correct Cardmarket product URL** "
+            "so the bot can identify the card, compare prices, and save the "
+            "mapping for future runs.\n\n"
+            "Example: `https://www.cardmarket.com/en/Pokemon/Products/Singles/...`"
+        ),
+    )
+
+    # ── Vinted data ───────────────────────────────────────────────────────
+    embed.add_field(
+        name="🛍️ Vinted Listing",
+        value=(
+            f"**Title:** {listing.title[:200]}\n"
+            f"**Price:** €{listing.price:.2f} {listing.currency}\n"
+            f"**Seller:** {listing.seller_name or 'Unknown'}\n"
+            f"**URL:** [View listing]({listing.url})"
+        ),
+        inline=False,
+    )
+
+    # ── Extracted fingerprint ─────────────────────────────────────────────
+    if fingerprint:
+        def _val(v: object) -> str:
+            return f"**{v}**" if v else "—"
+
+        fp_lines = [
+            f"Card Name: {_val(fingerprint.card_name)}",
+            f"Set: {_val(fingerprint.set_name)}",
+            f"Set Code: {_val(fingerprint.set_code)}",
+            f"Number: {_val(fingerprint.collector_number)}",
+            f"Condition: {_val(fingerprint.condition)}",
+            f"Rarity: {_val(fingerprint.rarity)}",
+            f"Language: {_val(fingerprint.language)}",
+        ]
+        embed.add_field(
+            name="🔎 Extracted Card Info",
+            value="\n".join(fp_lines),
+            inline=False,
+        )
+
+    # ── Description snippet ───────────────────────────────────────────────
+    if listing.description:
+        embed.add_field(
+            name="📝 Listing Description",
+            value=listing.description[:512],
+            inline=False,
+        )
+
+    if listing.images:
+        embed.set_image(url=listing.images[0])
+
+    embed.set_footer(
+        text=f"Vinted ID: {listing.listing_id}  •  Reply with Cardmarket URL to identify"
+    )
+    return embed
+
+
 # ---------------------------------------------------------------------------
 
 def build_review_resolved_embed(
