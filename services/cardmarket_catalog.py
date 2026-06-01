@@ -482,12 +482,19 @@ class CardmarketCatalog:
         self._products = products_list
         self._price_guide_raw = prices_list
 
-        # Build price guide index: idProduct → entry
+        # Build price guide index: idProduct → entry.
+        # Normalise price-field keys to uppercase so that both the historical
+        # S3 format (e.g. "LOW", "TREND") and the current lowercase format
+        # (e.g. "low", "trend") are handled transparently.
+        _PRICE_UPPER_FIELDS = {"LOW", "SELL", "TREND", "AVG1", "AVG7", "AVG30"}
         self._price_guide = {}
         for entry in prices_list:
             pid = entry.get("idProduct")
             if pid is not None:
-                self._price_guide[int(pid)] = entry
+                normalised: dict[str, Any] = {}
+                for k, v in entry.items():
+                    normalised[k.upper() if k.upper() in _PRICE_UPPER_FIELDS else k] = v
+                self._price_guide[int(pid)] = normalised
 
         # Build product indexes
         self._products_by_id = {}

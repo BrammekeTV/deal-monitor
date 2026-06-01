@@ -459,14 +459,22 @@ class ReviewCog(commands.Cog, name="Review"):
         catalog = monitor.catalog if monitor else None
         id_expansion: int | None = None
         price_data = None
+        product_found_in_catalog = False
 
         if catalog and catalog.is_loaded:
             product = catalog.get_product_by_id(product_id)
             if product:
+                product_found_in_catalog = True
                 id_expansion = product.get("idExpansion")
                 if id_expansion is not None:
                     id_expansion = int(id_expansion)
                 price_data = catalog.get_price_data(product)
+                if price_data is None:
+                    logger.warning(
+                        "ReviewCog (unidentified): idProduct=%d found in catalog but "
+                        "price data unavailable",
+                        product_id,
+                    )
             else:
                 logger.warning(
                     "ReviewCog (unidentified): idProduct=%d not found in catalog", product_id
@@ -495,10 +503,16 @@ class ReviewCog(commands.Cog, name="Review"):
             if price_data.set_name:
                 embed.add_field(name="Set", value=price_data.set_name, inline=True)
         else:
-            embed.description = (
-                "⚠️ This `idProduct` was not found in the local catalog. "
-                "The mapping will still be stored."
-            )
+            if product_found_in_catalog:
+                embed.description = (
+                    "⚠️ `idProduct` found in catalog but no price data is available. "
+                    "The mapping will still be stored."
+                )
+            else:
+                embed.description = (
+                    "⚠️ This `idProduct` was not found in the local catalog. "
+                    "The mapping will still be stored."
+                )
 
         # Show ID → slug mappings.
         mapping_lines = []
