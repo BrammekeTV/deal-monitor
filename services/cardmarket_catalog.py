@@ -404,6 +404,17 @@ class CardmarketCatalog:
             card_number=product.get("number"),
         )
 
+    def get_product_by_id(self, product_id: int) -> dict[str, Any] | None:
+        """Return the catalog product dict for *product_id*, or ``None``."""
+        return self._products_by_id.get(product_id)
+
+    def get_price_data_by_id(self, product_id: int) -> CatalogPriceData | None:
+        """Return :class:`CatalogPriceData` for *product_id*, or ``None``."""
+        product = self.get_product_by_id(product_id)
+        if product is None:
+            return None
+        return self.get_price_data(product)
+
     def find_and_get_price_data(
         self,
         card_name: str,
