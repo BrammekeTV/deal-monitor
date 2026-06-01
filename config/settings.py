@@ -106,6 +106,26 @@ class Settings:
         self.cardmarket_enabled: bool = bool(cm.get("enabled", True))
         self.cardmarket_fuzzy_threshold: float = float(cm.get("fuzzy_threshold", 80.0))
 
+        # --- Cardmarket Product Catalog ---
+        # When enabled, prices are fetched from the Cardmarket S3 JSON files
+        # instead of scraping individual product pages via Flaresolverr / Playwright.
+        # Set to false to fall back to browser-based scraping for every listing.
+        catalog = raw.get("catalog", {})
+        self.catalog_enabled: bool = bool(
+            os.getenv("CATALOG_ENABLED", str(catalog.get("enabled", True))).lower()
+            not in ("0", "false", "no")
+        )
+        # How often to refresh the cached catalog files (hours).  Set to 0 to
+        # never refresh after the initial download.
+        self.catalog_refresh_hours: int = int(
+            os.getenv("CATALOG_REFRESH_HOURS", str(catalog.get("refresh_hours", 24)))
+        )
+        # Directory where catalog JSON files are cached on disk.
+        self.catalog_cache_dir: str = os.getenv(
+            "CATALOG_CACHE_DIR",
+            str(catalog.get("cache_dir", "data/catalog_cache")),
+        )
+
         # --- FlareSolverr ---
         # Can be overridden via FLARESOLVERR_URL env var.
         # Default: localhost for local development; Docker Compose sets this

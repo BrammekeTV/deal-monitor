@@ -76,6 +76,24 @@ cardmarket:
   fuzzy_threshold: 80.0
 
 # ---------------------------------------------------------------------------
+# Cardmarket Product Catalog (S3 bulk download)
+# ---------------------------------------------------------------------------
+catalog:
+  # When enabled, card prices are resolved from the Cardmarket Product Catalog
+  # and Price Guide JSON files (downloaded from S3) instead of scraping
+  # individual product pages via FlareSolverr or Playwright.  This is
+  # significantly faster and does not require a browser at all.
+  # Set to false to fall back to browser-based scraping for every listing.
+  enabled: true
+
+  # How often (hours) to refresh the cached catalog files.
+  # The catalog is re-downloaded at most once per cycle during this interval.
+  refresh_hours: 24
+
+  # Directory where catalog JSON files are persisted between bot restarts.
+  cache_dir: "data/catalog_cache"
+
+# ---------------------------------------------------------------------------
 # Discord
 # ---------------------------------------------------------------------------
 discord:

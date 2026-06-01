@@ -8,15 +8,19 @@ Every cycle (random interval between interval_min and interval_max seconds):
   2. For each new listing:
      a. Check if already processed – skip if seen.
      b. Extract a card fingerprint from the title.
-     c. Look up a Cardmarket product URL via CardmarketResolver:
+     c. Try Cardmarket Product Catalog lookup (if enabled):
+        - Resolves price data directly from the S3 JSON files without any
+          browser request.  Falls through to the legacy browser pipeline when
+          the catalog does not contain the card.
+     d. (Fallback) Look up a Cardmarket product URL via CardmarketResolver:
         - DB lookup (learned mapping)
         - Constructed URL from fingerprint
         - If neither works → send to review queue
-     d. Scrape the Cardmarket product page.
-     e. Compare Vinted price against Cardmarket From price.
-     f. If profitable → send profit alert to deals channel.
-     g. If not profitable → skip silently.
-     h. Mark listing as seen.
+     e. (Fallback) Scrape the Cardmarket product page via Flaresolverr / Playwright.
+     f. Compare Vinted price against Cardmarket From price.
+     g. If profitable → send profit alert to deals channel.
+     h. If not profitable → skip silently.
+     i. Mark listing as seen.
   3. On Cardmarket scraping error → log to error channel, mark seen, continue.
 """
 
@@ -27,6 +31,7 @@ import dataclasses
 import random
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import discord
@@ -38,6 +43,7 @@ from database.db import Database
 from scraper.cardmarket import (
     CardmarketScrapeError,
     CardmarketScraper,
+    CardmarketPriceData,
     contains_psa,
     extract_psa_grade,
     generate_variant_urls,
@@ -45,6 +51,7 @@ from scraper.cardmarket import (
 )
 from scraper.vinted import VintedScraper
 from services.card_identifier import identify_card
+from services.cardmarket_catalog import CardmarketCatalog
 from services.cardmarket_resolver import CardmarketResolver
 from services.price_comparison import compare_prices
 from utils.card_analyzer import is_non_card_item
@@ -85,6 +92,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._vinted: VintedScraper | None = None
         self._cardmarket: CardmarketScraper | None = None
         self._resolver: CardmarketResolver | None = None
+        self._catalog: CardmarketCatalog | None = None
         self._camoufox: AsyncCamoufox | None = None
         self._browser = None
 
@@ -118,6 +126,26 @@ class MonitorCog(commands.Cog, name="Monitor"):
         # Initialise resolver with DB.
         self._resolver = CardmarketResolver(self.db)
         await self._resolver.load()
+
+        # Initialise Cardmarket Product Catalog service (if enabled).
+        # The catalog resolves prices from S3 JSON files without any browser
+        # request, replacing Flaresolverr / Playwright for the price-fetch step.
+        if settings.catalog_enabled:
+            self._catalog = CardmarketCatalog(
+                cache_dir=Path(settings.catalog_cache_dir),
+                refresh_hours=settings.catalog_refresh_hours,
+            )
+            try:
+                await self._catalog.load()
+                logger.info(
+                    "MonitorCog: catalog loaded (%d products)",
+                    self._catalog.product_count,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MonitorCog: catalog load failed (will fall back to browser scraping): %s",
+                    exc,
+                )
 
         # Start background loop.
         self._task = asyncio.create_task(self._monitor_loop(), name="monitor_loop")
@@ -231,6 +259,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
         """Execute one full scrape cycle over all configured search terms."""
         self._last_run = datetime.now(timezone.utc)
         logger.info("MonitorCog: starting scrape cycle")
+
+        # Periodic catalog refresh (if enabled and stale).
+        if self._catalog is not None:
+            try:
+                await self._catalog.refresh_if_stale()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MonitorCog: catalog refresh failed: %s", exc)
 
         # Periodic review-queue expiry (once per day, when configured).
         expiry_days = int(
@@ -474,9 +509,94 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     listing.title[:60],
                 )
 
-        # ── 3. Cardmarket URL resolution ──────────────────────────────────
+        # ── 3. Cardmarket Product Catalog lookup (fast path) ──────────────
+        # Try to resolve price data directly from the Cardmarket S3 Product
+        # Catalog + Price Guide JSON files.  This avoids any browser request
+        # (FlareSolverr / Playwright) and is therefore much faster and more
+        # reliable.  PSA-graded listings are excluded because the catalog only
+        # carries global market prices, not individual graded-card offers.
         matching_attempts: list[dict] = []
 
+        if (
+            self._catalog is not None
+            and self._catalog.is_loaded
+            and psa_grade is None
+        ):
+            catalog_price = self._catalog.find_and_get_price_data(
+                card_name=fingerprint.card_name or "",
+                collector_number=fingerprint.collector_number,
+                set_name=fingerprint.set_name,
+                set_code=fingerprint.set_code,
+            )
+            if catalog_price is not None and catalog_price.is_valid():
+                logger.info(
+                    "MonitorCog: catalog hit for '%s' → %s (€%.2f)",
+                    listing.title[:60],
+                    catalog_price.product_name,
+                    catalog_price.from_price,
+                )
+                cm_data = CardmarketPriceData(
+                    product_url=catalog_price.product_url or "",
+                    product_name=catalog_price.product_name,
+                    product_id=str(catalog_price.product_id),
+                    from_price=catalog_price.from_price,
+                    price_trend=catalog_price.price_trend,
+                    avg_30_days=catalog_price.avg_30_days,
+                    avg_7_days=catalog_price.avg_7_days,
+                    avg_1_day=catalog_price.avg_1_day,
+                    # Catalog prices are global (not Dutch-seller-filtered).
+                    dutch_sellers_available=True,
+                    set_name=catalog_price.set_name,
+                    card_number=catalog_price.card_number,
+                )
+                from services.cardmarket_resolver import ResolvedUrl  # noqa: PLC0415
+                resolved = ResolvedUrl(
+                    url=catalog_price.product_url or "",
+                    source="catalog",
+                    confidence=0.9,
+                )
+                # Store a mapping so future lookups can use the DB fast path.
+                await self._resolver.store_mapping(  # type: ignore[union-attr]
+                    fingerprint=fingerprint,
+                    raw_title=listing.title,
+                    cardmarket_url=cm_data.product_url,
+                    product_name=cm_data.product_name,
+                    product_id=cm_data.product_id,
+                    validated_by="catalog",
+                    confidence=resolved.confidence,
+                    listing_url=listing.url,
+                    seller_name=listing.seller_name,
+                    price=listing.price,
+                )
+                # Jump straight to price comparison (skip URL resolve + scrape).
+                comparison = compare_prices(listing, cm_data)
+                if comparison.is_profitable:
+                    self._listings_profitable += 1
+                    await self._send_profit_alert(
+                        listing, cm_data, comparison, resolved, fingerprint
+                    )
+                else:
+                    logger.info(
+                        "MonitorCog: not profitable – Vinted €%.2f vs CM €%.2f for '%s'",
+                        comparison.vinted_price,
+                        comparison.cardmarket_from_price,
+                        listing.title[:60],
+                    )
+                    await self._send_identified_not_profitable(
+                        listing, cm_data, comparison, resolved, fingerprint
+                    )
+                await self.db.mark_seen(
+                    listing_id=listing.listing_id,
+                    title=listing.title,
+                    url=listing.url,
+                    price=listing.price,
+                    currency=listing.currency,
+                    seller_name=listing.seller_name,
+                    fingerprint=fingerprint.fingerprint_hash(),
+                )
+                return
+
+        # ── 4. Cardmarket URL resolution (browser fallback) ───────────────
         resolved = await self._resolver.resolve(fingerprint, listing.title)  # type: ignore[union-attr]
 
         if resolved is None:
@@ -493,7 +613,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             return
 
-        # ── 3b. URL validation (for constructed URLs only) ────────────────
+        # ── 4b. URL validation (for constructed URLs only) ────────────────
         if resolved.needs_validation:
             url_ok = await validate_cardmarket_url(resolved.url)
             if not url_ok:
@@ -532,7 +652,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 )
                 return
 
-        # ── 4. Cardmarket scraping ────────────────────────────────────────
+        # ── 5. Cardmarket scraping ────────────────────────────────────────
         try:
             cm_data = await self._cardmarket.scrape_url(resolved.url)  # type: ignore[union-attr]
         except CardmarketScrapeError as exc:
@@ -597,7 +717,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 )
                 return
 
-        # ── 4b. PSA-specific listing price ────────────────────────────────
+        # ── 5b. PSA-specific listing price ────────────────────────────────
         # For PSA 9 and PSA 10 listings, attempt to find the price of the
         # first Cardmarket offer that has an MT (Mint) condition badge and a
         # description that matches the PSA grade exactly.  This replaces the
@@ -607,7 +727,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 resolved.url, psa_grade
             )
             if psa_price is not None:
-                from dataclasses import replace as _dc_replace
+                from dataclasses import replace as _dc_replace  # noqa: PLC0415
                 cm_data = _dc_replace(cm_data, from_price=psa_price)
                 logger.info(
                     "MonitorCog: using PSA %d MT listing price €%.2f for '%s'",
@@ -620,10 +740,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     psa_grade, listing.title[:60],
                 )
 
-        # ── 5. Price comparison ───────────────────────────────────────────
+        # ── 6. Price comparison ───────────────────────────────────────────
         comparison = compare_prices(listing, cm_data)
 
-        # ── 6. Store mapping if auto-constructed (now validated) ──────────
+        # ── 7. Store mapping if auto-constructed (now validated) ──────────
         if resolved.source == "constructed":
             await self._resolver.store_mapping(  # type: ignore[union-attr]
                 fingerprint=fingerprint,
@@ -638,7 +758,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 price=listing.price,
             )
 
-        # ── 7. Post profit alert or skip ──────────────────────────────────
+        # ── 8. Post profit alert or skip ──────────────────────────────────
         if comparison.is_profitable:
             self._listings_profitable += 1
             await self._send_profit_alert(listing, cm_data, comparison, resolved, fingerprint)
@@ -651,7 +771,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             await self._send_identified_not_profitable(listing, cm_data, comparison, resolved, fingerprint)
 
-        # ── 8. Mark as seen ───────────────────────────────────────────────
+        # ── 9. Mark as seen ───────────────────────────────────────────────
         await self.db.mark_seen(
             listing_id=listing.listing_id,
             title=listing.title,
