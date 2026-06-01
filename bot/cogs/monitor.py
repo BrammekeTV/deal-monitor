@@ -55,7 +55,7 @@ from services.cardmarket_catalog import CardmarketCatalog
 from services.cardmarket_resolver import CardmarketResolver
 from services.price_comparison import compare_prices
 from utils.card_analyzer import is_non_card_item
-from utils.card_analyzer import is_graded_listing, is_japanese_listing, is_lot_listing, has_pokemon_name
+from utils.card_analyzer import CardAnalyzer, is_graded_listing, is_japanese_listing, is_lot_listing, has_pokemon_name
 from utils.embed_builder import (
     build_error_embed,
     build_profit_alert_embed,
@@ -400,6 +400,28 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         # ── 1c. Lot / graded / Japanese pre-filters ───────────────────────
         if is_lot_listing(listing.title, listing.description or ""):
+            # Check whether it's an extremely cheap bulk lot (≤ €0.01/card).
+            # If so, forward it as a deal alert rather than discarding it.
+            combined_text = listing.title + " " + (listing.description or "")
+            count, _count_source = CardAnalyzer()._estimate_card_count(combined_text)
+            if count and count > 0:
+                price_per_card = listing.price / count
+                if price_per_card <= 0.01:
+                    logger.info(
+                        "MonitorCog: cheap bulk lot detected (€%.4f/card, %d cards) for '%s'",
+                        price_per_card, count, listing.title[:60],
+                    )
+                    await self._send_bulk_deal_alert(listing, count, price_per_card)
+                    await self.db.mark_seen(
+                        listing_id=listing.listing_id,
+                        title=listing.title,
+                        url=listing.url,
+                        price=listing.price,
+                        currency=listing.currency,
+                        seller_name=listing.seller_name,
+                        fingerprint=None,
+                    )
+                    return
             await self.db.add_review_item(
                 listing_id=listing.listing_id,
                 title=listing.title,
@@ -983,6 +1005,36 @@ class MonitorCog(commands.Cog, name="Monitor"):
         except Exception as exc:  # noqa: BLE001
             logger.debug("MonitorCog: expansion ID lookup failed for slug '%s': %s", slug, exc)
         return None
+
+    async def _send_bulk_deal_alert(
+        self,
+        listing: "Listing",
+        card_count: int,
+        price_per_card: float,
+    ) -> None:
+        """Post a bulk-lot deal embed to the deals channel."""
+        channel = self._get_deals_channel()
+        if channel is None:
+            return
+
+        embed = discord.Embed(
+            title="📦 Cheap Bulk Lot!",
+            colour=discord.Colour.gold(),
+        )
+        embed.add_field(name="Listing", value=f"[{listing.title[:80]}]({listing.url})", inline=False)
+        embed.add_field(name="Price", value=f"€{listing.price:.2f}", inline=True)
+        embed.add_field(name="Est. cards", value=str(card_count), inline=True)
+        embed.add_field(name="Price/card", value=f"€{price_per_card:.4f}", inline=True)
+        if listing.seller_name:
+            embed.set_footer(text=f"Seller: {listing.seller_name}")
+
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException as exc:
+            logger.error(
+                "MonitorCog: failed to post bulk deal alert for %s: %s",
+                listing.listing_id, exc,
+            )
 
     async def _send_profit_alert(
         self,

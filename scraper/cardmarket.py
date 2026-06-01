@@ -289,23 +289,23 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     # ---------------------------------------------------------------------------
     # EX Era
     # ---------------------------------------------------------------------------
-    "RS": "Ruby-Sapphire",
-    "SS": "Sandstorm",
-    "DR": "Dragon",
-    "MA": "Team-Magma-vs-Team-Aqua",
-    "HL": "Hidden-Legends",
-    "RG": "FireRed-LeafGreen",
-    "FR": "FireRed-LeafGreen",         # alternate alias
-    "TRR": "Team-Rocket-Returns",
-    "DX": "Deoxys",
-    "EM": "Emerald",
-    "UF": "Unseen-Forces",
-    "DS": "Delta-Species",
-    "LM": "Legend-Maker",
-    "HP": "Holon-Phantoms",
-    "CG": "Crystal-Guardians",
-    "DF": "Dragon-Frontiers",
-    "PK": "Power-Keepers",
+    "RS": "EX-Ruby-Sapphire",
+    "SS": "EX-Sandstorm",
+    "DR": "EX-Dragon",
+    "MA": "EX-Team-Magma-vs-Team-Aqua",
+    "HL": "EX-Hidden-Legends",
+    "RG": "EX-FireRed-LeafGreen",
+    "FR": "EX-FireRed-LeafGreen",      # alternate alias
+    "TRR": "EX-Team-Rocket-Returns",
+    "DX": "EX-Deoxys",
+    "EM": "EX-Emerald",
+    "UF": "EX-Unseen-Forces",
+    "DS": "EX-Delta-Species",
+    "LM": "EX-Legend-Maker",
+    "HP": "EX-Holon-Phantoms",
+    "CG": "EX-Crystal-Guardians",
+    "DF": "EX-Dragon-Frontiers",
+    "PK": "EX-Power-Keepers",
     # ---------------------------------------------------------------------------
     # Neo Era
     # ---------------------------------------------------------------------------
@@ -406,6 +406,29 @@ _PROMO_SLUG_PREFIX_OVERRIDE: dict[str, str] = {
     "BW": "BWBW",
 }
 
+# Set codes where the product slug uses the set code as a prefix on the card
+# number (e.g. EX-era cards: "Crystal Guardians 94/100" → slug "Jirachi-ex-CG94").
+# This matches Cardmarket's URL convention for older sets and special subsets.
+_SET_CODE_PREFIX_SETS: frozenset[str] = frozenset({
+    # EX Era
+    "RS", "SS", "DR", "MA", "HL", "RG", "FR", "TRR", "DX", "EM",
+    "UF", "DS", "LM", "HP", "CG", "DF", "PK",
+    # e2 / Neo Era expansion sets
+    "EX", "AQ", "SK",
+    # Neo Era
+    "N1", "N2", "N3", "N4",
+    # Base Set Era
+    "BS", "JU", "FO", "B2", "TR", "G1", "G2", "LC",
+    # Diamond & Pearl Era
+    "DP", "MT", "SW", "GE", "MD", "LA", "SF", "PL", "PLA", "PLAT",
+    "RR", "SV", "AR",
+    # HeartGold & SoulSilver Era
+    "HS", "UL", "UD", "TM", "CL",
+    # Black & White Era
+    "BLW", "EPO", "NVI", "NXD", "DEX", "DRX", "DRV", "BCR",
+    "PLS", "PLF", "PLB", "LTR",
+})
+
 
 def register_variant_hint(
     card_name: str,
@@ -481,13 +504,25 @@ def build_cardmarket_url(
     # Build the collector-number suffix.
     # Promo format:  "SVP 214" or "214"  → suffix = "SVP214" (set_code + bare_number)
     # Standard format: "125/197"          → suffix = "125"    (just the card number)
-    bare_num = re.sub(r"[^0-9]", "", collector_number.split("/")[0]) if collector_number else ""
+    # Subset format: "GG36/GG70"          → suffix = "CRZGG36" (set_code + letters + digits)
+    card_number_part = collector_number.split("/")[0].strip() if collector_number else ""
+    bare_num = re.sub(r"[^0-9]", "", card_number_part) if card_number_part else ""
 
-    if number_prefix is not None:
+    # Detect subset numbers that carry a letter prefix (e.g. "GG36", "TG09").
+    # These require the set code + subset prefix + digits in the product slug.
+    subset_m = re.match(r"^([A-Za-z]+)(\d+)$", card_number_part) if card_number_part else None
+
+    if subset_m:
+        # Subset card (e.g. GG36/GG70 → CRZGG36, TG09/TG30 → LORTG09).
+        sc_upper = set_code.upper()
+        sub_letters = subset_m.group(1).upper()
+        sub_digits = subset_m.group(2)
+        num_suffix = f"{sc_upper}{sub_letters}{sub_digits}"
+    elif number_prefix is not None:
         # Explicit prefix supplied by caller (learned from correction database).
         num_suffix = f"{number_prefix}{bare_num}" if bare_num else number_prefix
-    elif promo or "/" not in (collector_number or ""):
-        # Promo card: {card-slug}-{set_code_prefix}{number}
+    elif promo or "/" not in (collector_number or "") or set_code.upper() in _SET_CODE_PREFIX_SETS:
+        # Promo card or older-era set that uses {set_code}{number} in the slug.
         # Some sets (e.g. BW Black Star Promos) double the set code in the slug.
         sc_upper = set_code.upper()
         promo_prefix = _PROMO_SLUG_PREFIX_OVERRIDE.get(sc_upper, sc_upper)

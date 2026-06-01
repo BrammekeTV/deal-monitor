@@ -364,6 +364,8 @@ _NOT_PROMO_TOKENS: frozenset[str] = frozenset({
 _SUBSET_PREFIX_TO_SET: dict[str, tuple[str, str]] = {
     # Crown Zenith Galarian Gallery cards (GG01–GG70) only appear in Crown Zenith.
     "GG": ("CRZ", "Crown Zenith"),
+    # Trainer Gallery cards (TG01–TG30) appear in Lost Origin.
+    "TG": ("LOR", "Lost Origin"),
 }
 
 # ---------------------------------------------------------------------------
@@ -498,6 +500,25 @@ _KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
         ("crystal guardians", "Crystal Guardians"),
         ("dragon frontiers", "Dragon Frontiers"),
         ("power keepers", "Power Keepers"),
+        # EX Era – full names as they appear in Vinted titles (with "EX " prefix)
+        ("ex ruby & sapphire", "Ruby & Sapphire"),
+        ("ex ruby sapphire", "Ruby & Sapphire"),
+        ("ex sandstorm", "Sandstorm"),
+        ("ex dragon", "Dragon"),
+        ("ex team magma vs team aqua", "Team Magma vs Team Aqua"),
+        ("ex hidden legends", "Hidden Legends"),
+        ("ex firered & leafgreen", "FireRed & LeafGreen"),
+        ("ex firered leafgreen", "FireRed & LeafGreen"),
+        ("ex team rocket returns", "Team Rocket Returns"),
+        ("ex deoxys", "Deoxys"),
+        ("ex emerald", "Emerald"),
+        ("ex unseen forces", "Unseen Forces"),
+        ("ex delta species", "Delta Species"),
+        ("ex legend maker", "Legend Maker"),
+        ("ex holon phantoms", "Holon Phantoms"),
+        ("ex crystal guardians", "Crystal Guardians"),
+        ("ex dragon frontiers", "Dragon Frontiers"),
+        ("ex power keepers", "Power Keepers"),
         # Neo Era
         ("neo genesis", "Neo Genesis"),
         ("neo discovery", "Neo Discovery"),
@@ -918,8 +939,9 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
 
         # Strip any leading separator characters left by language-prefix removal
         # (e.g. "- Xatu" → "Xatu" when "Pokémon " was stripped but the dash
-        # that followed it was left behind).
-        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean)
+        # that followed it was left behind). Also strip trailing separators
+        # (e.g. "Jirachi ex -" → "Jirachi ex" when a dash precedes the number).
+        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean).rstrip(" \t-–—|:,")
 
         # Card name = text before number, minus any trailing rarity code.
         raw_name = _strip_rarity_suffixes(before_clean)
@@ -947,6 +969,22 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 result["card_name_matched"] = matched2
                 set_code, set_name = _parse_set_info(set_frag)
 
+        # Last-resort fallback: when the card name still did not match and there
+        # is no set info, check whether the last word of before_clean is a known
+        # set code that got stuck in the name (e.g. "Audino JTG 124/159" where
+        # "JTG" is a set code, not part of the Pokémon name).
+        if not result.get("card_name_matched") and set_code is None and set_name is None:
+            words = re.split(r"\s+", before_clean.strip())
+            if len(words) >= 2 and words[-1].upper() in KNOWN_SET_CODES:
+                trailing_code = words[-1]
+                new_before = " ".join(words[:-1])
+                raw_name3 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", new_before))
+                card_name3, matched3 = _match_pokemon_name(raw_name3)
+                if matched3:
+                    result["card_name"] = card_name3
+                    result["card_name_matched"] = True
+                    set_code = trailing_code
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -960,7 +998,7 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after = text[hash_match.end() :].strip()
 
         before_clean, set_from_before = _split_set_from_before(before)
-        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean)
+        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean).rstrip(" \t-–—|:,")
 
         raw_name = _strip_rarity_suffixes(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
@@ -980,6 +1018,19 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 result["card_name"] = card_name2
                 result["card_name_matched"] = matched2
                 set_code, set_name = _parse_set_info(set_frag)
+
+        # Last-resort: strip trailing set code from card name when unmatched.
+        if not result.get("card_name_matched") and set_code is None and set_name is None:
+            words = re.split(r"\s+", before_clean.strip())
+            if len(words) >= 2 and words[-1].upper() in KNOWN_SET_CODES:
+                trailing_code = words[-1]
+                new_before = " ".join(words[:-1])
+                raw_name3 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", new_before))
+                card_name3, matched3 = _match_pokemon_name(raw_name3)
+                if matched3:
+                    result["card_name"] = card_name3
+                    result["card_name_matched"] = True
+                    set_code = trailing_code
 
         result["set_code"] = set_code
         result["set_name"] = set_name
@@ -1073,6 +1124,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 result["set_code"] = set_code
                 result["set_name"] = set_name
 
+    # Last-resort: if the title ends with a bare integer (e.g. "Great Tusk EX 246"),
+    # try treating it as the collector number and re-match the card name from the
+    # remainder. Skips numbers that look like calendar years (1900–2099).
+    if not result.get("card_name_matched") and result.get("collector_number") is None:
+        bare_tail = re.search(r"\s+(\d{1,4})\s*$", raw_name)
+        if bare_tail:
+            num_candidate = bare_tail.group(1)
+            if not re.match(r"^(?:19|20)\d{2}$", num_candidate):
+                name_candidate = raw_name[: bare_tail.start()].strip()
+                card_name3, matched3 = _match_pokemon_name(name_candidate)
+                if matched3:
+                    result["card_name"] = card_name3
+                    result["card_name_matched"] = True
+                    result["collector_number"] = num_candidate
+
     return result
 
 
@@ -1087,6 +1153,16 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     text = text.strip()
     if not text:
         return None, None
+
+    # Check full text against known set names FIRST so that multi-word names
+    # that start with a token that is also a set code (e.g. "EX Crystal Guardians"
+    # where "EX" is both a known set code and part of the EX-era set name) are
+    # resolved correctly. Only use _find_known_set_name (prefix match) here,
+    # not _search_known_set_name, so we don't swallow "OBF Obsidian Flames"
+    # (where "obsidian flames" is found as a substring but "OBF" is the set code).
+    quick_known = _find_known_set_name(text)
+    if quick_known:
+        return None, quick_known
 
     # If the text is entirely composed of rarity/variant tokens (e.g.
     # "Rare Holo", "Holo", "Ultra Rare"), it is not a set name — discard it.

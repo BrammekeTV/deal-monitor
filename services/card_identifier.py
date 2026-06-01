@@ -94,6 +94,20 @@ _LANGUAGE_MAP: dict[str, str] = {
     "ko": "Korean",
     "ru": "Russian",
     "nl": "Dutch",
+    # Three-letter ISO 639-2/T codes used by some Vinted sellers
+    "eng": "English",
+    "jpn": "Japanese",
+    "deu": "German",
+    "ger": "German",
+    "fra": "French",
+    "fre": "French",
+    "por": "Portuguese",
+    "spa": "Spanish",
+    "ita": "Italian",
+    "kor": "Korean",
+    "rus": "Russian",
+    "nld": "Dutch",
+    "dut": "Dutch",
 }
 # Build regex with longer keys first to avoid short codes shadowing full words.
 _sorted_lang_keys = sorted(_LANGUAGE_MAP.keys(), key=len, reverse=True)
@@ -127,6 +141,20 @@ _CONDITION_MAP: dict[str, int] = {
     "poor": 7,
     "(po)": 7,
     "po": 7,
+    # French condition phrases (Vinted France).
+    # "état mint" / "etat mint" = Cardmarket Near Mint (Vinted "Mint" = NM for non-graded).
+    "état mint": 2,
+    "etat mint": 2,
+    # "très bon état" / "tres bon etat" = Cardmarket Good (seller self-assessment).
+    "très bon état": 4,
+    "tres bon état": 4,
+    "très bon etat": 4,
+    "tres bon etat": 4,
+    # "bon état" = Cardmarket Light Played.
+    "bon état": 5,
+    "bon etat": 5,
+    # "comme neuf" (like new) = Cardmarket Near Mint.
+    "comme neuf": 2,
 }
 # Multi-word phrases must be checked before single-word tokens.
 _CONDITION_RE = re.compile(
@@ -141,7 +169,9 @@ _CONDITION_RE = re.compile(
     # too ambiguous with card types – EX is handled by the dash-separator rule below)
     r"|\b(nm|gd|lp|pl|po)\b"
     # EX as a dash-delimited segment in a title, e.g. "Aquapolis - EX - Pokemon TCG"
-    r"|(?:^|\s+-\s+)(ex)(?=\s+-|\s*,|\s*$)",
+    r"|(?:^|\s+-\s+)(ex)(?=\s+-|\s*,|\s*$)"
+    # French full-condition phrases (Vinted France).
+    r"|\b((?:tr[eè]s\s+bon|bon)\s+[eé]tat|[eé]tat\s+mint|comme\s+neuf)\b",
     re.I,
 )
 
@@ -340,7 +370,7 @@ def identify_card(title: str, description: str | None = None) -> CardFingerprint
         cm = _CONDITION_RE.search(translate_listing_title(description))
     if cm:
         raw_condition = (
-            cm.group(1) or cm.group(2) or cm.group(3) or cm.group(4) or cm.group(5) or ""
+            cm.group(1) or cm.group(2) or cm.group(3) or cm.group(4) or cm.group(5) or cm.group(6) or ""
         ).strip().lower()
         # Normalise "near mint" / "light played" spacing variants.
         raw_condition = re.sub(r"\s+", " ", raw_condition)

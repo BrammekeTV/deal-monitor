@@ -100,6 +100,35 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------
+    # /catalog  — mapping counts per set
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="catalog",
+        description="[Admin] Show how many learned mappings exist per set",
+    )
+    @_ADMIN_ONLY
+    async def catalog_summary(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        rows = await self.db.get_mapping_counts_per_set()
+
+        if not rows:
+            await interaction.followup.send("No learned mappings yet.", ephemeral=True)
+            return
+
+        total = sum(r["count"] for r in rows)
+        lines = [f"`{r['set_code']}` — **{r['count']}**" for r in rows[:30]]
+        if len(rows) > 30:
+            lines.append(f"… and {len(rows) - 30} more sets")
+
+        embed = discord.Embed(
+            title=f"Mappings per Set ({total} total across {len(rows)} sets)",
+            description="\n".join(lines),
+            colour=discord.Colour.blurple(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
     # /catalog_product_ids  — list all mapped Product IDs
     # ------------------------------------------------------------------
 
