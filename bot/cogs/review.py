@@ -371,35 +371,128 @@ class ReviewCog(commands.Cog, name="Review"):
             )
             return
 
-        # Build a summary embed from the scraped data.
-        embed = discord.Embed(
-            title=f"🃏 {cm_data.product_name or 'Cardmarket product'}",
-            url=normalised_url,
-            colour=0x00AAFF,
+        listing_id = review_item["listing_id"]
+        listing_title = review_item["title"]
+        listing_url = review_item["url"]
+        listing_price = float(review_item.get("price") or 0.0)
+        listing_currency = review_item.get("currency") or "EUR"
+
+        # ── PSA-specific listing price (mirrors _process_review_reply) ────────
+        combined_text = listing_title + " " + (review_item.get("description") or "")
+        psa_grade: int | None = None
+        if contains_psa(combined_text):
+            psa_grade = extract_psa_grade(combined_text)
+            if psa_grade is not None:
+                logger.info(
+                    "ReviewCog (unidentified): PSA %d detected in listing '%s'",
+                    psa_grade, listing_title[:60],
+                )
+
+        if psa_grade is not None and psa_grade >= 9:
+            from dataclasses import replace as _dc_replace
+            psa_price = await monitor.cardmarket_scraper.scrape_psa_listing_price(
+                normalised_url, psa_grade
+            )
+            if psa_price is not None:
+                cm_data = _dc_replace(cm_data, from_price=psa_price)
+
+        # ── Price comparison ──────────────────────────────────────────────────
+        from scraper.base import Listing
+        from services.price_comparison import compare_prices
+
+        stub_listing = Listing(
+            listing_id=listing_id,
+            title=listing_title,
+            price=listing_price,
+            currency=listing_currency,
+            url=listing_url,
+            seller_name=review_item.get("seller_name"),
         )
-        if cm_data.from_price is not None:
-            embed.add_field(name="From price", value=f"€{cm_data.from_price:.2f}", inline=True)
-        if cm_data.price_trend is not None:
-            embed.add_field(name="Trend", value=f"€{cm_data.price_trend:.2f}", inline=True)
-        if cm_data.avg_30_days is not None:
-            embed.add_field(name="Avg 30d", value=f"€{cm_data.avg_30_days:.2f}", inline=True)
+        comparison = compare_prices(stub_listing, cm_data)
+
+        # ── Store learning mapping ────────────────────────────────────────────
+        fingerprint = identify_card(listing_title)
+        if monitor.resolver:
+            await monitor.resolver.store_mapping(
+                fingerprint=fingerprint,
+                raw_title=listing_title,
+                cardmarket_url=cm_data.product_url or normalised_url,
+                product_name=cm_data.product_name,
+                product_id=cm_data.product_id,
+                validated_by=f"user:{message.author.display_name}",
+                confidence=1.0,
+                listing_url=listing_url,
+                seller_name=review_item.get("seller_name"),
+                price=listing_price,
+            )
+
+        # ── Mark review as resolved ───────────────────────────────────────────
+        await self.db.resolve_review_item(
+            listing_id,
+            cardmarket_url=cm_data.product_url or normalised_url,
+            resolved_by=message.author.display_name,
+        )
+
+        # ── Build and post the full resolved embed ────────────────────────────
+        result_embed = build_review_resolved_embed(
+            listing_title=listing_title,
+            listing_url=listing_url,
+            listing_price=listing_price,
+            listing_currency=listing_currency,
+            cm_data=cm_data,
+            comparison=comparison,
+            resolved_by=message.author.display_name,
+        )
+        # Append slug info so the user knows what was extracted from the URL.
+        slug_lines = []
         if product_slug:
-            embed.add_field(name="Product slug", value=f"`{product_slug}`", inline=True)
+            slug_lines.append(f"**Product slug:** `{product_slug}`")
         if set_slug:
-            embed.add_field(name="Set slug", value=f"`{set_slug}`", inline=True)
-        embed.set_footer(text="Cardmarket data · step 1 of 2")
+            slug_lines.append(f"**Set slug:** `{set_slug}`")
+        if slug_lines:
+            result_embed.add_field(
+                name="🔖 URL slugs",
+                value="\n".join(slug_lines),
+                inline=False,
+            )
+        result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
 
         try:
-            bot_msg = await message.reply(embed=embed, mention_author=False)
+            bot_msg = await message.reply(embed=result_embed, mention_author=False)
         except discord.HTTPException as exc:
             logger.error("ReviewCog (unidentified): failed to post step-1 embed: %s", exc)
             return
 
-        # Ask the user for the idProduct.
+        # ── If profitable, post to deals channel ─────────────────────────────
+        if comparison.is_profitable:
+            from utils.embed_builder import build_profit_alert_embed
+
+            profit_embed = build_profit_alert_embed(
+                stub_listing,
+                cm_data,
+                comparison,
+                match_confidence=1.0,
+                match_source="manual",
+            )
+            deals_channel = self._get_deals_channel()
+            if deals_channel:
+                try:
+                    await deals_channel.send(embed=profit_embed)
+                    logger.info(
+                        "ReviewCog (unidentified): posted profitable listing from unidentified: %s",
+                        listing_title[:60],
+                    )
+                except discord.HTTPException as exc:
+                    logger.error(
+                        "ReviewCog (unidentified): failed to post profit embed to deals channel: %s",
+                        exc,
+                    )
+
+        # ── Ask the user for idProduct to complete catalog slug mappings ──────
         try:
             prompt_msg = await bot_msg.reply(
-                "Please reply to **this message** with the Cardmarket **`idProduct`** "
-                f"for `{product_slug or normalised_url}` so it can be mapped.\n"
+                "*(Optional)* Reply to **this message** with the Cardmarket **`idProduct`** "
+                f"for `{product_slug or normalised_url}` to store the catalog ID→slug mapping.\n"
                 "You can find `idProduct` in the Cardmarket page source or API response.",
                 mention_author=False,
             )
@@ -417,8 +510,8 @@ class ReviewCog(commands.Cog, name="Review"):
             "submitted_by": message.author,
         }
         logger.info(
-            "ReviewCog (unidentified): awaiting idProduct for msg %s (product_slug=%r)",
-            prompt_msg.id, product_slug,
+            "ReviewCog (unidentified): resolved listing '%s', awaiting optional idProduct for msg %s (product_slug=%r)",
+            listing_title[:60], prompt_msg.id, product_slug,
         )
 
     async def _handle_unidentified_product_id_reply(
@@ -428,9 +521,9 @@ class ReviewCog(commands.Cog, name="Review"):
     ) -> None:
         """Step 2 of the unidentified-channel flow: user supplied an idProduct.
 
-        Looks up the product in the catalog, posts prices.json info, stores
-        the idProduct → product_slug and idExpansion → set_slug mappings, then
-        resolves the review queue item.
+        Looks up the product in the catalog, posts prices.json info, and stores
+        the idProduct → product_slug and idExpansion → set_slug catalog mappings.
+        (The listing is already resolved and the deal was already sent in step 1.)
         """
         # Parse idProduct from the message (first integer found).
         product_id_match = re.search(r"\b(\d{4,9})\b", message.content)
@@ -447,7 +540,6 @@ class ReviewCog(commands.Cog, name="Review"):
         cm_url: str = pending["cm_url"]
         product_slug: str | None = pending["product_slug"]
         set_slug: str | None = pending["set_slug"]
-        submitted_by = pending.get("submitted_by") or message.author
 
         logger.info(
             "ReviewCog (unidentified): step-2 idProduct=%d slug=%r set=%r (submitted by %s)",
@@ -527,7 +619,7 @@ class ReviewCog(commands.Cog, name="Review"):
                 inline=False,
             )
 
-        embed.set_footer(text=f"Resolved by {message.author.display_name} · step 2 of 2")
+        embed.set_footer(text=f"Catalog mapping stored by {message.author.display_name} · step 2 of 2")
 
         try:
             await message.reply(embed=embed, mention_author=False)
@@ -543,38 +635,13 @@ class ReviewCog(commands.Cog, name="Review"):
             cardmarket_url=cm_url,
         )
 
-        # Store the card mapping in the learning database.
-        listing_id = review_item["listing_id"]
-        listing_title = review_item["title"]
-        fingerprint = identify_card(listing_title)
-        cm_data = pending.get("cm_data")
-        if monitor and monitor.resolver and cm_data:
-            await monitor.resolver.store_mapping(
-                fingerprint=fingerprint,
-                raw_title=listing_title,
-                cardmarket_url=cm_data.product_url or cm_url,
-                product_name=cm_data.product_name,
-                product_id=str(product_id),
-                validated_by=f"user:{submitted_by.display_name}",
-                confidence=1.0,
-                listing_url=review_item["url"],
-                seller_name=review_item.get("seller_name"),
-                price=float(review_item.get("price") or 0.0),
-            )
-
-        # Resolve the review queue item.
-        await self.db.resolve_review_item(
-            listing_id,
-            cardmarket_url=cm_url,
-            resolved_by=message.author.display_name,
-        )
-
         # Remove from pending state.
         ref_id = message.reference.message_id  # type: ignore[union-attr]
         self._pending_product_ids.pop(ref_id, None)
 
+        listing_title = review_item["title"]
         logger.info(
-            "ReviewCog (unidentified): resolved listing '%s' idProduct=%d idExpansion=%s "
+            "ReviewCog (unidentified): stored catalog mappings for '%s' idProduct=%d idExpansion=%s "
             "slug=%r set=%r by %s",
             listing_title[:60], product_id, id_expansion, product_slug, set_slug,
             message.author.display_name,
