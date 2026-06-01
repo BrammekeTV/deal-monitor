@@ -100,57 +100,94 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------
-    # /catalog_ids  — list all mapped Product and Expansion IDs
+    # /catalog_product_ids  — list all mapped Product IDs
     # ------------------------------------------------------------------
 
     @app_commands.command(
-        name="catalog_ids",
-        description="[Admin] List all mapped Cardmarket Product and Expansion IDs",
+        name="catalog_product_ids",
+        description="[Admin] List all mapped Cardmarket Product IDs",
     )
     @_ADMIN_ONLY
-    async def list_catalog_ids(self, interaction: discord.Interaction) -> None:
+    async def list_catalog_product_ids(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         rows = await self.db.get_all_catalog_id_slugs()
+        product_rows = [r for r in rows if r.get("id_product")]
 
-        if not rows:
-            await interaction.followup.send("No mapped IDs found yet.", ephemeral=True)
+        if not product_rows:
+            await interaction.followup.send("No mapped Product IDs found yet.", ephemeral=True)
             return
 
-        product_rows = [r for r in rows if r.get("id_product")]
-        expansion_rows = [r for r in rows if r.get("id_expansion")]
+        lines = [
+            f"`[{r['id']}]` `{r['id_product']}` — `{r['product_slug'] or '—'}`"
+            for r in product_rows[:20]
+        ]
+        if len(product_rows) > 20:
+            lines.append(f"… and {len(product_rows) - 20} more")
 
         embed = discord.Embed(
-            title=f"Mapped Cardmarket IDs ({len(rows)} total)",
+            title=f"🃏 Mapped Product IDs ({len(product_rows)} total)",
             colour=discord.Colour.green(),
         )
-
-        if product_rows:
-            lines = [
-                f"`{r['id_product']}` — `{r['product_slug'] or '—'}`"
-                for r in product_rows[:20]
-            ]
-            if len(product_rows) > 20:
-                lines.append(f"… and {len(product_rows) - 20} more")
-            embed.add_field(
-                name=f"🃏 Product IDs ({len(product_rows)})",
-                value="\n".join(lines),
-                inline=False,
-            )
-
-        if expansion_rows:
-            lines = [
-                f"`{r['id_expansion']}` — `{r['set_slug'] or '—'}`"
-                for r in expansion_rows[:20]
-            ]
-            if len(expansion_rows) > 20:
-                lines.append(f"… and {len(expansion_rows) - 20} more")
-            embed.add_field(
-                name=f"📦 Expansion IDs ({len(expansion_rows)})",
-                value="\n".join(lines),
-                inline=False,
-            )
-
+        embed.add_field(name="Row ID · Product ID · Slug", value="\n".join(lines), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /catalog_expansion_ids  — list all mapped Expansion IDs
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="catalog_expansion_ids",
+        description="[Admin] List all mapped Cardmarket Expansion IDs",
+    )
+    @_ADMIN_ONLY
+    async def list_catalog_expansion_ids(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        rows = await self.db.get_all_catalog_id_slugs()
+        expansion_rows = [r for r in rows if r.get("id_expansion")]
+
+        if not expansion_rows:
+            await interaction.followup.send("No mapped Expansion IDs found yet.", ephemeral=True)
+            return
+
+        lines = [
+            f"`[{r['id']}]` `{r['id_expansion']}` — `{r['set_slug'] or '—'}`"
+            for r in expansion_rows[:20]
+        ]
+        if len(expansion_rows) > 20:
+            lines.append(f"… and {len(expansion_rows) - 20} more")
+
+        embed = discord.Embed(
+            title=f"📦 Mapped Expansion IDs ({len(expansion_rows)} total)",
+            colour=discord.Colour.blue(),
+        )
+        embed.add_field(name="Row ID · Expansion ID · Slug", value="\n".join(lines), inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /delete_catalog_id  — remove a catalog ID mapping by row ID
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="delete_catalog_id",
+        description="[Admin] Delete a catalog ID mapping by its row ID",
+    )
+    @app_commands.describe(row_id="The row ID of the catalog mapping to delete (shown in catalog_product_ids / catalog_expansion_ids)")
+    @_ADMIN_ONLY
+    async def delete_catalog_id(
+        self, interaction: discord.Interaction, row_id: int
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        deleted = await self.db.delete_catalog_id_slug(row_id)
+        if deleted:
+            await interaction.followup.send(
+                f"✅ Catalog ID mapping row `{row_id}` deleted.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ No catalog ID mapping with row ID `{row_id}` found.",
+                ephemeral=True,
+            )
 
     # ------------------------------------------------------------------
     # /delete_mapping  — remove a mapping by ID

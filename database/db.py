@@ -896,6 +896,15 @@ class Database:
             row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def delete_catalog_id_slug(self, row_id: int) -> bool:
+        """Delete a catalog_id_slugs row by its primary key.  Returns True if a row was deleted."""
+        async with self._lock:
+            cur = await self._conn.execute(  # type: ignore[union-attr]
+                "DELETE FROM catalog_id_slugs WHERE id = ?", (row_id,)
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            return cur.rowcount > 0
+
     # ------------------------------------------------------------------
     # Review queue maintenance
     # ------------------------------------------------------------------
