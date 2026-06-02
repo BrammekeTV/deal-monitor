@@ -986,6 +986,28 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name_matched"] = True
                     set_code = trailing_code
 
+        # Inverted-format fallback: "[Set Name] [Number] [Card Name] [extra]"
+        # Handles listings where the seller places the set name before the
+        # collector number, e.g. "Ascended heroes 40/217 golduck ball&normal".
+        # Triggers only when the card name was not matched AND the entire
+        # before_clean text is a known set name AND there is text after the number.
+        if not result.get("card_name_matched") and set_code is None and set_name is None:
+            before_as_set = _find_known_set_name(before_clean)
+            if before_as_set and after_useful:
+                # Try to match a Pokémon name from the start of after_useful,
+                # testing progressively fewer words (longest phrase first).
+                after_words = re.split(r"\s+", after_useful.strip())
+                for end in range(len(after_words), 0, -1):
+                    candidate = " ".join(after_words[:end])
+                    card_name_cand, matched_cand = _match_pokemon_name(candidate)
+                    if matched_cand:
+                        result["card_name"] = card_name_cand
+                        result["card_name_matched"] = True
+                        set_code_cand, set_name_cand = _parse_set_info(before_clean)
+                        set_code = set_code_cand
+                        set_name = set_name_cand or before_as_set
+                        break
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
