@@ -75,6 +75,14 @@ cardmarket:
   # Matches below this score are sent to the review queue.
   fuzzy_threshold: 80.0
 
+  # When enabled, the bot will search Cardmarket directly for cards not found
+  # in the catalog or learning database.  Correct matches are stored in the
+  # learning database automatically so future lookups skip the search step.
+  # Use this to "train" the bot when starting out with an empty learning DB.
+  # Disabled by default because it requires a browser request per unrecognised
+  # listing and may be slow.
+  search_training: false
+
 # ---------------------------------------------------------------------------
 # Cardmarket Product Catalog (S3 bulk download)
 # ---------------------------------------------------------------------------

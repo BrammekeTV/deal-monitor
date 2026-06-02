@@ -1493,6 +1493,75 @@ class CardmarketScraper:
         return price
 
     # ------------------------------------------------------------------
+    # Training: search for a product URL by query string
+    # ------------------------------------------------------------------
+
+    async def search_product_url(self, query: str) -> str | None:
+        """Search Cardmarket for *query* and return the first matching product URL.
+
+        Uses FlareSolverr when available, with Playwright as a fallback.
+        Returns ``None`` when no product page is found.
+        """
+        from config.settings import settings as _settings  # noqa: PLC0415
+        search_url = _CM_SEARCH_URL.format(query=quote_plus(query))
+        logger.info("Cardmarket: training search for '%s'", query)
+
+        # ── FlareSolverr path ─────────────────────────────────────────────
+        fs_search_html = await self._fetch_via_flaresolverr(search_url)
+        if fs_search_html:
+            product_url = _extract_first_product_url_from_html(fs_search_html)
+            if product_url:
+                logger.debug(
+                    "Cardmarket [FlareSolverr]: training found %s for '%s'",
+                    product_url, query,
+                )
+                return product_url
+            if _settings.flaresolverr_url and not _settings.playwright_fallback:
+                logger.info(
+                    "Cardmarket: training – FlareSolverr found no product link for '%s' "
+                    "and Playwright fallback is disabled",
+                    query,
+                )
+                return None
+            logger.warning(
+                "Cardmarket [FlareSolverr]: training – no product link for '%s' "
+                "– falling back to Playwright",
+                query,
+            )
+        elif _settings.flaresolverr_url and not _settings.playwright_fallback:
+            logger.info(
+                "Cardmarket: training – FlareSolverr returned no HTML for '%s' "
+                "and Playwright fallback is disabled",
+                query,
+            )
+            return None
+
+        # ── Playwright fallback ───────────────────────────────────────────
+        context = await self._new_context()
+        page = await context.new_page()
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
+            await self._accept_cookies(page)
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+            product_url = await self._find_first_product_url(page)
+            if not product_url:
+                logger.warning("Cardmarket: training – no product link found for '%s'", query)
+                return None
+            logger.debug(
+                "Cardmarket: training – found product URL %s for '%s'",
+                product_url, query,
+            )
+            return product_url
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cardmarket: training search error for '%s': %s", query, exc)
+            return None
+        finally:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ------------------------------------------------------------------
     # Legacy search-based API (kept for backwards compatibility)
     # ------------------------------------------------------------------
 
