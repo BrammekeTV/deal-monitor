@@ -313,9 +313,9 @@ class TestPokemonNameMatching:
         assert info["card_name_matched"] is True
 
     def test_unknown_name_not_matched(self):
-        """A made-up name should still be returned but marked as not matched."""
+        """A made-up name has no card_name returned and is marked as not matched."""
         info = extract_card_info("Fictosaur ex 001/100 OBF Obsidian Flames")
-        assert info["card_name"] == "Fictosaur ex"
+        assert info["card_name"] is None
         assert info["card_name_matched"] is False
 
 
@@ -361,14 +361,14 @@ class TestNoisyTitleNoCollectorNumber:
         assert "noble victories" in info["set_name"].lower()
 
     def test_pokemon_name_before_grade_extracted(self):
-        """'Stargazer Pikachu & Friends CGC 9 ...' → card_name preserves full name."""
+        """'Stargazer Pikachu & Friends CGC 9 ...' → no card_name since it is not a plain Pokemon name."""
         title = (
             "Pokemon Stargazer Pikachu & Friends CGC 9 "
             "Astronomical Observatory 2025 Rare Japan"
         )
         info = extract_card_info(title)
-        assert info["card_name"] == "Stargazer Pikachu & Friends"
-        assert info["card_name_matched"] is True
+        assert info["card_name"] is None
+        assert info["card_name_matched"] is False
 
     def test_grade_match_captured(self):
         """Grade should still be captured by card_identifier, not card_analyzer."""

@@ -878,9 +878,8 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
             parts.append(found_suffix)
         return " ".join(parts), True
 
-    # No match – return the original (cleaned) text as-is.
-    original = " ".join(text.split()).strip()
-    return original or None, False
+    # No match – return None so only validated Pokemon names are used.
+    return None, False
 
 
 def _verify_pokemon_in_text(text: str) -> bool:
@@ -1212,16 +1211,18 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["set_name"] = set_name
                     return result
 
-            result["card_name"] = candidate
-            result["card_name_matched"] = True
-            # Strip any leading year from the remainder, then try set info.
-            if remainder:
-                remainder_clean = re.sub(r"\s+", " ", _YEAR_BREAK_RE.sub("", remainder, count=1)).strip()
-                if remainder_clean:
-                    set_code, set_name = _parse_set_info(remainder_clean)
-                    result["set_code"] = set_code
-                    result["set_name"] = set_name
-            return result
+            cand_name_bp, cand_ok_bp = _match_pokemon_name(candidate)
+            if cand_ok_bp:
+                result["card_name"] = cand_name_bp
+                result["card_name_matched"] = True
+                # Strip any leading year from the remainder, then try set info.
+                if remainder:
+                    remainder_clean = re.sub(r"\s+", " ", _YEAR_BREAK_RE.sub("", remainder, count=1)).strip()
+                    if remainder_clean:
+                        set_code, set_name = _parse_set_info(remainder_clean)
+                        result["set_code"] = set_code
+                        result["set_name"] = set_name
+                return result
 
     # Fallback: no break point found, or no Pokémon name in the candidate.
     card_name, matched = _match_pokemon_name(raw_name)
