@@ -464,6 +464,7 @@ def build_review_resolved_embed(
     cm_data: "CardmarketPriceData",
     comparison: "ComparisonResult",
     resolved_by: str,
+    fingerprint: "CardFingerprint | None" = None,
 ) -> discord.Embed:
     """Build a confirmation embed after a user supplies the correct Cardmarket URL."""
     colour = _COLOUR_PROFIT if comparison.is_profitable else _COLOUR_NEUTRAL
@@ -492,9 +493,13 @@ def build_review_resolved_embed(
 
     cm_lines = [
         f"**Product:** {cm_data.product_name or 'Unknown'}",
+    ]
+    if fingerprint and fingerprint.condition:
+        cm_lines.append(f"**Condition filter:** {fingerprint.condition}")
+    cm_lines.extend([
         f"**URL:** [View on Cardmarket]({cm_data.product_url})",
         f"**From Price:** €{cm_data.from_price:.2f}",
-    ]
+    ])
     if cm_data.price_trend:
         cm_lines.append(f"**Price Trend:** €{cm_data.price_trend:.2f}")
     if cm_data.avg_30_days:
