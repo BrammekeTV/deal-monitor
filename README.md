@@ -142,6 +142,10 @@ docker-compose logs -f
 | Command | Description |
 |---|---|
 | `/status` | Show scrape stats and next-run time |
+| `/check_listing url` | Fetch a Vinted URL and show profitability + Cardmarket data on demand |
+| `/pause` | Pause the monitoring loop |
+| `/resume` | Resume the monitoring loop |
+| `/run_cycle` | Manually trigger one scrape cycle |
 | `/set_filter key value` | Override a filter at runtime |
 | `/get_filters` | List all active overrides |
 | `/del_filter key` | Remove an override |
