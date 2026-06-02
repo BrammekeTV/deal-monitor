@@ -14,6 +14,15 @@ def test_non_card_item_keywords_are_filtered() -> None:
     assert is_non_card_item("Gameboy - Pokémon Yellow") is True
 
 
+def test_non_card_item_ignores_description() -> None:
+    # Sellers commonly mention accessories in descriptions; this must not
+    # cause a valid card listing to be rejected as a non-card item.
+    assert is_non_card_item(
+        "Pikachu (M23 006) NM McDonald's Match Battle 2023",
+        "Shipped in a toploader with a soft sleeve",
+    ) is False
+
+
 def test_lot_listing_patterns_are_filtered() -> None:
     assert is_lot_listing("Lot de 100 cartes Pokémon") is True
     assert is_lot_listing("3x Japanse full art bundle") is True

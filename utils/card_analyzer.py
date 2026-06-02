@@ -66,8 +66,9 @@ _GRAMS_PER_CARD: float = 1.8
 
 # Keywords that indicate the listing is a non-TCG item (merchandise, storage,
 # display items) and should be skipped before card identification.
-# Note: "toploader" and "sleeve" are intentionally excluded because sellers
-# often bundle them with cards; filtering them would cause false negatives.
+# Only the TITLE is checked — descriptions are intentionally excluded because
+# sellers often mention accessories like "toploader" or "sleeve" when describing
+# packaging, which would cause false negatives on valid card listings.
 NON_CARD_KEYWORDS: tuple[str, ...] = (
     "peluche",
     "plush",
@@ -110,13 +111,14 @@ NON_CARD_KEYWORDS: tuple[str, ...] = (
 )
 
 def is_non_card_item(title: str, description: str | None = None) -> bool:
-    """Return True when *title* (or *description*) clearly indicates a non-TCG item.
+    """Return True when *title* clearly indicates a non-TCG item.
 
-    Checks against :data:`NON_CARD_KEYWORDS`.  ``toploader`` and ``sleeve`` are
-    deliberately excluded so that card+accessory combo listings are not filtered.
+    Only the listing title is checked against :data:`NON_CARD_KEYWORDS`.
+    The description is deliberately ignored: card sellers routinely mention
+    accessories (e.g. "shipped in toploader", "comes with sleeve") in their
+    descriptions, and checking it causes false negatives on valid card listings.
     """
-    combined = (title + " " + (description or "")).lower()
-    return any(kw in combined for kw in NON_CARD_KEYWORDS)
+    return any(kw in title.lower() for kw in NON_CARD_KEYWORDS)
 
 
 _LOT_KEYWORDS: tuple[str, ...] = (
