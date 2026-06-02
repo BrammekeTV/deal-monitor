@@ -109,6 +109,7 @@ class Settings:
         cm = raw.get("cardmarket", {})
         self.cardmarket_enabled: bool = bool(cm.get("enabled", True))
         self.cardmarket_fuzzy_threshold: float = float(cm.get("fuzzy_threshold", 80.0))
+        self.cardmarket_search_training: bool = bool(cm.get("search_training", False))
 
         # --- Cardmarket Product Catalog ---
         # When enabled, prices are fetched from the Cardmarket S3 JSON files

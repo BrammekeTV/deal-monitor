@@ -648,6 +648,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
         resolved = self._resolver.resolve_db_only(fingerprint, listing.title)  # type: ignore[union-attr]
 
         if resolved is None:
+            # ── 4a. Cardmarket search training ────────────────────────────
+            # When training mode is enabled, search Cardmarket directly and
+            # store any correct match found so future lookups skip this step.
+            if settings.cardmarket_search_training and self._cardmarket is not None:
+                trained = await self._try_cardmarket_search_training(listing, fingerprint)
+                if trained:
+                    return
             # Not found in catalog or DB → ask user to identify it.
             await self._send_to_unidentified(listing, fingerprint)
             await self.db.mark_seen(
@@ -829,6 +836,143 @@ class MonitorCog(commands.Cog, name="Monitor"):
             seller_name=listing.seller_name,
             fingerprint=fingerprint.fingerprint_hash(),
         )
+
+    # ------------------------------------------------------------------
+    # Cardmarket search training
+    # ------------------------------------------------------------------
+
+    async def _try_cardmarket_search_training(
+        self,
+        listing: "Listing",
+        fingerprint,
+    ) -> bool:
+        """Search Cardmarket for the card and process the result if it matches.
+
+        Returns ``True`` when the listing was fully handled (match found,
+        stored, and price comparison performed), ``False`` when no valid
+        match was found (caller should send to unidentified channel).
+        """
+        from rapidfuzz import fuzz  # noqa: PLC0415
+        from services.cardmarket_resolver import ResolvedUrl  # noqa: PLC0415
+
+        # Build a search query from available fingerprint components.
+        query_parts = []
+        if fingerprint.card_name:
+            query_parts.append(fingerprint.card_name)
+        if fingerprint.set_name:
+            query_parts.append(fingerprint.set_name)
+        elif fingerprint.set_code:
+            query_parts.append(fingerprint.set_code)
+        if fingerprint.collector_number:
+            query_parts.append(fingerprint.collector_number.split("/")[0])
+        query = " ".join(query_parts).strip()
+        if not query:
+            return False
+
+        logger.info(
+            "MonitorCog: training – searching Cardmarket for '%s'",
+            query,
+        )
+
+        product_url = await self._cardmarket.search_product_url(query)  # type: ignore[union-attr]
+        if not product_url:
+            logger.info(
+                "MonitorCog: training – no Cardmarket URL found for '%s'",
+                listing.title[:60],
+            )
+            return False
+
+        # Scrape the found product page to get price data.
+        try:
+            cm_data = await self._cardmarket.scrape_url(product_url)  # type: ignore[union-attr]
+        except CardmarketScrapeError as exc:
+            logger.warning(
+                "MonitorCog: training – scrape failed for %s: %s",
+                product_url, exc.message,
+            )
+            return False
+
+        # Validate: the scraped card name must match the fingerprint card name.
+        if fingerprint.card_name and cm_data.product_name:
+            name_score = fuzz.token_set_ratio(
+                fingerprint.card_name.lower(),
+                cm_data.product_name.lower(),
+            )
+            if name_score < settings.cardmarket_fuzzy_threshold:
+                logger.info(
+                    "MonitorCog: training – name mismatch (score=%.1f) for '%s' vs '%s'",
+                    name_score,
+                    fingerprint.card_name,
+                    cm_data.product_name,
+                )
+                return False
+
+        # When the fingerprint has a collector number, verify it matches the
+        # card number on the scraped Cardmarket page.
+        if fingerprint.collector_number and cm_data.card_number:
+            fp_num = fingerprint.collector_number.split("/")[0].strip().lstrip("0") or "0"
+            cm_num = cm_data.card_number.split("/")[0].strip().lstrip("0") or "0"
+            if fp_num != cm_num:
+                logger.info(
+                    "MonitorCog: training – collector number mismatch (%s vs %s) "
+                    "for '%s'",
+                    fingerprint.collector_number,
+                    cm_data.card_number,
+                    listing.title[:60],
+                )
+                return False
+
+        logger.info(
+            "MonitorCog: training – correct match found for '%s' → %s",
+            listing.title[:60],
+            cm_data.product_url,
+        )
+
+        # Store the mapping so future lookups use the DB fast path.
+        resolved = ResolvedUrl(
+            url=cm_data.product_url,
+            source="training",
+            confidence=0.85,
+        )
+        await self._resolver.store_mapping(  # type: ignore[union-attr]
+            fingerprint=fingerprint,
+            raw_title=listing.title,
+            cardmarket_url=cm_data.product_url,
+            product_name=cm_data.product_name,
+            product_id=cm_data.product_id,
+            validated_by="training",
+            confidence=resolved.confidence,
+            listing_url=listing.url,
+            seller_name=listing.seller_name,
+            price=listing.price,
+        )
+
+        # Perform price comparison and notify via the appropriate channel.
+        comparison = compare_prices(listing, cm_data)
+        if comparison.is_profitable:
+            self._listings_profitable += 1
+            await self._send_profit_alert(listing, cm_data, comparison, resolved, fingerprint)
+        else:
+            logger.info(
+                "MonitorCog: training – not profitable – Vinted €%.2f vs CM €%.2f for '%s'",
+                comparison.vinted_price,
+                comparison.cardmarket_from_price,
+                listing.title[:60],
+            )
+            await self._send_identified_not_profitable(
+                listing, cm_data, comparison, resolved, fingerprint
+            )
+
+        await self.db.mark_seen(
+            listing_id=listing.listing_id,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price,
+            currency=listing.currency,
+            seller_name=listing.seller_name,
+            fingerprint=fingerprint.fingerprint_hash(),
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Review queue
