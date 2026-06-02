@@ -207,15 +207,35 @@ class VintedScraper(BaseScraper):
         if not scraper:
             return None
 
-        try:
-            vinted_item = await scraper.item(item_id)
-            # Determine the domain from the URL to resolve currency.
-            hostname = urlparse(url).hostname or ""
-            base_url = f"https://{hostname}"
-            return _vinted_item_to_listing(vinted_item, base_url)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to fetch listing %s: %s", url, exc, exc_info=True)
-            return None
+        # Determine the domain from the URL to resolve currency.
+        hostname = urlparse(url).hostname or ""
+        base_url = f"https://{hostname}"
+
+        for attempt in range(2):
+            try:
+                vinted_item = await scraper.item(item_id)
+                return _vinted_item_to_listing(vinted_item, base_url)
+            except Exception as exc:  # noqa: BLE001
+                exc_str = str(exc)
+                if attempt == 0 and ("403" in exc_str or "401" in exc_str):
+                    logger.warning(
+                        "get_listing: auth error for %s (%s) – refreshing cookie and retrying",
+                        url, exc_str[:120],
+                    )
+                    try:
+                        scraper.session_cookie = await scraper.refresh_cookie()
+                        logger.info("get_listing: cookie refreshed, retrying item %s", item_id)
+                    except Exception as refresh_exc:  # noqa: BLE001
+                        logger.error(
+                            "get_listing: cookie refresh failed: %s", refresh_exc
+                        )
+                        return None
+                else:
+                    logger.error(
+                        "Failed to fetch listing %s: %s", url, exc, exc_info=True
+                    )
+                    return None
+        return None
 
 
 # ---------------------------------------------------------------------------

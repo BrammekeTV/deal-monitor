@@ -273,7 +273,16 @@ class ReviewCog(commands.Cog, name="Review"):
 
     async def _handle_review_reply(self, message: discord.Message) -> None:
         """Handle a reply in the review channel (unresolvable listing)."""
-        referenced_id = str(message.reference.message_id)  # type: ignore[union-attr]
+        referenced_id = message.reference.message_id  # type: ignore[union-attr]
+
+        # Step 2: reply to one of our "awaiting product ID" messages.
+        if referenced_id in self._pending_product_ids:
+            await self._handle_unidentified_product_id_reply(
+                message, self._pending_product_ids[referenced_id]
+            )
+            return
+
+        referenced_id = str(referenced_id)
 
         # Look up the review queue item associated with this Discord message.
         review_item = await self.db.get_review_item_by_message(referenced_id)
@@ -820,6 +829,18 @@ class ReviewCog(commands.Cog, name="Review"):
             resolved_by=submitted_by.display_name,
         )
 
+        # ── Extract URL slug info for product ID request ──────────────────
+        url_path = urlparse(normalised_url).path.rstrip("/")
+        path_parts = url_path.split("/")
+        product_slug: str | None = None
+        set_slug: str | None = None
+        try:
+            singles_idx = path_parts.index("Singles")
+            set_slug = path_parts[singles_idx + 1] if singles_idx + 1 < len(path_parts) else None
+            product_slug = path_parts[-1] if len(path_parts) > singles_idx + 1 else None
+        except (ValueError, IndexError):
+            pass
+
         # ── Post result embed ─────────────────────────────────────────────
         result_embed = build_review_resolved_embed(
             listing_title=listing_title,
@@ -830,15 +851,27 @@ class ReviewCog(commands.Cog, name="Review"):
             comparison=comparison,
             resolved_by=submitted_by.display_name,
         )
+        if product_slug or set_slug:
+            slug_lines = []
+            if product_slug:
+                slug_lines.append(f"**Product slug:** `{product_slug}`")
+            if set_slug:
+                slug_lines.append(f"**Set slug:** `{set_slug}`")
+            result_embed.add_field(
+                name="🔖 URL slugs",
+                value="\n".join(slug_lines),
+                inline=False,
+            )
+        result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
         try:
-            await reply_message.reply(embed=result_embed, mention_author=False)
+            bot_msg = await reply_message.reply(embed=result_embed, mention_author=False)
         except discord.HTTPException as exc:
             logger.error("ReviewCog: failed to post result embed: %s", exc)
+            return
 
         # ── If profitable, also post to deals channel ─────────────────────
         if comparison.is_profitable:
             from utils.embed_builder import build_profit_alert_embed
-            from services.cardmarket_resolver import ResolvedUrl
 
             profit_embed = build_profit_alert_embed(
                 stub_listing,
@@ -860,9 +893,29 @@ class ReviewCog(commands.Cog, name="Review"):
                         "ReviewCog: failed to post profit embed to deals channel: %s", exc
                     )
 
+        # ── Ask for idProduct to complete catalog slug mappings ───────────
+        try:
+            prompt_msg = await bot_msg.reply(
+                "*(Optional)* Reply to **this message** with the Cardmarket **`idProduct`** "
+                f"for `{product_slug or normalised_url}` to store the catalog ID→slug mapping.\n"
+                "You can find `idProduct` in the Cardmarket page source or API response.",
+                mention_author=False,
+            )
+        except discord.HTTPException as exc:
+            logger.error("ReviewCog: failed to send product-ID prompt: %s", exc)
+            return
+
+        self._pending_product_ids[prompt_msg.id] = {
+            "review_item": review_item,
+            "cm_url": normalised_url,
+            "cm_data": cm_data,
+            "product_slug": product_slug,
+            "set_slug": set_slug,
+            "submitted_by": submitted_by,
+        }
         logger.info(
-            "ReviewCog: resolved listing '%s' via user review (%s)",
-            listing_title[:60], submitted_by.display_name,
+            "ReviewCog: resolved listing '%s' via user review (%s), awaiting optional idProduct for msg %s (product_slug=%r)",
+            listing_title[:60], submitted_by.display_name, prompt_msg.id, product_slug,
         )
 
     # ------------------------------------------------------------------
