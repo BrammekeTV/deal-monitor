@@ -1313,3 +1313,186 @@ class MonitorCog(commands.Cog, name="Monitor"):
             "✅ Cycle complete. The bot is now **paused**. Use `/resume` to continue.",
             ephemeral=True,
         )
+
+    # ------------------------------------------------------------------
+    # /check_listing — on-demand profitability check
+    # ------------------------------------------------------------------
+
+    @discord.app_commands.command(
+        name="check_listing",
+        description="Check a Vinted listing URL for profitability and Cardmarket data",
+    )
+    @discord.app_commands.describe(
+        url="Vinted listing URL (e.g. https://www.vinted.nl/items/1234567890-card-name)"
+    )
+    async def check_listing_command(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        """Fetch a Vinted listing and run the full analysis pipeline on demand."""
+        await interaction.response.defer(ephemeral=True)
+
+        if "vinted." not in url.lower():
+            await interaction.followup.send(
+                "❌ Please provide a valid Vinted listing URL "
+                "(e.g. `https://www.vinted.nl/items/1234567890-card-name`).",
+                ephemeral=True,
+            )
+            return
+
+        if self._vinted is None:
+            await interaction.followup.send(
+                "❌ The Vinted scraper is not initialised yet. Try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        logger.info(
+            "MonitorCog: /check_listing requested by %s for URL: %s",
+            interaction.user, url,
+        )
+
+        listing = await self._vinted.get_listing(url)
+        if listing is None:
+            await interaction.followup.send(
+                f"❌ Could not fetch listing from: `{url}`\n"
+                "Make sure it is a direct Vinted item URL "
+                "(e.g. `https://www.vinted.nl/items/1234567890-card-name`).",
+                ephemeral=True,
+            )
+            return
+
+        embed = await self._check_listing_pipeline(listing)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _check_listing_pipeline(self, listing: "Listing") -> discord.Embed:
+        """Run the full analysis pipeline for a single listing and return a result embed.
+
+        Unlike :meth:`_process_listing`, this method never marks a listing as seen
+        and never posts to any channel — it is used exclusively by the
+        :meth:`check_listing_command` slash command to provide on-demand feedback.
+        """
+        from utils.embed_builder import build_check_listing_embed  # noqa: PLC0415
+        from services.cardmarket_resolver import ResolvedUrl  # noqa: PLC0415
+
+        # ── Pre-filters (same order as _process_listing) ──────────────────
+        min_price = float(getattr(settings, "min_price_eur", 0.50))
+        max_price = float(getattr(settings, "max_price_eur", 500.00))
+        if listing.price < min_price or listing.price > max_price:
+            return build_check_listing_embed(
+                listing,
+                filter_reason="price_out_of_range",
+                filter_detail=(
+                    f"Price €{listing.price:.2f} is outside the configured range "
+                    f"(€{min_price:.2f} – €{max_price:.2f})."
+                ),
+            )
+
+        if is_non_card_item(listing.title, listing.description or ""):
+            return build_check_listing_embed(listing, filter_reason="non_card_item")
+
+        if is_lot_listing(listing.title, listing.description or ""):
+            return build_check_listing_embed(listing, filter_reason="lot_listing")
+
+        if is_graded_listing(listing.title, listing.description or ""):
+            return build_check_listing_embed(listing, filter_reason="graded_listing")
+
+        if is_japanese_listing(listing.title, listing.description or ""):
+            return build_check_listing_embed(listing, filter_reason="japanese_listing")
+
+        if not has_pokemon_name(listing.title):
+            return build_check_listing_embed(listing, filter_reason="no_pokemon_name")
+
+        # ── Fingerprinting ─────────────────────────────────────────────────
+        fingerprint = identify_card(listing.title, description=listing.description)
+
+        if (
+            fingerprint.collector_number is None
+            and fingerprint.set_name is None
+            and fingerprint.set_code is None
+        ):
+            return build_check_listing_embed(
+                listing,
+                fingerprint=fingerprint,
+                filter_reason="unresolvable_no_identifiers",
+            )
+
+        # ── PSA detection ──────────────────────────────────────────────────
+        combined_text = listing.title + " " + (listing.description or "")
+        psa_grade: int | None = None
+        if contains_psa(combined_text):
+            psa_grade = extract_psa_grade(combined_text)
+
+        # ── Catalog lookup (fast path – no browser required) ──────────────
+        cm_data = None
+        resolved = None
+
+        if (
+            self._catalog is not None
+            and self._catalog.is_loaded
+            and psa_grade is None
+        ):
+            catalog_price = self._catalog.find_and_get_price_data(
+                card_name=fingerprint.card_name or "",
+                collector_number=fingerprint.collector_number,
+                set_name=fingerprint.set_name,
+                set_code=fingerprint.set_code,
+            )
+            if catalog_price is not None and catalog_price.is_valid():
+                cm_data = CardmarketPriceData(
+                    product_url=catalog_price.product_url or "",
+                    product_name=catalog_price.product_name,
+                    product_id=str(catalog_price.product_id),
+                    from_price=catalog_price.from_price,
+                    price_trend=catalog_price.price_trend,
+                    avg_30_days=catalog_price.avg_30_days,
+                    avg_7_days=catalog_price.avg_7_days,
+                    avg_1_day=catalog_price.avg_1_day,
+                    dutch_sellers_available=True,
+                    set_name=catalog_price.set_name,
+                    card_number=catalog_price.card_number,
+                    id_expansion=catalog_price.id_expansion,
+                )
+                resolved = ResolvedUrl(
+                    url=catalog_price.product_url or "",
+                    source="catalog",
+                    confidence=0.9,
+                )
+
+        # ── DB resolver fallback ───────────────────────────────────────────
+        if cm_data is None and self._resolver is not None:
+            db_resolved = self._resolver.resolve_db_only(fingerprint, listing.title)
+            if db_resolved is not None:
+                resolved = db_resolved
+                if self._cardmarket is not None:
+                    try:
+                        cm_data = await self._cardmarket.scrape_url(resolved.url)
+                    except CardmarketScrapeError as exc:
+                        # We know the CM URL but could not retrieve live prices.
+                        return build_check_listing_embed(
+                            listing,
+                            fingerprint=fingerprint,
+                            cm_url=resolved.url,
+                            cm_error=exc.message,
+                            match_confidence=resolved.confidence,
+                            match_source=resolved.source,
+                        )
+
+        # ── No Cardmarket match found ──────────────────────────────────────
+        if cm_data is None:
+            return build_check_listing_embed(
+                listing,
+                fingerprint=fingerprint,
+                cm_url=resolved.url if resolved else None,
+                filter_reason="unidentified",
+            )
+
+        # ── Price comparison ───────────────────────────────────────────────
+        comparison = compare_prices(listing, cm_data)
+        return build_check_listing_embed(
+            listing,
+            fingerprint=fingerprint,
+            cm_data=cm_data,
+            comparison=comparison,
+            match_confidence=resolved.confidence if resolved else None,
+            match_source=resolved.source if resolved else None,
+        )

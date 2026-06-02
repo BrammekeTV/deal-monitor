@@ -633,6 +633,179 @@ def build_error_embed(
 
 
 # ---------------------------------------------------------------------------
+# Check-listing embed  (on-demand /check_listing command)
+# ---------------------------------------------------------------------------
+
+# Human-readable labels for filter reasons.
+_FILTER_REASON_LABELS: dict[str, str] = {
+    "non_card_item": "🚫 Non-card item – this listing appears to be merchandise, accessories, or other non-TCG content.",
+    "lot_listing": "📦 Lot listing – this listing contains multiple cards and is not processed as a single-card deal.",
+    "graded_listing": "🏅 Graded listing – graded cards (PSA/BGS/CGC etc.) are not compared against raw Cardmarket prices.",
+    "japanese_listing": "🇯🇵 Japanese listing – Japanese-language cards are outside the scope of this bot.",
+    "price_out_of_range": "💶 Price out of range – the listing price falls outside the configured min/max filter.",
+    "no_pokemon_name": "🔤 No Pokémon name detected – no recognisable Pokémon name was found in the title.",
+    "unresolvable_no_identifiers": "🔍 Unresolvable – no set code, set name, or collector number could be extracted from the title.",
+    "unidentified": "❓ Unidentified – no matching Cardmarket product was found in the catalog or the learning database.",
+}
+
+
+def build_check_listing_embed(
+    listing: "Listing",
+    *,
+    fingerprint: "CardFingerprint | None" = None,
+    cm_data: "CardmarketPriceData | None" = None,
+    comparison: "ComparisonResult | None" = None,
+    match_confidence: float | None = None,
+    match_source: str | None = None,
+    filter_reason: str | None = None,
+    filter_detail: str | None = None,
+    cm_url: str | None = None,
+    cm_error: str | None = None,
+) -> discord.Embed:
+    """Build a comprehensive analysis embed for the /check_listing command.
+
+    Handles every possible pipeline outcome in a single function:
+    - Filter rejection (non-card, lot, graded, Japanese, price, no-pokemon-name)
+    - Unresolvable / unidentified card
+    - Cardmarket scrape error (URL known, price unavailable)
+    - Full result with profitability data
+    """
+    # ── Determine colour and headline ────────────────────────────────────
+    if filter_reason:
+        colour = _COLOUR_REVIEW
+        headline = "🔍 Check Result"
+    elif cm_data is None:
+        colour = _COLOUR_NEUTRAL
+        headline = "🔍 Check Result"
+    elif comparison is not None and comparison.is_profitable:
+        colour = _COLOUR_PROFIT
+        headline = "🔍 Check Result – ✅ Profitable"
+    else:
+        colour = _COLOUR_NEUTRAL
+        headline = "🔍 Check Result – 📉 Not Profitable"
+
+    embed = discord.Embed(
+        title=f"{headline}: {listing.title[:180]}",
+        url=listing.url,
+        colour=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # ── Vinted listing details ────────────────────────────────────────────
+    embed.add_field(
+        name="🛍️ Vinted Listing",
+        value=(
+            f"**Title:** {listing.title[:200]}\n"
+            f"**Price:** €{listing.price:.2f} {listing.currency}\n"
+            f"**Seller:** {listing.seller_name or 'Unknown'}\n"
+            f"**URL:** [View on Vinted]({listing.url})"
+        ),
+        inline=False,
+    )
+
+    # ── Filter / skip reason ──────────────────────────────────────────────
+    if filter_reason:
+        reason_text = _FILTER_REASON_LABELS.get(filter_reason, filter_reason)
+        if filter_detail:
+            reason_text = f"{reason_text}\n{filter_detail}"
+        embed.add_field(name="⚠️ Result", value=reason_text, inline=False)
+
+    # ── Extracted card fingerprint ────────────────────────────────────────
+    if fingerprint:
+        def _val(v: object) -> str:
+            return f"**{v}**" if v else "—"
+
+        fp_lines = [
+            f"Card Name: {_val(fingerprint.card_name)}",
+            f"Set: {_val(fingerprint.set_name)}",
+            f"Set Code: {_val(fingerprint.set_code)}",
+            f"Number: {_val(fingerprint.collector_number)}",
+        ]
+        if fingerprint.condition:
+            fp_lines.append(f"Condition: {_val(fingerprint.condition)}")
+        if fingerprint.rarity:
+            fp_lines.append(f"Rarity: {_val(fingerprint.rarity)}")
+        if fingerprint.language:
+            fp_lines.append(f"Language: {_val(fingerprint.language)}")
+        if fingerprint.grade_authority:
+            fp_lines.append(f"Grade: **{fingerprint.grade_authority} {fingerprint.grade_value}**")
+        embed.add_field(
+            name="🔎 Identified Card Info",
+            value="\n".join(fp_lines),
+            inline=False,
+        )
+
+    # ── Cardmarket data ───────────────────────────────────────────────────
+    if cm_data is not None:
+        cm_lines = [
+            f"**Product:** {cm_data.product_name or 'Unknown'}",
+            f"**URL:** [View on Cardmarket]({cm_data.product_url})",
+        ]
+        if cm_data.product_id:
+            cm_lines.append(f"**idProduct:** `{cm_data.product_id}`")
+        if cm_data.id_expansion:
+            cm_lines.append(f"**idExpansion:** `{cm_data.id_expansion}`")
+        cm_lines.append(f"**From Price:** €{cm_data.from_price:.2f}")
+        if cm_data.price_trend:
+            cm_lines.append(f"**Price Trend:** €{cm_data.price_trend:.2f}")
+        if cm_data.avg_30_days:
+            cm_lines.append(f"**30-Day Avg:** €{cm_data.avg_30_days:.2f}")
+        if cm_data.avg_7_days:
+            cm_lines.append(f"**7-Day Avg:** €{cm_data.avg_7_days:.2f}")
+        if cm_data.avg_1_day:
+            cm_lines.append(f"**1-Day Avg:** €{cm_data.avg_1_day:.2f}")
+        embed.add_field(name="🃏 Cardmarket", value="\n".join(cm_lines), inline=False)
+    elif cm_url:
+        # We have the CM URL but could not fetch prices (scrape error or DB-only hit)
+        cm_lines = [f"**URL:** [View on Cardmarket]({cm_url})"]
+        if cm_error:
+            cm_lines.append(f"**Scrape Error:** {cm_error[:200]}")
+        embed.add_field(name="🃏 Cardmarket (URL only)", value="\n".join(cm_lines), inline=False)
+
+    # ── Price comparison ──────────────────────────────────────────────────
+    if comparison is not None:
+        profit_marker = "✅ **Profitable**" if comparison.is_profitable else "📉 **Not Profitable**"
+        embed.add_field(
+            name=f"📊 Price Comparison  ·  {profit_marker}",
+            value=(
+                f"**Vinted Item Price:** €{comparison.vinted_price:.2f}\n"
+                f"**Protection Fee:** €{comparison.protection_fee:.2f} (5% + €0.70)\n"
+                f"**Shipping:** €{comparison.shipping_min:.2f} – €{comparison.shipping_max:.2f}\n"
+                f"**Total Cost:** €{comparison.total_cost_min:.2f} – €{comparison.total_cost_max:.2f}\n"
+                f"**Cardmarket From:** €{comparison.cardmarket_from_price:.2f}\n"
+                f"**Difference (worst case):** €{comparison.absolute_difference:.2f} "
+                f"({'saving' if comparison.is_profitable else 'overpaying'} "
+                f"{comparison.percentage_difference:.1f}%)"
+            ),
+            inline=False,
+        )
+
+    # ── Match metadata ────────────────────────────────────────────────────
+    if match_confidence is not None or match_source is not None:
+        meta_lines = []
+        if match_confidence is not None:
+            meta_lines.append(f"**Confidence:** {match_confidence:.0%}")
+        if match_source:
+            source_labels = {
+                "catalog": "📂 Cardmarket Product Catalog",
+                "database": "📚 Learned mapping",
+                "constructed": "🔧 Auto-constructed URL",
+                "manual": "👤 User-supplied URL",
+            }
+            meta_lines.append(f"**Source:** {source_labels.get(match_source, match_source)}")
+        if comparison is not None:
+            dutch = "✅ Dutch sellers available" if comparison.dutch_sellers_available else "⚠️ No Dutch sellers – global pricing used"
+            meta_lines.append(dutch)
+        embed.add_field(name="ℹ️ Match Info", value="\n".join(meta_lines), inline=False)
+
+    if listing.thumbnail:
+        embed.set_thumbnail(url=listing.thumbnail)
+
+    embed.set_footer(text=f"Vinted ID: {listing.listing_id}  •  /check_listing on-demand analysis")
+    return embed
+
+
+# ---------------------------------------------------------------------------
 # Status embed
 # ---------------------------------------------------------------------------
 
