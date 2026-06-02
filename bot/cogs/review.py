@@ -38,6 +38,7 @@ from config.settings import settings
 from database.db import Database
 from scraper.cardmarket import (
     CardmarketScrapeError,
+    _LANGUAGE_TO_CM_CODE,
     contains_psa,
     extract_psa_grade,
     normalize_cardmarket_url,
@@ -338,9 +339,11 @@ class ReviewCog(commands.Cog, name="Review"):
             else None
         )
 
-        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
-
-        # Extract URL path segments for slug derivation.
+        normalised_url = normalize_cardmarket_url(
+            cardmarket_url,
+            language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            min_condition=min_condition,
+        )
         url_path = urlparse(normalised_url).path.rstrip("/")
         path_parts = url_path.split("/")
         product_slug: str | None = None
@@ -787,8 +790,12 @@ class ReviewCog(commands.Cog, name="Review"):
             else None
         )
 
-        # Always normalise the URL (add sellerCountry=23&language=1, and condition).
-        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
+        # Always normalise the URL (add sellerCountry=23, correct language, and condition).
+        normalised_url = normalize_cardmarket_url(
+            cardmarket_url,
+            language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            min_condition=min_condition,
+        )
 
         logger.info(
             "ReviewCog: processing URL '%s' for listing '%s' (submitted by %s)",
@@ -1065,7 +1072,11 @@ class ReviewCog(commands.Cog, name="Review"):
             else None
         )
 
-        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
+        normalised_url = normalize_cardmarket_url(
+            cardmarket_url,
+            language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            min_condition=min_condition,
+        )
 
         logger.info(
             "ReviewCog: processing correction '%s' for listing '%s' (submitted by %s)",
