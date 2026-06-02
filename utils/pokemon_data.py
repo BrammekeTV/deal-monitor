@@ -530,13 +530,13 @@ SET_CODE_TO_SET_NAME: dict[str, str] = {
     "MCD": "McDonald's Collection",
     "MCDO": "McDonald's Collection",
     "MCDP": "McDonald's Collection",
-    "M19": "McDonald's Collection 2019",
-    "M20": "McDonald's Collection 2020",
-    "M21": "McDonald's Collection 2021",
-    "M22": "McDonald's Collection 2022",
-    "M23": "McDonald's Collection 2023",
-    "M24": "McDonald's Collection 2024",
-    "M25": "McDonald's Collection 2025",
+    "M19": "McDonald's Match Battle 2019",
+    "M20": "McDonald's Match Battle 2020",
+    "M21": "McDonald's Match Battle 2021",
+    "M22": "McDonald's Match Battle 2022",
+    "M23": "McDonald's Match Battle 2023",
+    "M24": "McDonald's Match Battle 2024",
+    "M25": "McDonald's Match Battle 2025",
 }
 
 KNOWN_SET_CODES: frozenset[str] = frozenset(

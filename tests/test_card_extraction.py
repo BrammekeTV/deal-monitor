@@ -115,12 +115,12 @@ class TestExtractCardInfo:
     # ------------------------------------------------------------------
 
     def test_promo_pikachu_svp_with_parens(self):
-        """Pikachu (SVP 214) → card_name='Pikachu', set_code='SVP', collector_number='214'"""
+        """Pikachu (SVP 214) → card_name='Pikachu', set_code='SVP', collector_number='214', set_name from mapping."""
         info = extract_card_info("Pikachu (SVP 214)")
         assert info["card_name"] == "Pikachu"
         assert info["set_code"] == "SVP"
         assert info["collector_number"] == "214"
-        assert info["set_name"] is None
+        assert info["set_name"] == "SV Black Star Promos"
 
     def test_promo_pikachu_svp_no_parens(self):
         """Pikachu SVP 214 → same result as with parens."""
@@ -154,6 +154,42 @@ class TestExtractCardInfo:
         info = extract_card_info("Pikachu VMAX 044/185 Vivid Voltage")
         assert info["card_name"] == "Pikachu VMAX"
         assert info["collector_number"] == "044/185"
+
+    def test_promo_mcdonalds_m23_with_parens(self):
+        """Pikachu (M23 006) NM McDonald's Match Battle 2023 → full card info extracted.
+
+        Regression test for GitHub issue #140: set name and all fields were not
+        extracted for McDonald's Match Battle promo listings.
+        """
+        info = extract_card_info("Pikachu (M23 006) NM McDonald's Match Battle 2023")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "M23"
+        assert info["collector_number"] == "006"
+        assert info["set_name"] == "McDonald's Match Battle 2023"
+
+    def test_promo_mcdonalds_m23_set_name_from_code_mapping(self):
+        """Pikachu M23 006 (no set name in title) → set_name from code mapping."""
+        info = extract_card_info("Pikachu M23 006")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "M23"
+        assert info["collector_number"] == "006"
+        assert info["set_name"] == "McDonald's Match Battle 2023"
+
+    # ------------------------------------------------------------------
+    # Set name embedded before the collector number (issue #141)
+    # ------------------------------------------------------------------
+
+    def test_set_name_in_before_text_with_language_suffix(self):
+        """Rhydon jungle 45/64 english → set name 'Jungle' from before text.
+
+        Regression test for GitHub issue #141: the language word "english"
+        after the collector number was blocking the set-name fallback that
+        splits "Rhydon jungle" into card name + set name.
+        """
+        info = extract_card_info("Rhydon jungle 45/64 english")
+        assert info["card_name"] == "Rhydon"
+        assert info["collector_number"] == "45/64"
+        assert info["set_name"] == "Jungle"
 
 
 class TestParseSetInfo:
