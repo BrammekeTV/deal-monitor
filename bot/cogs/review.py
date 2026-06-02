@@ -1290,10 +1290,52 @@ class ReviewCog(commands.Cog, name="Review"):
                 inline=False,
             )
 
+        # ── Extract URL slugs from the corrected URL ──────────────────────
+        url_path = urlparse(normalised_url).path.rstrip("/")
+        path_parts = url_path.split("/")
+        product_slug: str | None = None
+        set_slug: str | None = None
         try:
-            await reply_message.reply(embed=result_embed, mention_author=False)
+            singles_idx = path_parts.index("Singles")
+            set_slug = path_parts[singles_idx + 1] if singles_idx + 1 < len(path_parts) else None
+            product_slug = path_parts[-1] if len(path_parts) > singles_idx + 1 else None
+        except (ValueError, IndexError):
+            pass
+
+        if product_slug or set_slug:
+            slug_lines = []
+            if product_slug:
+                slug_lines.append(f"**Product slug:** `{product_slug}`")
+            if set_slug:
+                slug_lines.append(f"**Set slug:** `{set_slug}`")
+            result_embed.add_field(
+                name="🔖 URL slugs",
+                value="\n".join(slug_lines),
+                inline=False,
+            )
+
+        # If the idProduct was extracted automatically from the page HTML, store
+        # the catalog mapping right away without requiring a user reply.
+        auto_id_product: int | None = cm_data.id_product
+        if auto_id_product is not None:
+            id_expansion, mapping_lines = await self._lookup_catalog_for_id_product(
+                auto_id_product, product_slug, set_slug
+            )
+            if mapping_lines:
+                result_embed.add_field(
+                    name="🗺️ Catalog mappings stored",
+                    value="\n".join(mapping_lines),
+                    inline=False,
+                )
+            result_embed.set_footer(text="Correction saved · catalog ID→slug stored automatically")
+        else:
+            result_embed.set_footer(text="Correction saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
+
+        try:
+            bot_msg = await reply_message.reply(embed=result_embed, mention_author=False)
         except discord.HTTPException as exc:
             logger.error("ReviewCog: failed to post correction confirmation: %s", exc)
+            bot_msg = None
 
         # ── Post to deals channel if profitable ───────────────────────────
         if comparison.is_profitable:
@@ -1314,6 +1356,52 @@ class ReviewCog(commands.Cog, name="Review"):
                     logger.error(
                         "ReviewCog: failed to post profit embed for correction: %s", exc
                     )
+
+        if auto_id_product is not None:
+            # Store catalog mappings automatically (id_expansion already fetched above).
+            await self.db.store_catalog_id_slugs(
+                id_product=auto_id_product,
+                product_slug=product_slug,
+                id_expansion=id_expansion,
+                set_slug=set_slug,
+                cardmarket_url=normalised_url,
+            )
+            logger.info(
+                "ReviewCog: correction auto-stored catalog mappings for '%s' "
+                "idProduct=%d idExpansion=%s slug=%r set=%r (submitted by %s)",
+                listing_title[:60], auto_id_product, id_expansion, product_slug, set_slug,
+                submitted_by.display_name,
+            )
+        elif bot_msg is not None:
+            # Ask the user to supply idProduct to complete the catalog mapping.
+            try:
+                prompt_msg = await bot_msg.reply(
+                    "*(Optional)* Reply to **this message** with the Cardmarket **`idProduct`** "
+                    f"for `{product_slug or normalised_url}` to store the catalog ID→slug mapping.\n"
+                    "You can find `idProduct` in the Cardmarket page source or API response.",
+                    mention_author=False,
+                )
+            except discord.HTTPException as exc:
+                logger.error("ReviewCog: failed to send product-ID prompt for correction: %s", exc)
+                prompt_msg = None
+
+            if prompt_msg is not None:
+                review_item_stub = {
+                    "listing_id": listing_id,
+                    "title": listing_title,
+                    "url": listing_url,
+                    "price": listing_price,
+                    "currency": listing_currency,
+                    "seller_name": error_item.get("listing_seller_name"),
+                }
+                self._pending_product_ids[prompt_msg.id] = {
+                    "review_item": review_item_stub,
+                    "cm_url": normalised_url,
+                    "cm_data": cm_data,
+                    "product_slug": product_slug,
+                    "set_slug": set_slug,
+                    "submitted_by": submitted_by,
+                }
 
         logger.info(
             "ReviewCog: correction processed for listing '%s' by %s (prefix=%r)",
