@@ -342,6 +342,7 @@ class ReviewCog(commands.Cog, name="Review"):
         normalised_url = normalize_cardmarket_url(
             cardmarket_url,
             language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            is_reverse_holo=fingerprint.is_reverse_holo,
             min_condition=min_condition,
         )
         url_path = urlparse(normalised_url).path.rstrip("/")
@@ -794,6 +795,7 @@ class ReviewCog(commands.Cog, name="Review"):
         normalised_url = normalize_cardmarket_url(
             cardmarket_url,
             language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            is_reverse_holo=fingerprint.is_reverse_holo,
             min_condition=min_condition,
         )
 
@@ -1075,6 +1077,7 @@ class ReviewCog(commands.Cog, name="Review"):
         normalised_url = normalize_cardmarket_url(
             cardmarket_url,
             language=_LANGUAGE_TO_CM_CODE.get(fingerprint.language) if fingerprint.language else None,
+            is_reverse_holo=fingerprint.is_reverse_holo,
             min_condition=min_condition,
         )
 
