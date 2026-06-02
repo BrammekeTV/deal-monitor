@@ -554,3 +554,24 @@ class TestIssue111PipeSeparatedTitle:
         info = extract_card_info("Mewtwo | Ultra Rare | Scarlet & Violet | 205/198")
         assert info["card_name"] == "Mewtwo"
         assert info["collector_number"] == "205/198"
+
+
+class TestInvertedSetNameFormat:
+    """Regression tests for listings where the set name appears *before* the
+    collector number (inverted format): '[Set Name] [Number] [Card Name]'."""
+
+    def test_set_before_number_card_after(self):
+        """'Ascended heroes 40/217 golduck ball&normal' → card=Golduck, set=Ascended Heroes."""
+        info = extract_card_info("Ascended heroes 40/217 golduck ball&normal")
+        assert info["card_name"] == "Golduck"
+        assert info["collector_number"] == "40/217"
+        assert info["set_name"] == "Ascended Heroes"
+        assert info["card_name_matched"] is True
+
+    def test_set_before_number_card_after_other_set(self):
+        """'Obsidian Flames 125/197 Charizard ex' → card=Charizard ex, set=Obsidian Flames."""
+        info = extract_card_info("Obsidian Flames 125/197 Charizard ex")
+        assert info["card_name"] == "Charizard ex"
+        assert info["collector_number"] == "125/197"
+        assert info["set_name"] == "Obsidian Flames"
+        assert info["card_name_matched"] is True
