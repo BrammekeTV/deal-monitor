@@ -986,6 +986,25 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name_matched"] = True
                     set_code = trailing_code
 
+        # Reverse-format fallback: some sellers use "Set Number Card" order
+        # (e.g. "Ascended heroes 42/217 croconaw energy&normal") instead of
+        # the usual "Card Number Set" order.  When the card name is still
+        # unrecognised, the before text resolves to a known set name, and the
+        # after text contains a Pokémon name, swap the roles.
+        if not result.get("card_name_matched") and after_clean:
+            set_code_try, set_name_try = _parse_set_info(before_clean)
+            if set_name_try and _verify_pokemon_in_text(after_clean):
+                after_words = after_clean.split()
+                for _len in range(len(after_words), 0, -1):
+                    fragment = " ".join(after_words[:_len])
+                    cname, cmatched = _match_pokemon_name(fragment)
+                    if cmatched:
+                        result["card_name"] = cname
+                        result["card_name_matched"] = True
+                        set_code = set_code_try
+                        set_name = set_name_try
+                        break
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -1032,6 +1051,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
                     set_code = trailing_code
+
+        # Reverse-format fallback: "Set Number Card" order.
+        if not result.get("card_name_matched") and after_clean:
+            set_code_try, set_name_try = _parse_set_info(before_clean)
+            if set_name_try and _verify_pokemon_in_text(after_clean):
+                after_words = after_clean.split()
+                for _len in range(len(after_words), 0, -1):
+                    fragment = " ".join(after_words[:_len])
+                    cname, cmatched = _match_pokemon_name(fragment)
+                    if cmatched:
+                        result["card_name"] = cname
+                        result["card_name_matched"] = True
+                        set_code = set_code_try
+                        set_name = set_name_try
+                        break
 
         result["set_code"] = set_code
         result["set_name"] = set_name

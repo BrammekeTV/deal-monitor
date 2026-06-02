@@ -554,3 +554,37 @@ class TestIssue111PipeSeparatedTitle:
         info = extract_card_info("Mewtwo | Ultra Rare | Scarlet & Violet | 205/198")
         assert info["card_name"] == "Mewtwo"
         assert info["collector_number"] == "205/198"
+
+
+class TestReverseFormatSetBeforeNumber:
+    """Regression tests for "Set Number Card" listing format.
+
+    Some Vinted sellers write the set name *before* the collector number and
+    the card name *after* it (e.g. "Ascended heroes 42/217 croconaw
+    energy&normal").  The parser must recognise this reverse layout and swap
+    the before/after roles when the before text resolves to a known set name
+    and the after text contains a Pokémon name.
+    """
+
+    def test_set_before_number_card_after(self):
+        """'Ascended heroes 42/217 croconaw energy&normal' → card=Croconaw, set=Ascended Heroes."""
+        info = extract_card_info("Ascended heroes 42/217 croconaw energy&normal")
+        assert info["card_name"] == "Croconaw"
+        assert info["collector_number"] == "42/217"
+        assert info["set_name"] == "Ascended Heroes"
+        assert info["card_name_matched"] is True
+
+    def test_normal_format_unaffected(self):
+        """Normal 'Card Number Set' format must not be affected by the reverse-format logic."""
+        info = extract_card_info("Charizard ex 006/197 Obsidian Flames")
+        assert info["card_name"] == "Charizard ex"
+        assert info["collector_number"] == "006/197"
+        assert info["set_name"] == "Obsidian Flames"
+        assert info["card_name_matched"] is True
+
+    def test_unrecognised_before_not_swapped(self):
+        """When before text is NOT a known set, the reverse-format swap must not trigger."""
+        info = extract_card_info("Some Random Title 42/217 Pikachu")
+        # card_name should still come from before (unmatched) — no spurious swap.
+        assert info["collector_number"] == "42/217"
+        assert info["set_name"] is None
