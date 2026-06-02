@@ -202,14 +202,16 @@ class VintedScraper(BaseScraper):
 
         item_id = match.group(1)
 
-        # Use the first available scraper (item IDs are global across domains).
-        scraper = next(iter(self._scrapers.values()), None)
-        if not scraper:
-            return None
-
-        # Determine the domain from the URL to resolve currency.
+        # Determine the domain from the URL to resolve currency and select
+        # the matching scraper.
         hostname = urlparse(url).hostname or ""
         base_url = f"https://{hostname}"
+
+        # Prefer the scraper for the URL's own domain so that the session
+        # cookie is valid for that TLD; fall back to the first available one.
+        scraper = self._scrapers.get(base_url) or next(iter(self._scrapers.values()), None)
+        if not scraper:
+            return None
 
         for attempt in range(2):
             try:
@@ -226,10 +228,17 @@ class VintedScraper(BaseScraper):
                         scraper.session_cookie = await scraper.refresh_cookie()
                         logger.info("get_listing: cookie refreshed, retrying item %s", item_id)
                     except Exception as refresh_exc:  # noqa: BLE001
-                        logger.error(
-                            "get_listing: cookie refresh failed: %s", refresh_exc
+                        # Cookie refresh failed (Vinted may be blocking the
+                        # refresh request).  Do NOT give up here – the existing
+                        # session cookie might still be valid for the item
+                        # endpoint (the background search uses the same cookie
+                        # and continues to work).  Let the loop proceed to
+                        # attempt 1 and retry with the current cookie.
+                        logger.warning(
+                            "get_listing: cookie refresh failed (%s) – "
+                            "retrying with existing cookie",
+                            refresh_exc,
                         )
-                        return None
                 else:
                     logger.error(
                         "Failed to fetch listing %s: %s", url, exc, exc_info=True
