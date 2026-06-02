@@ -1012,6 +1012,45 @@ class MonitorCog(commands.Cog, name="Monitor"):
             price=listing.price,
         )
 
+        # Store catalog ID → URL-slug mappings when the scraped page exposes
+        # idProduct / idExpansion so the catalog fast-path can reuse them later.
+        if cm_data.id_product is not None or cm_data.id_expansion is not None:
+            from urllib.parse import urlparse as _urlparse  # noqa: PLC0415
+            _url_path = _urlparse(cm_data.product_url).path.rstrip("/")
+            _path_parts = _url_path.split("/")
+            _product_slug: str | None = None
+            _set_slug: str | None = None
+            try:
+                _singles_idx = _path_parts.index("Singles")
+                _set_slug = (
+                    _path_parts[_singles_idx + 1]
+                    if _singles_idx + 1 < len(_path_parts)
+                    else None
+                )
+                _product_slug = (
+                    _path_parts[-1]
+                    if len(_path_parts) > _singles_idx + 1
+                    else None
+                )
+            except (ValueError, IndexError):
+                pass
+            await self.db.store_catalog_id_slugs(
+                id_product=cm_data.id_product,
+                product_slug=_product_slug,
+                id_expansion=cm_data.id_expansion,
+                set_slug=_set_slug,
+                cardmarket_url=cm_data.product_url,
+            )
+            logger.info(
+                "MonitorCog: training – stored catalog mappings for '%s' "
+                "idProduct=%s idExpansion=%s slug=%r set=%r",
+                listing.title[:60],
+                cm_data.id_product,
+                cm_data.id_expansion,
+                _product_slug,
+                _set_slug,
+            )
+
         # Perform price comparison and notify via the appropriate channel.
         comparison = compare_prices(listing, cm_data)
         if comparison.is_profitable:
