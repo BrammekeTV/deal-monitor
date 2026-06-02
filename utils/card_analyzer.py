@@ -281,12 +281,19 @@ _SUBSET_NUMBER_RE = re.compile(
 # Used in WOTC-era listings such as "Kadabra #46 Pokemon Base Set 2".
 _HASH_NUMBER_RE = re.compile(r"#\s*(\d{1,4})\b")
 
-# Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145"
-# Pattern: 2–6 uppercase letters (set code, typically ending in P for promos)
-# followed by optional whitespace and 1–4 digits.
+# Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145",
+# "M23 006" (McDonald's 2023)
+# Two alternating sub-patterns:
+#   1. Pure uppercase letter set codes (e.g. SVP, SWSHP): space is optional before
+#      the collector number, enabling "compact" formats like "SVP214".
+#   2. Alphanumeric set codes (e.g. M23): a space is required before the collector
+#      number to avoid consuming the number digits as part of the code (e.g.
+#      "M23 006" → code="M23", number="006"; "SVP214" must NOT match "SVP21"/"4").
 # Must be surrounded by word boundaries / non-alphanumeric chars to avoid false positives.
 _PROMO_NUMBER_RE = re.compile(
     r"(?<![A-Za-z0-9])([A-Z]{2,6}P?)\s*(\d{1,4})(?![0-9A-Za-z/])"
+    r"|"
+    r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]{1,5}P?)\s+(\d{1,4})(?![0-9A-Za-z/])"
 )
 
 # Known rarity/variant codes that appear *between* the card name and number.
@@ -579,6 +586,13 @@ _LANG_CODE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex to strip a full language name that sellers append after a collector
+# number to indicate the card language (e.g. "english", "dutch", "french").
+_LANG_FULL_NAME_PREFIX_RE = re.compile(
+    r"^(english|french|german|dutch|spanish|italian|portuguese|korean|japanese|russian)\b",
+    re.IGNORECASE,
+)
+
 # Regex to strip a leading condition word (translated/foreign "condition").
 _CONDITION_WORD_PREFIX_RE = re.compile(
     r"^(état|etat|zustand|condición|conditie|condition|staat)\b",
@@ -738,6 +752,7 @@ def _strip_after_number_noise(text: str) -> str:
 
     Stripping rules (applied left-to-right after removing leading separators):
     1. A 2-letter ISO language code is stripped if found (JP, JA, EN, FR …).
+       As an alternative, a full language name is stripped (english, dutch …).
     2. After a language code was stripped, any separator characters are removed.
     3. After a language code was stripped, a condition word is stripped if found
        (état, etat, zustand, conditie …).
@@ -759,6 +774,13 @@ def _strip_after_number_noise(text: str) -> str:
     if m:
         stripped = stripped[m.end():].lstrip()
         lang_found = True
+    elif not lang_found:
+        # Also strip a full language name (e.g. "english", "dutch") which
+        # some sellers append to indicate the card language.
+        m = _LANG_FULL_NAME_PREFIX_RE.match(stripped)
+        if m:
+            stripped = stripped[m.end():].lstrip()
+            lang_found = True
 
     if lang_found:
         # Strip any separator between lang code and condition.
@@ -877,16 +899,20 @@ def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None
 
         _extract_promo_number("Pikachu (SVP 214)")  → ("Pikachu", "SVP", "214")
         _extract_promo_number("Pikachu SVP214")      → ("Pikachu", "SVP", "214")
+        _extract_promo_number("Pikachu (M23 006)")   → ("Pikachu", "M23", "006")
     """
     for m in _PROMO_NUMBER_RE.finditer(text):
-        token = m.group(1)
-        number = m.group(2)
+        # The regex has two alternating sub-patterns; groups 1+2 are for pure-letter
+        # codes (optional space), groups 3+4 are for alphanumeric codes (required space).
+        token = m.group(1) or m.group(3)
+        number = m.group(2) or m.group(4)
         # Skip tokens that are clearly not set codes.
         if token.upper() in _NOT_PROMO_TOKENS:
             continue
         # The token must look like a plausible set code:
-        # pure uppercase letters, possibly ending with "P", length 2-6.
-        if not re.match(r"^[A-Z]{2,6}$", token):
+        # starts with an uppercase letter, followed by uppercase letters or
+        # digits (e.g. SVP, M23, SWSHP), total length 2-7.
+        if not re.match(r"^[A-Z][A-Z0-9]{1,5}P?$", token):
             continue
         # Everything before the match (minus surrounding punctuation) is the card name.
         before = text[: m.start()].strip(" \t()[],-–—")

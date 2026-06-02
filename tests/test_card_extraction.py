@@ -155,6 +155,33 @@ class TestExtractCardInfo:
         assert info["card_name"] == "Pikachu VMAX"
         assert info["collector_number"] == "044/185"
 
+    def test_promo_mcdonalds_m23_with_parens(self):
+        """Pikachu (M23 006) NM McDonald's Match Battle 2023 → M23 promo code extracted.
+
+        Regression test for GitHub issue #140: alphanumeric set codes like M23
+        were not recognised by the promo number detector.
+        """
+        info = extract_card_info("Pikachu (M23 006) NM McDonald's Match Battle 2023")
+        assert info["card_name"] == "Pikachu"
+        assert info["set_code"] == "M23"
+        assert info["collector_number"] == "006"
+
+    # ------------------------------------------------------------------
+    # Set name embedded before the collector number (issue #141)
+    # ------------------------------------------------------------------
+
+    def test_set_name_in_before_text_with_language_suffix(self):
+        """Rhydon jungle 45/64 english → set name 'Jungle' from before text.
+
+        Regression test for GitHub issue #141: the language word "english"
+        after the collector number was blocking the set-name fallback that
+        splits "Rhydon jungle" into card name + set name.
+        """
+        info = extract_card_info("Rhydon jungle 45/64 english")
+        assert info["card_name"] == "Rhydon"
+        assert info["collector_number"] == "45/64"
+        assert info["set_name"] == "Jungle"
+
 
 class TestParseSetInfo:
     """Tests for _parse_set_info()."""
