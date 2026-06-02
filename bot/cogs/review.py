@@ -327,7 +327,18 @@ class ReviewCog(commands.Cog, name="Review"):
         Scrapes Cardmarket, posts the result, then asks the user to supply
         the ``idProduct`` so the catalog ID → URL-slug mapping can be stored.
         """
-        normalised_url = normalize_cardmarket_url(cardmarket_url)
+        # Identify the card first so the normalised Cardmarket URL can be
+        # filtered by condition (e.g. minCondition=2 for Near Mint).
+        fingerprint = identify_card(
+            review_item.get("title", ""), review_item.get("description")
+        )
+        min_condition: int | None = (
+            fingerprint.condition_code
+            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
+            else None
+        )
+
+        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
 
         # Extract URL path segments for slug derivation.
         url_path = urlparse(normalised_url).path.rstrip("/")
@@ -420,7 +431,6 @@ class ReviewCog(commands.Cog, name="Review"):
         comparison = compare_prices(stub_listing, cm_data)
 
         # ── Store learning mapping ────────────────────────────────────────────
-        fingerprint = identify_card(listing_title)
         if monitor.resolver:
             await monitor.resolver.store_mapping(
                 fingerprint=fingerprint,
@@ -451,6 +461,7 @@ class ReviewCog(commands.Cog, name="Review"):
             cm_data=cm_data,
             comparison=comparison,
             resolved_by=message.author.display_name,
+            fingerprint=fingerprint,
         )
         # Append slug info so the user knows what was extracted from the URL.
         slug_lines = []
@@ -767,8 +778,17 @@ class ReviewCog(commands.Cog, name="Review"):
         listing_price = float(review_item.get("price") or 0.0)
         listing_currency = review_item.get("currency") or "EUR"
 
-        # Always normalise the URL (add sellerCountry=23&language=1).
-        normalised_url = normalize_cardmarket_url(cardmarket_url)
+        # Identify the card first so the normalised Cardmarket URL can be
+        # filtered by condition (e.g. minCondition=2 for Near Mint).
+        fingerprint = identify_card(listing_title, review_item.get("description"))
+        min_condition: int | None = (
+            fingerprint.condition_code
+            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
+            else None
+        )
+
+        # Always normalise the URL (add sellerCountry=23&language=1, and condition).
+        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
 
         logger.info(
             "ReviewCog: processing URL '%s' for listing '%s' (submitted by %s)",
@@ -873,7 +893,6 @@ class ReviewCog(commands.Cog, name="Review"):
         comparison = compare_prices(stub_listing, cm_data)
 
         # ── Store learning mapping ────────────────────────────────────────
-        fingerprint = identify_card(listing_title)
         if monitor.resolver:
             await monitor.resolver.store_mapping(
                 fingerprint=fingerprint,
@@ -916,6 +935,7 @@ class ReviewCog(commands.Cog, name="Review"):
             cm_data=cm_data,
             comparison=comparison,
             resolved_by=submitted_by.display_name,
+            fingerprint=fingerprint,
         )
         if product_slug or set_slug:
             slug_lines = []
@@ -1036,7 +1056,16 @@ class ReviewCog(commands.Cog, name="Review"):
         listing_url = error_item.get("listing_url") or ""
         generated_cm_url = error_item.get("cardmarket_url") or ""
 
-        normalised_url = normalize_cardmarket_url(cardmarket_url)
+        # Identify the card first so the normalised Cardmarket URL can be
+        # filtered by condition.
+        fingerprint = identify_card(listing_title)
+        min_condition: int | None = (
+            fingerprint.condition_code
+            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
+            else None
+        )
+
+        normalised_url = normalize_cardmarket_url(cardmarket_url, min_condition=min_condition)
 
         logger.info(
             "ReviewCog: processing correction '%s' for listing '%s' (submitted by %s)",
@@ -1138,9 +1167,6 @@ class ReviewCog(commands.Cog, name="Review"):
         )
         comparison = compare_prices(stub_listing, cm_data)
 
-        # ── Identify card fingerprint from the listing title ──────────────
-        fingerprint = identify_card(listing_title)
-
         # ── Learn prefix pattern from the correction ──────────────────────
         learned_prefix, failed_slug, correct_slug = _analyze_correction_pattern(
             generated_url=generated_cm_url,
@@ -1240,6 +1266,7 @@ class ReviewCog(commands.Cog, name="Review"):
             cm_data=cm_data,
             comparison=comparison,
             resolved_by=submitted_by.display_name,
+            fingerprint=fingerprint,
         )
         if learned_prefix is not None and effective_set_code:
             result_embed.add_field(

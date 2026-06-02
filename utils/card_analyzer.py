@@ -1180,6 +1180,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         remainder = raw_name[break_match.end() :].strip()
 
         if candidate and _verify_pokemon_in_text(candidate):
+            # Try to strip a trailing set name from the candidate before the
+            # break point.  E.g. "Flareon Legendary Collection 2002" has
+            # candidate "Flareon Legendary Collection"; splitting at the known
+            # set name gives card="Flareon", set="Legendary Collection".
+            cand_name_part, cand_set_frag = _split_before_at_known_set(candidate)
+            if cand_set_frag and cand_name_part:
+                cand_matched_name, cand_matched_ok = _match_pokemon_name(cand_name_part.strip())
+                if cand_matched_ok:
+                    result["card_name"] = cand_matched_name
+                    result["card_name_matched"] = True
+                    set_code, set_name = _parse_set_info(cand_set_frag)
+                    result["set_code"] = set_code
+                    result["set_name"] = set_name
+                    return result
+
             result["card_name"] = candidate
             result["card_name_matched"] = True
             # Strip any leading year from the remainder, then try set info.
