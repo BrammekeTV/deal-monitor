@@ -848,6 +848,31 @@ def _extract_card_metadata(soup: BeautifulSoup, prices: dict[str, Any]) -> None:
     if number_match:
         prices["card_number"] = number_match.group(1)
 
+    # ── Numeric idProduct from page HTML ──────────────────────────────────
+    id_product = _extract_id_product_from_html(str(soup))
+    if id_product is not None:
+        prices["id_product"] = id_product
+
+
+# Matches the numeric idProduct embedded in a data-modal attribute, e.g.:
+#   data-modal="/en/Pokemon/Modal/Product_GpsrInformationModal?idProduct=765991"
+_ID_PRODUCT_RE = re.compile(r'[?&]idProduct=(\d+)', re.IGNORECASE)
+
+
+def _extract_id_product_from_html(html: str) -> int | None:
+    """Extract the numeric Cardmarket ``idProduct`` from a product page's HTML.
+
+    Cardmarket embeds the product ID in ``data-modal`` attributes like::
+
+        data-modal="/en/Pokemon/Modal/Product_GpsrInformationModal?idProduct=765991"
+
+    Returns the ID as an integer, or ``None`` when it cannot be found.
+    """
+    match = _ID_PRODUCT_RE.search(html)
+    if match:
+        return int(match.group(1))
+    return None
+
 
 # ---------------------------------------------------------------------------
 # PSA detection helpers  (public so they can be used by the monitor cog)
@@ -1204,6 +1229,7 @@ class CardmarketPriceData:
     set_name: str | None = None
     card_number: str | None = None
     id_expansion: int | None = None
+    id_product: int | None = None          # Numeric Cardmarket idProduct (extracted from page HTML)
 
     def is_valid(self) -> bool:
         """True if the from_price was successfully scraped."""
@@ -1368,6 +1394,7 @@ class CardmarketScraper:
             dutch_sellers_available=dutch_available,
             set_name=prices_dict.get("set_name"),
             card_number=prices_dict.get("card_number"),
+            id_product=prices_dict.get("id_product"),
         )
 
     # ------------------------------------------------------------------

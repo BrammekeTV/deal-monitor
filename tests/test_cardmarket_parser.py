@@ -992,3 +992,77 @@ class TestGenerateVariantUrls:
 
     def test_empty_url_returns_empty(self) -> None:
         assert generate_variant_urls("") == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_id_product_from_html
+# ---------------------------------------------------------------------------
+
+from scraper.cardmarket import _extract_id_product_from_html  # noqa: E402
+
+
+class TestExtractIdProductFromHtml:
+    def test_extracts_from_data_modal_attribute(self) -> None:
+        html = (
+            '<a data-modal="/en/Pokemon/Modal/Product_GpsrInformationModal'
+            '?idProduct=765991">info</a>'
+        )
+        assert _extract_id_product_from_html(html) == 765991
+
+    def test_extracts_from_ampersand_prefixed_param(self) -> None:
+        html = (
+            '<a data-modal="/en/Pokemon/Modal/Other?foo=bar'
+            '&idProduct=299451">info</a>'
+        )
+        assert _extract_id_product_from_html(html) == 299451
+
+    def test_case_insensitive(self) -> None:
+        html = '<a data-modal="/en/Pokemon/Modal/Foo?idproduct=123456">info</a>'
+        assert _extract_id_product_from_html(html) == 123456
+
+    def test_returns_none_when_absent(self) -> None:
+        html = "<html><body><h1>No product ID here</h1></body></html>"
+        assert _extract_id_product_from_html(html) is None
+
+    def test_returns_none_on_empty_string(self) -> None:
+        assert _extract_id_product_from_html("") is None
+
+    def test_returns_integer_type(self) -> None:
+        html = '<a data-modal="?idProduct=42">x</a>'
+        result = _extract_id_product_from_html(html)
+        assert isinstance(result, int)
+
+
+class TestParseProductPageIdProduct:
+    """_parse_product_page should include id_product when the HTML contains one."""
+
+    _HTML_WITH_ID = """
+    <html><body>
+    <h1>Dark Raichu</h1>
+    <a data-modal="/en/Pokemon/Modal/Product_GpsrInformationModal?idProduct=765991">GPSR</a>
+    <dl class="info-list-container">
+      <dt>From</dt>
+      <dd><span class="font-weight-bold">2,50 €</span></dd>
+      <dt>Price Trend</dt>
+      <dd><span class="font-weight-bold">3,00 €</span></dd>
+    </dl>
+    </body></html>
+    """
+
+    _HTML_WITHOUT_ID = """
+    <html><body>
+    <h1>Dark Raichu</h1>
+    <dl class="info-list-container">
+      <dt>From</dt>
+      <dd><span class="font-weight-bold">2,50 €</span></dd>
+    </dl>
+    </body></html>
+    """
+
+    def test_id_product_extracted_when_present(self) -> None:
+        result = _parse_product_page(self._HTML_WITH_ID)
+        assert result.get("id_product") == 765991
+
+    def test_id_product_absent_when_not_in_html(self) -> None:
+        result = _parse_product_page(self._HTML_WITHOUT_ID)
+        assert "id_product" not in result
