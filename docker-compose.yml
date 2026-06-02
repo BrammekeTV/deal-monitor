@@ -36,6 +36,8 @@ services:
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
       # When running via Docker Compose, Byparr is reachable by service name.
       - BYPARR_URL=${BYPARR_URL:-http://byparr:8192}
+      # Optional Apify token for reliable Vinted item detail scraping.
+      - APIFY_API_TOKEN=${APIFY_API_TOKEN:-}
     volumes:
       # Persist the database and logs outside the container.
       - ./data:/app/data
