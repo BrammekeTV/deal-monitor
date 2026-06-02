@@ -213,6 +213,7 @@ class VintedScraper(BaseScraper):
         if not scraper:
             return None
 
+        api_failed = False
         for attempt in range(2):
             try:
                 vinted_item = await scraper.item(item_id)
@@ -240,10 +241,73 @@ class VintedScraper(BaseScraper):
                             refresh_exc,
                         )
                 else:
-                    logger.error(
-                        "Failed to fetch listing %s: %s", url, exc, exc_info=True
+                    logger.warning(
+                        "get_listing: API failed for %s (%s) – falling back to page scrape",
+                        url, exc_str[:120],
                     )
-                    return None
+                    api_failed = True
+                    break
+
+        if api_failed:
+            logger.info("get_listing: attempting web page scrape for %s", url)
+            listing = await self._fetch_listing_from_page(url, item_id, scraper, base_url)
+            if listing is not None:
+                return listing
+            logger.error("Failed to fetch listing %s via API and page scrape", url)
+
+        return None
+
+    async def _fetch_listing_from_page(
+        self, url: str, item_id: str, scraper, base_url: str
+    ) -> Listing | None:
+        """Fall back to scraping the Vinted item web page when the API returns 403.
+
+        Vinted embeds item data in a ``__NEXT_DATA__`` JSON blob on the page,
+        which is accessible without authentication.
+        """
+        import json
+        import re
+
+        try:
+            # Request HTML – override Accept so the server returns the full page.
+            headers = dict(_BROWSER_HEADERS)
+            headers["Accept"] = (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            )
+            resp = await scraper._client.get(url, headers=headers)
+            if resp.status_code != 200:
+                logger.debug(
+                    "_fetch_listing_from_page: %s returned %d", url, resp.status_code
+                )
+                return None
+
+            html = resp.text
+
+            # Vinted is a Next.js app – item data is embedded in __NEXT_DATA__.
+            m = re.search(
+                r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+                html,
+                re.DOTALL,
+            )
+            if m:
+                data = json.loads(m.group(1))
+                page_props = data.get("props", {}).get("pageProps", {})
+                item = page_props.get("item") or page_props.get("itemDto")
+                if item and isinstance(item, dict):
+                    listing = _page_dict_to_listing(item, item_id, url, base_url)
+                    if listing:
+                        logger.info(
+                            "_fetch_listing_from_page: extracted listing for item %s from page",
+                            item_id,
+                        )
+                        return listing
+
+            logger.debug(
+                "_fetch_listing_from_page: could not extract item data from page for %s", url
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("_fetch_listing_from_page: failed for %s: %s", url, exc)
+
         return None
 
 
@@ -301,4 +365,82 @@ def _vinted_item_to_listing(vinted_item, base_url: str) -> Listing | None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to convert VintedItem to Listing: %s", exc)
+        return None
+
+
+def _page_dict_to_listing(
+    item: dict, item_id: str, page_url: str, base_url: str
+) -> Listing | None:
+    """Convert a raw item dict extracted from the Vinted page HTML into a Listing.
+
+    Vinted embeds item data as ``__NEXT_DATA__`` JSON on each item page.  The
+    structure mirrors the API response but may differ slightly between TLDs and
+    over time, so all field accesses are defensive.
+    """
+    try:
+        listing_id = str(item.get("id") or item_id)
+
+        title = (item.get("title") or "Unknown").strip() or "Unknown"
+
+        # Price can be a plain numeric string, a float, or a dict
+        # {"amount": "2.50", "currency_code": "EUR"}.
+        raw_price = item.get("price") or item.get("item_price") or {}
+        if isinstance(raw_price, dict):
+            price = float(raw_price.get("amount") or 0)
+            currency = (
+                raw_price.get("currency_code")
+                or item.get("currency")
+                or "EUR"
+            )
+        else:
+            price = float(raw_price or 0)
+            currency = item.get("currency") or "EUR"
+
+        # Build absolute URL.
+        raw_url = item.get("url") or item.get("path") or ""
+        if raw_url.startswith("http"):
+            item_url = raw_url
+        elif raw_url:
+            item_url = base_url.rstrip("/") + "/" + raw_url.lstrip("/")
+        else:
+            item_url = page_url
+
+        # Images.
+        images: list[str] = []
+        for photo in item.get("photos") or []:
+            if isinstance(photo, dict):
+                src = (
+                    photo.get("url")
+                    or photo.get("full_size_url")
+                    or photo.get("src")
+                )
+                if src and src.startswith("http"):
+                    images.append(src)
+
+        # Seller info.
+        seller_name: str | None = None
+        seller_rating: float | None = None
+        user = item.get("user")
+        if isinstance(user, dict):
+            seller_name = user.get("login") or user.get("username")
+            rep = user.get("feedback_reputation")
+            if rep is not None:
+                try:
+                    seller_rating = float(rep) * 5  # 0-1 scale -> 0-5
+                except (TypeError, ValueError):
+                    pass
+
+        return Listing(
+            listing_id=listing_id,
+            title=title,
+            price=price,
+            currency=currency,
+            url=item_url,
+            seller_name=seller_name,
+            seller_rating=seller_rating,
+            images=images,
+            description=item.get("description"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to convert page item dict to Listing: %s", exc)
         return None
