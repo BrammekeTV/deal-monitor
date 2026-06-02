@@ -559,6 +559,18 @@ _KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
         ("pitch black", "Pitch Black"),
         ("black bolt", "Black Bolt"),
         ("white flare", "White Flare"),
+        # McDonald's Match Battle / Collection
+        ("mcdonald's match battle 2025", "McDonald's Match Battle 2025"),
+        ("mcdonald's match battle 2024", "McDonald's Match Battle 2024"),
+        ("mcdonald's match battle 2023", "McDonald's Match Battle 2023"),
+        ("mcdonald's match battle 2022", "McDonald's Match Battle 2022"),
+        ("mcdonald's match battle 2021", "McDonald's Match Battle 2021"),
+        ("mcdonald's match battle 2020", "McDonald's Match Battle 2020"),
+        ("mcdonald's match battle 2019", "McDonald's Match Battle 2019"),
+        ("mcdonald's match battle", "McDonald's Match Battle"),
+        ("mcdonalds match battle", "McDonald's Match Battle"),
+        ("mcdonald's collection", "McDonald's Collection"),
+        ("mcdonalds collection", "McDonald's Collection"),
         # Misc / promos
         ("southern islands", "Southern Islands"),
         ("wizards black star promos", "Wizards Black Star Promos"),
@@ -1126,6 +1138,29 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["card_name_matched"] = matched
         result["set_code"] = promo_set_code
         result["collector_number"] = promo_number
+
+        # Try to extract the set name from the text after the promo number.
+        # e.g. "Pikachu (M23 006) NM McDonald's Match Battle 2023"
+        #       → after = ") NM McDonald's Match Battle 2023"
+        #       → strip ")" → "NM McDonald's Match Battle 2023"
+        #       → _parse_set_info strips "NM" → "McDonald's Match Battle 2023"
+        set_name: str | None = None
+        for pm in _PROMO_NUMBER_RE.finditer(text):
+            pm_token = pm.group(1) or pm.group(3)
+            if pm_token == promo_set_code:
+                after_raw = text[pm.end():].strip()
+                # Strip any close-paren/bracket left from "(M23 006)" notation.
+                after_raw = re.sub(r"^[\s)\]]+", "", after_raw).strip()
+                after_clean = _strip_after_number_noise(after_raw)
+                if after_clean:
+                    _, set_name = _parse_set_info(after_clean)
+                break
+
+        # Fallback: look up set name from the code→name mapping.
+        if set_name is None:
+            set_name = SET_CODE_TO_SET_NAME.get(promo_set_code.upper())
+
+        result["set_name"] = set_name
         return result
 
     # ── 4. No collector number – best-effort card name + set info ────────
