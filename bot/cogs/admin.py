@@ -180,19 +180,38 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send("No mapped Expansion IDs found yet.", ephemeral=True)
             return
 
-        lines = [
+        all_lines = [
             f"`[{r['id']}]` `{r['id_expansion']}` — `{r['set_slug'] or '—'}` ×{r.get('match_count', 1)}"
-            for r in expansion_rows[:20]
+            for r in expansion_rows
         ]
-        if len(expansion_rows) > 20:
-            lines.append(f"… and {len(expansion_rows) - 20} more")
 
-        embed = discord.Embed(
-            title=f"📦 Mapped Expansion IDs ({len(expansion_rows)} total)",
-            colour=discord.Colour.blue(),
-        )
-        embed.add_field(name="Row ID · Expansion ID · Slug", value="\n".join(lines), inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        # Split lines into chunks that fit within Discord's embed field value limit.
+        _FIELD_LIMIT = 1024
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        current_len = 0
+        for line in all_lines:
+            # +1 for the newline separator between lines
+            needed = len(line) + (1 if current else 0)
+            if current and current_len + needed > _FIELD_LIMIT:
+                chunks.append(current)
+                current = [line]
+                current_len = len(line)
+            else:
+                current.append(line)
+                current_len += needed
+        if current:
+            chunks.append(current)
+
+        total = len(expansion_rows)
+        for i, chunk in enumerate(chunks):
+            page_info = f" (page {i + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+            embed = discord.Embed(
+                title=f"📦 Mapped Expansion IDs ({total} total){page_info}",
+                colour=discord.Colour.blue(),
+            )
+            embed.add_field(name="Row ID · Expansion ID · Slug", value="\n".join(chunk), inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------
     # /delete_catalog_id  — remove a catalog ID mapping by row ID
