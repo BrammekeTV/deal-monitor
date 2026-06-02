@@ -1367,9 +1367,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
     async def _check_listing_pipeline(self, listing: "Listing") -> discord.Embed:
         """Run the full analysis pipeline for a single listing and return a result embed.
 
-        Unlike :meth:`_process_listing`, this method never marks a listing as seen
-        and never posts to any channel — it is used exclusively by the
-        :meth:`check_listing_command` slash command to provide on-demand feedback.
+        Mirrors :meth:`_process_listing` – when a listing needs review or cannot
+        be identified, it is posted to the appropriate Discord channel and marked
+        as seen, exactly as the automated scanner would do.
         """
         from utils.embed_builder import build_check_listing_embed  # noqa: PLC0415
         from services.cardmarket_resolver import ResolvedUrl  # noqa: PLC0415
@@ -1410,11 +1410,34 @@ class MonitorCog(commands.Cog, name="Monitor"):
             and fingerprint.set_name is None
             and fingerprint.set_code is None
         ):
-            return build_check_listing_embed(
+            # Send to review channel (same as _process_listing).
+            await self._send_to_review(
+                listing,
+                fingerprint,
+                [],
+                failure_reason="unresolvable_no_identifiers",
+                status="pending",
+            )
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=fingerprint.fingerprint_hash(),
+            )
+            embed = build_check_listing_embed(
                 listing,
                 fingerprint=fingerprint,
                 filter_reason="unresolvable_no_identifiers",
             )
+            embed.add_field(
+                name="📨 Action Taken",
+                value="This listing has been posted to the **review channel** for manual identification.",
+                inline=False,
+            )
+            return embed
 
         # ── PSA detection ──────────────────────────────────────────────────
         combined_text = listing.title + " " + (listing.description or "")
@@ -1477,14 +1500,30 @@ class MonitorCog(commands.Cog, name="Monitor"):
                             match_source=resolved.source,
                         )
 
-        # ── No Cardmarket match found ──────────────────────────────────────
+        # ── No Cardmarket match found → send to unidentified channel ──────
         if cm_data is None:
-            return build_check_listing_embed(
+            await self._send_to_unidentified(listing, fingerprint)
+            await self.db.mark_seen(
+                listing_id=listing.listing_id,
+                title=listing.title,
+                url=listing.url,
+                price=listing.price,
+                currency=listing.currency,
+                seller_name=listing.seller_name,
+                fingerprint=fingerprint.fingerprint_hash(),
+            )
+            embed = build_check_listing_embed(
                 listing,
                 fingerprint=fingerprint,
                 cm_url=resolved.url if resolved else None,
                 filter_reason="unidentified",
             )
+            embed.add_field(
+                name="📨 Action Taken",
+                value="This listing has been posted to the **unidentified channel** so the community can supply the Cardmarket URL.",
+                inline=False,
+            )
+            return embed
 
         # ── Price comparison ───────────────────────────────────────────────
         comparison = compare_prices(listing, cm_data)
@@ -1496,3 +1535,4 @@ class MonitorCog(commands.Cog, name="Monitor"):
             match_confidence=resolved.confidence if resolved else None,
             match_source=resolved.source if resolved else None,
         )
+
