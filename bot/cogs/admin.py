@@ -285,8 +285,8 @@ class AdminCog(commands.Cog, name="Admin"):
             inline=False,
         )
 
-        msg = await interaction.followup.send(embed=embed)
-        # followup.send returns the sent Message object only for non-ephemeral responses.
+        msg = await interaction.followup.send(embed=embed, wait=True)
+        # wait=True makes followup.send return the sent Message so we can track its ID.
         if msg is not None:
             try:
                 await msg.add_reaction("🗑️")
