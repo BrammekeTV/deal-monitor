@@ -641,11 +641,21 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 )
                 return
 
-        # ── 4. Cardmarket URL resolution (DB only) ────────────────────────
-        # Only look up the learning database — do not construct/guess a URL.
-        # If the card is not known yet, route to the unidentified channel so
-        # a user can supply the correct Cardmarket product URL.
-        resolved = self._resolver.resolve_db_only(fingerprint, listing.title)  # type: ignore[union-attr]
+        # ── 4. Cardmarket URL resolution ──────────────────────────────────
+        # First try the learning database.  When the fingerprint contains a
+        # full set of identifiers (name + set + number) we also attempt
+        # URL construction so that well-identified cards are matched
+        # automatically and posted to the correct-matches channel rather
+        # than always landing in the unidentified channel.
+        _has_full_fingerprint = bool(
+            fingerprint.card_name
+            and (fingerprint.set_code or fingerprint.set_name)
+            and fingerprint.collector_number
+        )
+        if _has_full_fingerprint:
+            resolved = await self._resolver.resolve(fingerprint, listing.title)  # type: ignore[union-attr]
+        else:
+            resolved = self._resolver.resolve_db_only(fingerprint, listing.title)  # type: ignore[union-attr]
 
         if resolved is None:
             # ── 4a. Cardmarket search training ────────────────────────────
@@ -795,6 +805,29 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     psa_grade, listing.title[:60],
                 )
 
+        # ── 5c. Enrich idExpansion for browser-scraped constructed matches ──
+        # The catalog (S3 JSON) carries idExpansion; the browser scraper does
+        # not. Populate it so embeds and catalog mappings can show the value.
+        if cm_data.id_expansion is None and resolved.source == "constructed":
+            _id_exp: int | None = None
+            # Try catalog lookup by product_id first (no extra DB round-trip).
+            if self._catalog is not None and cm_data.product_id:
+                try:
+                    _cat_prod = self._catalog.get_product_by_id(int(cm_data.product_id))
+                    if _cat_prod:
+                        _id_exp = _cat_prod.get("idExpansion")
+                except (ValueError, TypeError):
+                    pass
+            # Fall back to DB lookup by set slug.
+            if _id_exp is None:
+                _id_exp = await self._lookup_expansion_id(fingerprint)
+            if _id_exp is not None:
+                cm_data = dataclasses.replace(cm_data, id_expansion=_id_exp)
+                logger.info(
+                    "MonitorCog: enriched idExpansion=%d for constructed match '%s'",
+                    _id_exp, listing.title[:60],
+                )
+
         # ── 6. Price comparison ───────────────────────────────────────────
         comparison = compare_prices(listing, cm_data)
 
@@ -812,6 +845,38 @@ class MonitorCog(commands.Cog, name="Monitor"):
                 seller_name=listing.seller_name,
                 price=listing.price,
             )
+            # Also persist catalog ID→slug mappings when idExpansion is known,
+            # so future _lookup_expansion_id calls hit the DB without needing
+            # another catalog scan.
+            if cm_data.product_id and cm_data.id_expansion is not None:
+                import re as _re  # noqa: PLC0415
+                _url_path = cm_data.product_url.rstrip("/")
+                _product_slug = _url_path.split("/")[-1] if _url_path else None
+                _set_slug: str | None = None
+                if fingerprint.set_name:
+                    _raw_slug = fingerprint.set_name.replace("é", "e").replace("É", "E")
+                    _set_slug = _re.sub(r"[^A-Za-z0-9]+", "-", _raw_slug).strip("-") or None
+                elif fingerprint.set_code:
+                    _set_slug = fingerprint.set_code
+                try:
+                    await self.db.store_catalog_id_slugs(
+                        id_product=int(cm_data.product_id),
+                        product_slug=_product_slug,
+                        id_expansion=cm_data.id_expansion,
+                        set_slug=_set_slug,
+                        cardmarket_url=cm_data.product_url,
+                    )
+                    logger.info(
+                        "MonitorCog: stored catalog ID→slug for constructed match "
+                        "idProduct=%s idExpansion=%d slug=%r set=%r",
+                        cm_data.product_id, cm_data.id_expansion,
+                        _product_slug, _set_slug,
+                    )
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug(
+                        "MonitorCog: could not store catalog_id_slugs for %s: %s",
+                        cm_data.product_url, _exc,
+                    )
 
         # ── 8. Post profit alert or skip ──────────────────────────────────
         if comparison.is_profitable:
