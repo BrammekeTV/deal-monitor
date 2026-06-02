@@ -464,7 +464,23 @@ class ReviewCog(commands.Cog, name="Review"):
                 value="\n".join(slug_lines),
                 inline=False,
             )
-        result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
+
+        # If the idProduct was extracted automatically from the page HTML, store
+        # the catalog mapping right away without requiring a user reply.
+        auto_id_product: int | None = cm_data.id_product
+        if auto_id_product is not None:
+            id_expansion, mapping_lines = await self._lookup_catalog_for_id_product(
+                auto_id_product, product_slug, set_slug
+            )
+            if mapping_lines:
+                result_embed.add_field(
+                    name="🗺️ Catalog mappings stored",
+                    value="\n".join(mapping_lines),
+                    inline=False,
+                )
+            result_embed.set_footer(text="Mapping saved · catalog ID→slug stored automatically")
+        else:
+            result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
 
         try:
             bot_msg = await message.reply(embed=result_embed, mention_author=False)
@@ -497,6 +513,22 @@ class ReviewCog(commands.Cog, name="Review"):
                         exc,
                     )
 
+        if auto_id_product is not None:
+            # Store catalog mappings automatically (id_expansion already fetched above).
+            await self.db.store_catalog_id_slugs(
+                id_product=auto_id_product,
+                product_slug=product_slug,
+                id_expansion=id_expansion,
+                set_slug=set_slug,
+                cardmarket_url=normalised_url,
+            )
+            logger.info(
+                "ReviewCog (unidentified): auto-stored catalog mappings for '%s' "
+                "idProduct=%d idExpansion=%s slug=%r set=%r",
+                listing_title[:60], auto_id_product, id_expansion, product_slug, set_slug,
+            )
+            return
+
         # ── Ask the user for idProduct to complete catalog slug mappings ──────
         try:
             prompt_msg = await bot_msg.reply(
@@ -522,6 +554,40 @@ class ReviewCog(commands.Cog, name="Review"):
             "ReviewCog (unidentified): resolved listing '%s', awaiting optional idProduct for msg %s (product_slug=%r)",
             listing_title[:60], prompt_msg.id, product_slug,
         )
+
+    async def _lookup_catalog_for_id_product(
+        self,
+        product_id: int,
+        product_slug: str | None,
+        set_slug: str | None,
+    ) -> tuple[int | None, list[str]]:
+        """Look up *product_id* in the local catalog and return ``(id_expansion, mapping_lines)``.
+
+        *mapping_lines* is a list of human-readable strings describing the
+        ID → slug mappings that were found, suitable for embedding in a Discord embed.
+        """
+        monitor = self._get_monitor()
+        catalog = monitor.catalog if monitor else None
+        id_expansion: int | None = None
+        mapping_lines: list[str] = []
+
+        if catalog and catalog.is_loaded:
+            product = catalog.get_product_by_id(product_id)
+            if product:
+                raw_expansion = product.get("idExpansion")
+                if raw_expansion is not None:
+                    id_expansion = int(raw_expansion)
+            else:
+                logger.warning(
+                    "ReviewCog: auto-detected idProduct=%d not found in catalog", product_id
+                )
+
+        if product_slug:
+            mapping_lines.append(f"**idProduct:** `{product_id}`\n> mapped to `{product_slug}`")
+        if id_expansion is not None and set_slug:
+            mapping_lines.append(f"**idExpansion:** `{id_expansion}`\n> mapped to `{set_slug}`")
+
+        return id_expansion, mapping_lines
 
     async def _handle_unidentified_product_id_reply(
         self,
@@ -862,7 +928,24 @@ class ReviewCog(commands.Cog, name="Review"):
                 value="\n".join(slug_lines),
                 inline=False,
             )
-        result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
+
+        # If the idProduct was extracted automatically from the page HTML, store
+        # the catalog mapping right away without requiring a user reply.
+        auto_id_product: int | None = cm_data.id_product
+        if auto_id_product is not None:
+            id_expansion, mapping_lines = await self._lookup_catalog_for_id_product(
+                auto_id_product, product_slug, set_slug
+            )
+            if mapping_lines:
+                result_embed.add_field(
+                    name="🗺️ Catalog mappings stored",
+                    value="\n".join(mapping_lines),
+                    inline=False,
+                )
+            result_embed.set_footer(text="Mapping saved · catalog ID→slug stored automatically")
+        else:
+            result_embed.set_footer(text="Mapping saved · step 1 of 2 – reply with idProduct to complete catalog mapping")
+
         try:
             bot_msg = await reply_message.reply(embed=result_embed, mention_author=False)
         except discord.HTTPException as exc:
@@ -892,6 +975,23 @@ class ReviewCog(commands.Cog, name="Review"):
                     logger.error(
                         "ReviewCog: failed to post profit embed to deals channel: %s", exc
                     )
+
+        if auto_id_product is not None:
+            # Store catalog mappings automatically (id_expansion already fetched above).
+            await self.db.store_catalog_id_slugs(
+                id_product=auto_id_product,
+                product_slug=product_slug,
+                id_expansion=id_expansion,
+                set_slug=set_slug,
+                cardmarket_url=normalised_url,
+            )
+            logger.info(
+                "ReviewCog: auto-stored catalog mappings for '%s' "
+                "idProduct=%d idExpansion=%s slug=%r set=%r (submitted by %s)",
+                listing_title[:60], auto_id_product, id_expansion, product_slug, set_slug,
+                submitted_by.display_name,
+            )
+            return
 
         # ── Ask for idProduct to complete catalog slug mappings ───────────
         try:
