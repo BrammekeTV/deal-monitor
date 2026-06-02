@@ -50,6 +50,31 @@ _RARITY_KEYWORDS: list[tuple[re.Pattern, str]] = [
 
 _REVERSE_HOLO_RE = re.compile(r"\breverse\s*holo\b|\breverse\b|\bRH\b", re.I)
 _FIRST_EDITION_RE = re.compile(r"\b(1st\s*ed(?:ition)?|first\s*edition)\b", re.I)
+_STAMPED_RE = re.compile(r"\bstamped\b", re.I)
+
+# ---------------------------------------------------------------------------
+# EX-era sets that feature stamped Reverse Holos.
+# When a listing title contains "stamped" and the identified set is one of
+# these, the rarity is inferred as Reverse Holo.
+# ---------------------------------------------------------------------------
+_EX_ERA_SETS_WITH_STAMPED_REVERSES: frozenset[str] = frozenset({
+    "Ruby & Sapphire",
+    "Sandstorm",
+    "Dragon",
+    "Team Magma vs Team Aqua",
+    "Hidden Legends",
+    "FireRed & LeafGreen",
+    "Team Rocket Returns",
+    "Deoxys",
+    "Emerald",
+    "Unseen Forces",
+    "Delta Species",
+    "Legend Maker",
+    "Holon Phantoms",
+    "Crystal Guardians",
+    "Dragon Frontiers",
+    "Power Keepers",
+})
 
 # ---------------------------------------------------------------------------
 # Grading keywords
@@ -334,12 +359,26 @@ def identify_card(title: str, description: str | None = None) -> CardFingerprint
             fp.rarity = rarity_label
             break
 
+    # --- Stamped → Reverse Holo (EX-era sets with stamped reverses) ---
+    # EX-era cards are sold as "Stamped" because of the e-reader stamp on the
+    # reverse holo foil.  When the listing title contains "stamped" and the
+    # identified set is a known EX-era set that has stamped reverse holos, treat
+    # the card as Reverse Holo (unless a more specific rarity was already found).
+    if (
+        fp.rarity is None
+        and _STAMPED_RE.search(translated_title)
+        and fp.set_name in _EX_ERA_SETS_WITH_STAMPED_REVERSES
+    ):
+        fp.rarity = "Reverse Holo"
+
     # --- Holo / Reverse holo ---
     if _REVERSE_HOLO_RE.search(translated_title):
         fp.is_reverse_holo = True
         fp.is_holo = True
     elif fp.rarity and "holo" in fp.rarity.lower():
         fp.is_holo = True
+        if "reverse" in fp.rarity.lower():
+            fp.is_reverse_holo = True
 
     # --- First edition ---
     if _FIRST_EDITION_RE.search(translated_title):

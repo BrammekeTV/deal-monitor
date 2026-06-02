@@ -998,6 +998,13 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
 
+        # When after_useful has content (e.g. "Stamped - English") but did not
+        # yield any set info, fall back to the set fragment extracted from the
+        # before text (e.g. "EX Legend Maker" in
+        # "Omastar - EX Legend Maker 23/92 - Stamped - English").
+        if set_code is None and set_name is None and after_useful and set_from_before:
+            set_code, set_name = _parse_set_info(set_from_before)
+
         # When no set info could be determined from the after/before fragments,
         # scan the before text for an embedded known set name (e.g.
         # "Stoutland ir white flare 156/086").
@@ -1072,6 +1079,11 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
 
+        # Fallback: when after_useful carries noise (e.g. "Stamped - English")
+        # but yields no set info, use the set extracted from the before text.
+        if set_code is None and set_name is None and after_useful and set_from_before:
+            set_code, set_name = _parse_set_info(set_from_before)
+
         # Same fallback: scan before text for embedded set name.
         if set_code is None and set_name is None and not after_useful and not set_from_before:
             name_part, set_frag = _split_before_at_known_set(before_clean)
@@ -1115,6 +1127,11 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         after_clean = _strip_after_number_noise(after)
         after_useful = re.sub(r"^[\s)\]]+$", "", after_clean).strip()
         set_code, set_name = _parse_set_info(after_useful or set_from_before or "")
+
+        # Fallback: when after_useful carries noise (e.g. "Stamped - English")
+        # but yields no set info, use the set extracted from the before text.
+        if set_code is None and set_name is None and after_useful and set_from_before:
+            set_code, set_name = _parse_set_info(set_from_before)
 
         # When no set info could be found from the text following the subset
         # number, try to infer the set from the subset prefix (e.g. "GG" → Crown
