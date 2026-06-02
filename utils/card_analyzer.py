@@ -23,6 +23,7 @@ from utils.pokemon_data import (
     CARD_PREFIXES,
     CARD_SUFFIXES,
     KNOWN_SET_CODES,
+    SET_CODE_TO_SET_NAME,
     POKEMON_NAMES,
     _POKEMON_NAME_MAP,
 )
@@ -291,7 +292,7 @@ _PROMO_NUMBER_RE = re.compile(
 # iteratively (see _strip_rarity_suffixes) so multi-word suffixes like
 # "Holo 1st Edition" are removed in two passes.
 _RARITY_SUFFIX_RE = re.compile(
-    r"\s+\b(?:"
+    r"[\s|]+\b(?:"
     r"SAR|CHR|CSR|SSR|UR|IR|HR|RR|AR|PROMO|SR|PR"
     r"|Full\s+Art"
     r"|Alt(?:ernate)?\s+Art"
@@ -308,7 +309,7 @@ _RARITY_SUFFIX_RE = re.compile(
     r"|Rare"
     r"|1st\s+Edition"
     r"|First\s+Edition"
-    r")\b\s*$",
+    r")\b[\s|]*$",
     re.IGNORECASE,
 )
 
@@ -1185,7 +1186,11 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     if m:
         candidate = m.group(1)
         if candidate.upper() in KNOWN_SET_CODES:
-            return candidate, m.group(2).strip() or None
+            set_name = m.group(2).strip() or None
+            # If no name text follows the code, look it up from the mapping.
+            if set_name is None:
+                set_name = SET_CODE_TO_SET_NAME.get(candidate.upper())
+            return candidate, set_name
         # If the leading token is a condition abbreviation (e.g. "NM"), strip it
         # and treat the remainder as the set name.
         if _CONDITION_ABBREV_PREFIX_RE.match(candidate):
@@ -1203,7 +1208,10 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     if m:
         stripped = text.lstrip(" \t-–—").strip()
         if stripped.upper() in KNOWN_SET_CODES:
-            return stripped or None, None
+            # Look up the set name from the mapping so the name field is always
+            # populated when a known set code is recognised.
+            set_name = SET_CODE_TO_SET_NAME.get(stripped.upper())
+            return stripped or None, set_name
         # A standalone condition abbreviation yields no set info.
         if _CONDITION_ABBREV_PREFIX_RE.match(stripped):
             return None, None
