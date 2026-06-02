@@ -161,6 +161,12 @@ class Settings:
         else:
             self.playwright_fallback = bool(s.get("playwright_fallback", False))
 
+        # --- Apify ---
+        # Optional token for the Apify kazkn/vinted-smart-scraper actor.
+        # When set, this actor is used as a reliable fallback for fetching
+        # Vinted item details when the direct API and page-scrape both fail.
+        self.apify_api_token: str | None = os.getenv("APIFY_API_TOKEN") or None
+
         # --- Discord presentation ---
         disc = raw.get("discord", {})
         self.embed_colour: int = int(disc.get("embed_colour", 0x00FF7F))

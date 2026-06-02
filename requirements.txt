@@ -30,3 +30,6 @@ beautifulsoup4>=4.12.0
 
 # Fuzzy string matching for learning database lookup
 rapidfuzz>=3.0.0
+
+# Apify client for reliable Vinted item detail scraping via kazkn/vinted-smart-scraper
+apify-client>=1.7.0

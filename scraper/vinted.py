@@ -253,9 +253,55 @@ class VintedScraper(BaseScraper):
             listing = await self._fetch_listing_from_page(url, item_id, scraper, base_url)
             if listing is not None:
                 return listing
-            logger.error("Failed to fetch listing %s via API and page scrape", url)
+            logger.warning(
+                "get_listing: page scrape failed for %s – trying Apify fallback", url
+            )
+            listing = await self._fetch_listing_via_apify(url)
+            if listing is not None:
+                return listing
+            logger.error("Failed to fetch listing %s via API, page scrape, and Apify", url)
 
         return None
+
+    async def _fetch_listing_via_apify(self, url: str) -> Listing | None:
+        """Fetch item details via the Apify kazkn/vinted-smart-scraper actor.
+
+        This is a reliable paid fallback for when Vinted's API and the
+        page-scrape approach are both blocked.  Requires ``APIFY_API_TOKEN``
+        to be configured.
+        """
+        import asyncio
+
+        from config.settings import settings  # local import to avoid circularity
+
+        token = settings.apify_api_token
+        if not token:
+            logger.debug("_fetch_listing_via_apify: APIFY_API_TOKEN not set – skipping")
+            return None
+
+        logger.info("_fetch_listing_via_apify: running actor for %s", url)
+
+        def _run_sync() -> list[dict]:
+            from apify_client import ApifyClient  # noqa: PLC0415
+
+            client = ApifyClient(token)
+            run = client.actor("kazkn/vinted-smart-scraper").call(
+                run_input={"itemUrls": [url], "mode": "ITEM_DETAIL"}
+            )
+            return client.dataset(run["defaultDatasetId"]).list_items().items
+
+        try:
+            loop = asyncio.get_event_loop()
+            items: list[dict] = await loop.run_in_executor(None, _run_sync)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("_fetch_listing_via_apify: actor run failed for %s: %s", url, exc)
+            return None
+
+        if not items:
+            logger.warning("_fetch_listing_via_apify: actor returned no items for %s", url)
+            return None
+
+        return _apify_item_to_listing(items[0])
 
     async def _fetch_listing_from_page(
         self, url: str, item_id: str, scraper, base_url: str
@@ -481,4 +527,76 @@ def _page_dict_to_listing(
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to convert page item dict to Listing: %s", exc)
+        return None
+
+
+def _apify_item_to_listing(item: dict) -> Listing | None:
+    """Convert a dict from the Apify kazkn/vinted-smart-scraper actor into a Listing.
+
+    The actor returns items with the following structure::
+
+        {
+            "id": 9064347641,
+            "url": "https://www.vinted.nl/items/...",
+            "title": "Card Name",
+            "description": "...",
+            "price": 1,
+            "currency": "EUR",
+            "photos": ["https://..."],
+            "condition": "Heel goed",
+            "isSold": false,
+            "seller": {
+                "id": 101388186,
+                "username": "seller_name",
+                "rating": null,
+                ...
+            },
+            ...
+        }
+    """
+    try:
+        listing_id = str(item.get("id") or "")
+        if not listing_id:
+            return None
+
+        title = (item.get("title") or "Unknown").strip() or "Unknown"
+        price = float(item.get("price") or 0.0)
+        currency = item.get("currency") or "EUR"
+        item_url = item.get("url") or ""
+
+        # Photos is a flat list of URL strings in the Apify output.
+        images: list[str] = []
+        for photo in item.get("photos") or []:
+            if isinstance(photo, str) and photo.startswith("http"):
+                images.append(photo)
+
+        # Seller info.
+        seller_name: str | None = None
+        seller_rating: float | None = None
+        seller = item.get("seller")
+        if isinstance(seller, dict):
+            seller_name = seller.get("username")
+            rating = seller.get("rating")
+            if rating is not None:
+                try:
+                    seller_rating = float(rating)
+                except (TypeError, ValueError):
+                    pass
+
+        condition = item.get("condition")
+
+        return Listing(
+            listing_id=listing_id,
+            title=title,
+            price=price,
+            currency=currency,
+            url=item_url,
+            seller_name=seller_name,
+            seller_rating=seller_rating,
+            images=images,
+            description=item.get("description"),
+            condition=condition,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to convert Apify item to Listing: %s", exc)
         return None
