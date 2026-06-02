@@ -566,6 +566,13 @@ _KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
     reverse=True,
 )
 
+# Reverse lookup: canonical set name (lowercase) → set code.
+# Derived from SET_CODE_TO_SET_NAME so it stays in sync automatically.
+# When multiple codes share the same display name the first one wins (rare).
+_SET_NAME_TO_CODE: dict[str, str] = {
+    name.lower(): code for code, name in reversed(list(SET_CODE_TO_SET_NAME.items()))
+}
+
 # ---------------------------------------------------------------------------
 # After-number noise stripping
 # ---------------------------------------------------------------------------
@@ -986,6 +993,35 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name_matched"] = True
                     set_code = trailing_code
 
+        # Fallback for the inverted format "<set_name> <number> <card_name> [extra]"
+        # where the set name appears BEFORE the collector number and the card name
+        # appears AFTER it.  Example: "Ascended heroes 44/217 sneasel ball&normal"
+        # Conditions: card name unmatched, no set resolved, after text present, and
+        # before text exactly matches a known set name.
+        if (
+            not result.get("card_name_matched")
+            and set_code is None
+            and set_name is None
+            and after_useful
+        ):
+            candidate_set = _find_known_set_name(before_clean)
+            if candidate_set:
+                bc_norm = " ".join(before_clean.lower().split())
+                cs_norm = " ".join(candidate_set.lower().split())
+                if bc_norm == cs_norm:
+                    # before_clean is exactly a known set name; try to extract a
+                    # Pokémon name from the beginning of the after-number text.
+                    after_words = after_useful.split()
+                    for n in range(min(len(after_words), 4), 0, -1):
+                        name_candidate = " ".join(after_words[:n])
+                        name_result, matched_result = _match_pokemon_name(name_candidate)
+                        if matched_result:
+                            result["card_name"] = name_result
+                            result["card_name_matched"] = True
+                            set_name = candidate_set
+                            set_code = _SET_NAME_TO_CODE.get(cs_norm)
+                            break
+
         result["set_code"] = set_code
         result["set_name"] = set_name
         return result
@@ -1032,6 +1068,29 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
                     set_code = trailing_code
+
+        # Fallback for the inverted format "<set_name> #<number> <card_name>".
+        if (
+            not result.get("card_name_matched")
+            and set_code is None
+            and set_name is None
+            and after_useful
+        ):
+            candidate_set = _find_known_set_name(before_clean)
+            if candidate_set:
+                bc_norm = " ".join(before_clean.lower().split())
+                cs_norm = " ".join(candidate_set.lower().split())
+                if bc_norm == cs_norm:
+                    after_words = after_useful.split()
+                    for n in range(min(len(after_words), 4), 0, -1):
+                        name_candidate = " ".join(after_words[:n])
+                        name_result, matched_result = _match_pokemon_name(name_candidate)
+                        if matched_result:
+                            result["card_name"] = name_result
+                            result["card_name_matched"] = True
+                            set_name = candidate_set
+                            set_code = _SET_NAME_TO_CODE.get(cs_norm)
+                            break
 
         result["set_code"] = set_code
         result["set_name"] = set_name

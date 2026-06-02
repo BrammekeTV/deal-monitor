@@ -554,3 +554,36 @@ class TestIssue111PipeSeparatedTitle:
         info = extract_card_info("Mewtwo | Ultra Rare | Scarlet & Violet | 205/198")
         assert info["card_name"] == "Mewtwo"
         assert info["collector_number"] == "205/198"
+
+
+class TestIssueSetBeforeNumber:
+    """Regression tests for listings where the set name appears BEFORE the
+    collector number and the card name appears AFTER it.
+
+    Example title format: "<set_name> <number> <card_name> [extra]"
+    """
+
+    def test_set_name_before_number_card_after(self):
+        """'Ascended heroes 44/217 sneasel ball&normal' → sneasel / Ascended Heroes / ASC."""
+        info = extract_card_info("Ascended heroes 44/217 sneasel ball&normal")
+        assert info["card_name"] == "Sneasel"
+        assert info["collector_number"] == "44/217"
+        assert info["set_name"] == "Ascended Heroes"
+        assert info["set_code"] == "ASC"
+        assert info["card_name_matched"] is True
+
+    def test_set_name_before_number_no_trailing_noise(self):
+        """'Ascended heroes 44/217 Sneasel' (clean title) should also resolve correctly."""
+        info = extract_card_info("Ascended heroes 44/217 Sneasel")
+        assert info["card_name"] == "Sneasel"
+        assert info["collector_number"] == "44/217"
+        assert info["set_name"] == "Ascended Heroes"
+        assert info["set_code"] == "ASC"
+
+    def test_other_known_set_before_number(self):
+        """'Obsidian Flames 125/197 Charizard ex' – set precedes number, card follows."""
+        info = extract_card_info("Obsidian Flames 125/197 Charizard ex")
+        assert info["card_name"] == "Charizard ex"
+        assert info["collector_number"] == "125/197"
+        assert info["set_name"] == "Obsidian Flames"
+        assert info["card_name_matched"] is True
