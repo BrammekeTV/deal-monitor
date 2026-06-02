@@ -1329,7 +1329,19 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self, interaction: discord.Interaction, url: str
     ) -> None:
         """Fetch a Vinted listing and run the full analysis pipeline on demand."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            # The 3-second Discord acknowledgment window already expired (the
+            # event loop was busy with a scan cycle).  Nothing we can do – the
+            # interaction token is gone.  Log and exit silently; Discord will
+            # show "The application did not respond" to the user.
+            logger.warning(
+                "MonitorCog: /check_listing interaction expired before defer() "
+                "could be sent (Unknown Interaction 10062) – user: %s, url: %s",
+                interaction.user, url,
+            )
+            return
 
         if "vinted." not in url.lower():
             await interaction.followup.send(

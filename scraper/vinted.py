@@ -276,8 +276,8 @@ class VintedScraper(BaseScraper):
             )
             resp = await scraper._client.get(url, headers=headers)
             if resp.status_code != 200:
-                logger.debug(
-                    "_fetch_listing_from_page: %s returned %d", url, resp.status_code
+                logger.warning(
+                    "_fetch_listing_from_page: %s returned HTTP %d", url, resp.status_code
                 )
                 return None
 
@@ -289,24 +289,62 @@ class VintedScraper(BaseScraper):
                 html,
                 re.DOTALL,
             )
-            if m:
-                data = json.loads(m.group(1))
-                page_props = data.get("props", {}).get("pageProps", {})
-                item = page_props.get("item") or page_props.get("itemDto")
-                if item and isinstance(item, dict):
-                    listing = _page_dict_to_listing(item, item_id, url, base_url)
-                    if listing:
-                        logger.info(
-                            "_fetch_listing_from_page: extracted listing for item %s from page",
-                            item_id,
-                        )
-                        return listing
+            if not m:
+                logger.warning(
+                    "_fetch_listing_from_page: __NEXT_DATA__ script not found in page for %s"
+                    " (page length: %d chars)",
+                    url, len(html),
+                )
+                return None
 
-            logger.debug(
-                "_fetch_listing_from_page: could not extract item data from page for %s", url
+            data = json.loads(m.group(1))
+            page_props = data.get("props", {}).get("pageProps", {})
+
+            # Try every known key path where Vinted may embed the item dict.
+            # The field name has changed across Vinted TLDs and app versions:
+            #   - "item" / "itemDto"  (classic Next.js SSR)
+            #   - "initialItem"       (seen in some TLD variants)
+            #   - "data" → "item"     (nested under a "data" wrapper)
+            item: dict | None = None
+            for key in ("item", "itemDto", "initialItem"):
+                candidate = page_props.get(key)
+                if candidate and isinstance(candidate, dict):
+                    item = candidate
+                    break
+
+            # Also check one level deeper under a "data" wrapper.
+            if item is None:
+                data_wrapper = page_props.get("data")
+                if isinstance(data_wrapper, dict):
+                    for key in ("item", "itemDto", "initialItem"):
+                        candidate = data_wrapper.get(key)
+                        if candidate and isinstance(candidate, dict):
+                            item = candidate
+                            break
+
+            if item is None:
+                logger.warning(
+                    "_fetch_listing_from_page: item data not found in pageProps for %s"
+                    " (available keys: %s)",
+                    url,
+                    list(page_props.keys())[:20],
+                )
+                return None
+
+            listing = _page_dict_to_listing(item, item_id, url, base_url)
+            if listing:
+                logger.info(
+                    "_fetch_listing_from_page: extracted listing for item %s from page",
+                    item_id,
+                )
+                return listing
+
+            logger.warning(
+                "_fetch_listing_from_page: _page_dict_to_listing returned None for item %s",
+                item_id,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("_fetch_listing_from_page: failed for %s: %s", url, exc)
+            logger.warning("_fetch_listing_from_page: failed for %s: %s", url, exc)
 
         return None
 
