@@ -1492,6 +1492,20 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     source="catalog",
                     confidence=0.9,
                 )
+                # Store a mapping so future lookups can use the DB fast path.
+                if self._resolver is not None:
+                    await self._resolver.store_mapping(
+                        fingerprint=fingerprint,
+                        raw_title=listing.title,
+                        cardmarket_url=cm_data.product_url,
+                        product_name=cm_data.product_name,
+                        product_id=cm_data.product_id,
+                        validated_by="catalog",
+                        confidence=resolved.confidence,
+                        listing_url=listing.url,
+                        seller_name=listing.seller_name,
+                        price=listing.price,
+                    )
 
         # ── DB resolver fallback ───────────────────────────────────────────
         if cm_data is None and self._resolver is not None:
@@ -1511,6 +1525,13 @@ class MonitorCog(commands.Cog, name="Monitor"):
                             match_confidence=resolved.confidence,
                             match_source=resolved.source,
                         )
+                    # ── PSA price refinement (mirrors _process_listing step 5b) ──
+                    if cm_data is not None and psa_grade is not None and psa_grade >= 9:
+                        psa_price = await self._cardmarket.scrape_psa_listing_price(
+                            resolved.url, psa_grade
+                        )
+                        if psa_price is not None:
+                            cm_data = dataclasses.replace(cm_data, from_price=psa_price)
 
         # ── No Cardmarket match found → send to unidentified channel ──────
         if cm_data is None:
@@ -1537,9 +1558,43 @@ class MonitorCog(commands.Cog, name="Monitor"):
             )
             return embed
 
+        # ── Store mapping for auto-constructed URLs ────────────────────────
+        if resolved is not None and resolved.source == "constructed" and self._resolver is not None:
+            await self._resolver.store_mapping(
+                fingerprint=fingerprint,
+                raw_title=listing.title,
+                cardmarket_url=cm_data.product_url,
+                product_name=cm_data.product_name,
+                product_id=cm_data.product_id,
+                validated_by="auto",
+                confidence=resolved.confidence,
+                listing_url=listing.url,
+                seller_name=listing.seller_name,
+                price=listing.price,
+            )
+
         # ── Price comparison ───────────────────────────────────────────────
         comparison = compare_prices(listing, cm_data)
-        return build_check_listing_embed(
+
+        if comparison.is_profitable:
+            self._listings_profitable += 1
+            await self._send_profit_alert(listing, cm_data, comparison, resolved, fingerprint)
+            action_value = "✅ This listing is **profitable** and has been posted to the **deals channel**."
+        else:
+            await self._send_identified_not_profitable(listing, cm_data, comparison, resolved, fingerprint)
+            action_value = "📉 This listing was **identified** but is **not profitable** – posted to the **match channel**."
+
+        await self.db.mark_seen(
+            listing_id=listing.listing_id,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price,
+            currency=listing.currency,
+            seller_name=listing.seller_name,
+            fingerprint=fingerprint.fingerprint_hash(),
+        )
+
+        embed = build_check_listing_embed(
             listing,
             fingerprint=fingerprint,
             cm_data=cm_data,
@@ -1547,4 +1602,10 @@ class MonitorCog(commands.Cog, name="Monitor"):
             match_confidence=resolved.confidence if resolved else None,
             match_source=resolved.source if resolved else None,
         )
+        embed.add_field(
+            name="📨 Action Taken",
+            value=action_value,
+            inline=False,
+        )
+        return embed
 
