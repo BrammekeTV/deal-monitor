@@ -139,6 +139,24 @@ class Settings:
         # Format: ******host:port  or  socks5://host:port
         self.cardmarket_proxy: str | None = os.getenv("CARDMARKET_PROXY") or None
 
+        # --- Proxy pool (GeoNode) ---
+        # When enabled the bot fetches a list of free proxies from a GeoNode-
+        # compatible API and rotates through them for Cardmarket requests.
+        # CARDMARKET_PROXY takes precedence over the pool when both are set.
+        _pp_enabled = os.getenv("PROXY_POOL_ENABLED", "").lower()
+        self.proxy_pool_enabled: bool = _pp_enabled not in ("0", "false", "no", "")
+        self.geonode_proxy_url: str = os.getenv(
+            "GEONODE_PROXY_URL",
+            (
+                "https://proxylist.geonode.com/api/proxy-list"
+                "?country=NL&speed=fast&page=1&limit=500"
+                "&sort_by=responseTime&sort_type=desc"
+            ),
+        )
+        self.proxy_pool_refresh_hours: float = float(
+            os.getenv("PROXY_POOL_REFRESH_HOURS", "1")
+        )
+
         # --- FlareSolverr ---
         # Can be overridden via FLARESOLVERR_URL env var.
         # Default: localhost for local development; Docker Compose sets this

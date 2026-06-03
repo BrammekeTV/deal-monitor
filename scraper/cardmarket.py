@@ -608,7 +608,12 @@ async def validate_cardmarket_url(url: str) -> bool:
     ``curl_cffi`` is not available.
     """
     from config.settings import settings as _settings  # noqa: PLC0415
+    from utils.proxy_pool import proxy_pool as _proxy_pool  # noqa: PLC0415
+
+    # Prefer the static CARDMARKET_PROXY; fall back to the pool when enabled.
     proxy_url: str | None = _settings.cardmarket_proxy
+    if not proxy_url and _settings.proxy_pool_enabled:
+        proxy_url = await _proxy_pool.get()
 
     try:
         from curl_cffi.requests import AsyncSession  # noqa: PLC0415
@@ -1971,8 +1976,14 @@ class CardmarketScraper:
         }
 
         from config.settings import settings as _settings  # noqa: PLC0415
-        if _settings.cardmarket_proxy:
-            payload["proxy"] = {"url": _settings.cardmarket_proxy}
+        from utils.proxy_pool import proxy_pool as _proxy_pool  # noqa: PLC0415
+
+        # Prefer static proxy; fall back to pool.
+        _proxy = _settings.cardmarket_proxy
+        if not _proxy and _settings.proxy_pool_enabled:
+            _proxy = await _proxy_pool.get()
+        if _proxy:
+            payload["proxy"] = {"url": _proxy}
 
         try:
             timeout = aiohttp.ClientTimeout(total=70)

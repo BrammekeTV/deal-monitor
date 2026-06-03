@@ -63,6 +63,7 @@ from utils.embed_builder import (
     build_unidentified_embed,
 )
 from utils.logger import get_logger
+from utils.proxy_pool import proxy_pool as _proxy_pool
 
 if TYPE_CHECKING:
     from scraper.base import Listing
@@ -131,6 +132,14 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._vinted = VintedScraper()
         await self._vinted.setup()
 
+        # Resolve proxy for Camoufox: prefer CARDMARKET_PROXY; fall back to
+        # the GeoNode proxy pool when it is enabled.
+        _camoufox_proxy: str | None = settings.cardmarket_proxy
+        if not _camoufox_proxy and settings.proxy_pool_enabled:
+            _camoufox_proxy = await _proxy_pool.get()
+            if _camoufox_proxy:
+                logger.info("MonitorCog: using proxy pool proxy %s for Camoufox", _camoufox_proxy)
+
         # Initialise Camoufox (patched Firefox) browser for Cardmarket scraping.
         # Camoufox bypasses Cloudflare bot detection via a hardened Firefox binary
         # with randomised fingerprints; it returns a standard Playwright Browser.
@@ -144,7 +153,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             block_webrtc=True,
             # Keep browser cache across pages for a more realistic browsing profile.
             enable_cache=True,
-            **({"proxy": _proxy_settings(settings.cardmarket_proxy)} if settings.cardmarket_proxy else {}),
+            **({"proxy": _proxy_settings(_camoufox_proxy)} if _camoufox_proxy else {}),
         )
         self._browser = await self._camoufox.__aenter__()
         # Pass a cookies file so cf_clearance cookies survive bot restarts.
