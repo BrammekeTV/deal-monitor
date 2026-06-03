@@ -878,6 +878,102 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
             parts.append(found_suffix)
         return " ".join(parts), True
 
+    # --- Fallback A: strip noise tokens and retry the canonical lookup ---
+    # Handles several patterns seen in real Vinted listings:
+    #   Leading separators : "- Lugia (N1)"      → "Lugia"
+    #   Trailing punctuation: "Pancham ,"         → "Pancham"
+    #   Unclosed paren      : "Zapdos (TWM"       → "Zapdos"
+    #   Closed parens       : "Lugia (N1)"        → "Lugia"
+    fallback_text = working
+    fallback_text = re.sub(r"^[\s\-–—|:,]+", "", fallback_text)
+    fallback_text = fallback_text.rstrip(" \t,.:;-–—|")
+    # strip unclosed parenthetical at end (e.g. "(TWM" in "Zapdos (TWM")
+    fallback_text = re.sub(r"\s*\([^)]*$", "", fallback_text).strip()
+    # strip closed parentheticals (e.g. "(N1)", "(EX)")
+    fallback_text = re.sub(r"\s*\([^)]*\)", " ", fallback_text).strip()
+    if fallback_text and fallback_text.lower() != working.lower():
+        canonical_fb = _POKEMON_NAME_MAP.get(fallback_text.lower())
+        if canonical_fb is not None:
+            parts_fb: list[str] = []
+            if found_prefix:
+                parts_fb.append(found_prefix)
+            parts_fb.append(canonical_fb)
+            if found_suffix:
+                parts_fb.append(found_suffix)
+            return " ".join(parts_fb), True
+        # Also try prefix/suffix extraction on the cleaned text.
+        inner_working = fallback_text
+        inner_suffix: str | None = None
+        inner_prefix: str | None = None
+        for sfx in CARD_SUFFIXES:
+            sfx_m = re.search(r"(?i)(?:\s+)" + re.escape(sfx) + r"\s*$", inner_working)
+            if sfx_m:
+                inner_suffix = inner_working[sfx_m.start():].strip()
+                inner_working = inner_working[: sfx_m.start()].strip()
+                break
+        for pfx in CARD_PREFIXES:
+            pfx_m = re.match(r"^" + re.escape(pfx) + r"(?:\s+|$)", inner_working, re.IGNORECASE)
+            if pfx_m:
+                inner_prefix = inner_working[: pfx_m.end()].strip()
+                inner_working = inner_working[pfx_m.end():].strip()
+                break
+        canonical_fb2 = _POKEMON_NAME_MAP.get(inner_working.lower())
+        if canonical_fb2 is not None:
+            parts_fb2: list[str] = []
+            eff_prefix = found_prefix or inner_prefix
+            eff_suffix = found_suffix or inner_suffix
+            if eff_prefix:
+                parts_fb2.append(eff_prefix)
+            parts_fb2.append(canonical_fb2)
+            if eff_suffix:
+                parts_fb2.append(eff_suffix)
+            return " ".join(parts_fb2), True
+
+    # --- Fallback B: try content inside the first parentheses as the name ---
+    # Handles "Scovilain (Scovillain)" where the foreign name appears first and
+    # the English name is given in brackets, e.g. from multilingual Vinted titles.
+    paren_m = re.search(r"\(([^)]+)\)", working)
+    if paren_m:
+        inner = paren_m.group(1).strip()
+        after_paren = working[paren_m.end():].strip()
+        inner_working2 = inner
+        inner_suffix2: str | None = None
+        inner_prefix2: str | None = None
+        # Strip suffixes/prefixes from the inner text.
+        for sfx in CARD_SUFFIXES:
+            sfx_m = re.search(r"(?i)(?:\s+)" + re.escape(sfx) + r"\s*$", inner_working2)
+            if sfx_m:
+                inner_suffix2 = inner_working2[sfx_m.start():].strip()
+                inner_working2 = inner_working2[: sfx_m.start()].strip()
+                break
+        for pfx in CARD_PREFIXES:
+            pfx_m = re.match(r"^" + re.escape(pfx) + r"(?:\s+|$)", inner_working2, re.IGNORECASE)
+            if pfx_m:
+                inner_prefix2 = inner_working2[: pfx_m.end()].strip()
+                inner_working2 = inner_working2[pfx_m.end():].strip()
+                break
+        # When no suffix was found in the inner text, check if a card-type suffix
+        # immediately follows the closing paren in the original text (e.g.
+        # "Flamoutan (Simisear) Vstar s12a" → inner="Simisear", after_paren="Vstar s12a").
+        if inner_suffix2 is None and after_paren:
+            for sfx in CARD_SUFFIXES:
+                sfx_pat = re.compile(r"(?i)^" + re.escape(sfx) + r"(?:\s|$)")
+                sfx_m = sfx_pat.match(after_paren)
+                if sfx_m:
+                    inner_suffix2 = after_paren[: sfx_m.end()].strip()
+                    break
+        canonical_b = _POKEMON_NAME_MAP.get(inner_working2.lower())
+        if canonical_b is not None:
+            parts_b: list[str] = []
+            eff_prefix_b = found_prefix or inner_prefix2
+            eff_suffix_b = found_suffix or inner_suffix2
+            if eff_prefix_b:
+                parts_b.append(eff_prefix_b)
+            parts_b.append(canonical_b)
+            if eff_suffix_b:
+                parts_b.append(eff_suffix_b)
+            return " ".join(parts_b), True
+
     # No match – return None so only validated Pokemon names are used.
     return None, False
 
@@ -1031,6 +1127,31 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
                     set_code = trailing_code
+
+        # Secondary set-code fallback: when the set info is still missing, check
+        # if before_clean ends with an unclosed parenthetical containing a known
+        # set code, e.g. "Zapdos (TWM" from "Zapdos (TWM 065/167) deutsch".
+        if set_code is None and set_name is None:
+            unclosed_m = re.search(r"\(([A-Za-z][A-Za-z0-9]{1,6})\s*$", before_clean)
+            if unclosed_m and unclosed_m.group(1).upper() in KNOWN_SET_CODES:
+                set_code = unclosed_m.group(1).upper()
+                set_name = SET_CODE_TO_SET_NAME.get(set_code)
+
+        # Tertiary set-code fallback: when card name is matched but set info is
+        # still missing, check if before_clean ends with a known set code as its
+        # last word (e.g. "Flamoutan (Simisear) Vstar s12a 021/172" →
+        # before_clean="Flamoutan (Simisear) Vstar s12a" → trailing code "s12a").
+        # Guard: skip the trailing word if it is already part of the matched card
+        # name (e.g. "Reshiram ex" — "ex" is the card suffix, not a set code).
+        if set_code is None and set_name is None and result.get("card_name_matched"):
+            words = re.split(r"\s+", before_clean.strip())
+            last_word_upper = words[-1].upper()
+            card_name_val = result.get("card_name") or ""
+            trailing_is_card_suffix = card_name_val.upper().endswith(last_word_upper)
+            if (len(words) >= 2 and last_word_upper in KNOWN_SET_CODES
+                    and not trailing_is_card_suffix):
+                set_code = words[-1].upper()
+                set_name = SET_CODE_TO_SET_NAME.get(set_code)
 
         # Inverted-format fallback: "[Set Name] [Number] [Card Name] [extra]"
         # Handles listings where the seller places the set name before the
@@ -1246,17 +1367,25 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
     # Last-resort: if the title ends with a bare integer (e.g. "Great Tusk EX 246"),
     # try treating it as the collector number and re-match the card name from the
     # remainder. Skips numbers that look like calendar years (1900–2099).
+    # Also applies progressive word-trimming so that trailing noise tokens that are
+    # not Pokémon names (e.g. "tg" in "Snorlax tg 10", "M-P" in "Pikachu promo
+    # M-P 020") do not prevent a match.
     if not result.get("card_name_matched") and result.get("collector_number") is None:
         bare_tail = re.search(r"\s+(\d{1,4})\s*$", raw_name)
         if bare_tail:
             num_candidate = bare_tail.group(1)
             if not re.match(r"^(?:19|20)\d{2}$", num_candidate):
                 name_candidate = raw_name[: bare_tail.start()].strip()
-                card_name3, matched3 = _match_pokemon_name(name_candidate)
-                if matched3:
-                    result["card_name"] = card_name3
-                    result["card_name_matched"] = True
-                    result["collector_number"] = num_candidate
+                name_words = re.split(r"\s+", name_candidate)
+                # Try longest phrase first, then progressively drop trailing words.
+                for end in range(len(name_words), 0, -1):
+                    candidate_phrase = " ".join(name_words[:end])
+                    card_name3, matched3 = _match_pokemon_name(candidate_phrase)
+                    if matched3:
+                        result["card_name"] = card_name3
+                        result["card_name_matched"] = True
+                        result["collector_number"] = num_candidate
+                        break
 
     return result
 
