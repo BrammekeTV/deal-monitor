@@ -607,11 +607,20 @@ async def validate_cardmarket_url(url: str) -> bool:
     request at the network/TLS layer.  Falls back to ``aiohttp`` if
     ``curl_cffi`` is not available.
     """
+    from config.settings import settings as _settings  # noqa: PLC0415
+    from utils.proxy_pool import proxy_pool as _proxy_pool  # noqa: PLC0415
+
+    # Prefer the static CARDMARKET_PROXY; fall back to the pool when enabled.
+    proxy_url: str | None = _settings.cardmarket_proxy
+    if not proxy_url and _settings.proxy_pool_enabled:
+        proxy_url = await _proxy_pool.get()
+
     try:
         from curl_cffi.requests import AsyncSession  # noqa: PLC0415
 
         try:
-            async with AsyncSession(impersonate="chrome136") as session:
+            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            async with AsyncSession(impersonate="chrome136", proxies=proxies) as session:
                 resp = await session.head(url, timeout=10, allow_redirects=True)
                 status = resp.status_code
                 if status == 404:
@@ -652,7 +661,9 @@ async def validate_cardmarket_url(url: str) -> bool:
     }
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.head(url, allow_redirects=True) as resp:
+            async with session.head(
+                url, allow_redirects=True, proxy=proxy_url
+            ) as resp:
                 if resp.status == 404:
                     logger.warning("validate_cardmarket_url: 404 for %s", url)
                     return False
@@ -1963,6 +1974,16 @@ class CardmarketScraper:
             "url": url,
             "maxTimeout": 60000,
         }
+
+        from config.settings import settings as _settings  # noqa: PLC0415
+        from utils.proxy_pool import proxy_pool as _proxy_pool  # noqa: PLC0415
+
+        # Prefer static proxy; fall back to pool.
+        _proxy = _settings.cardmarket_proxy
+        if not _proxy and _settings.proxy_pool_enabled:
+            _proxy = await _proxy_pool.get()
+        if _proxy:
+            payload["proxy"] = {"url": _proxy}
 
         try:
             timeout = aiohttp.ClientTimeout(total=70)

@@ -63,11 +63,30 @@ from utils.embed_builder import (
     build_unidentified_embed,
 )
 from utils.logger import get_logger
+from utils.proxy_pool import proxy_pool as _proxy_pool
 
 if TYPE_CHECKING:
     from scraper.base import Listing
 
 logger = get_logger(__name__)
+
+
+def _proxy_settings(proxy_url: str) -> dict:
+    """Convert a proxy URL string to a Playwright ProxySettings dict.
+
+    Accepts ``******host:port``, ``socks5://host:port``, etc.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+    parsed = urlparse(proxy_url)
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    result: dict = {"server": server}
+    if parsed.username:
+        result["username"] = parsed.username
+    if parsed.password:
+        result["password"] = parsed.password
+    return result
 
 
 class MonitorCog(commands.Cog, name="Monitor"):
@@ -113,6 +132,14 @@ class MonitorCog(commands.Cog, name="Monitor"):
         self._vinted = VintedScraper()
         await self._vinted.setup()
 
+        # Resolve proxy for Camoufox: prefer CARDMARKET_PROXY; fall back to
+        # the GeoNode proxy pool when it is enabled.
+        _camoufox_proxy: str | None = settings.cardmarket_proxy
+        if not _camoufox_proxy and settings.proxy_pool_enabled:
+            _camoufox_proxy = await _proxy_pool.get()
+            if _camoufox_proxy:
+                logger.info("MonitorCog: using proxy pool proxy %s for Camoufox", _camoufox_proxy)
+
         # Initialise Camoufox (patched Firefox) browser for Cardmarket scraping.
         # Camoufox bypasses Cloudflare bot detection via a hardened Firefox binary
         # with randomised fingerprints; it returns a standard Playwright Browser.
@@ -126,6 +153,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             block_webrtc=True,
             # Keep browser cache across pages for a more realistic browsing profile.
             enable_cache=True,
+            **({"proxy": _proxy_settings(_camoufox_proxy)} if _camoufox_proxy else {}),
         )
         self._browser = await self._camoufox.__aenter__()
         # Pass a cookies file so cf_clearance cookies survive bot restarts.
