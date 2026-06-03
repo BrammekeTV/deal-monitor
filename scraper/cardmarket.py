@@ -34,6 +34,7 @@ import re
 import time
 import traceback
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, urlparse, urlunparse, urlencode, parse_qs
 
@@ -601,17 +602,53 @@ async def validate_cardmarket_url(url: str) -> bool:
     Network errors are treated as *not* resolved (returns ``False``) and are
     logged at WARNING level rather than raising.
 
-    Uses ``aiohttp`` with a short timeout (10 s) so that a bad URL does not
-    stall the processing pipeline for long.
+    Uses ``curl_cffi`` with Chrome browser impersonation so that the TLS
+    fingerprint matches a real browser and Cloudflare does not reject the
+    request at the network/TLS layer.  Falls back to ``aiohttp`` if
+    ``curl_cffi`` is not available.
     """
-    import aiohttp  # noqa: PLC0415  (lazy import to avoid hard dep at module level)
+    try:
+        from curl_cffi.requests import AsyncSession  # noqa: PLC0415
+
+        try:
+            async with AsyncSession(impersonate="chrome136") as session:
+                resp = await session.head(url, timeout=10, allow_redirects=True)
+                status = resp.status_code
+                if status == 404:
+                    logger.warning("validate_cardmarket_url: 404 for %s", url)
+                    return False
+                if status in (403, 405):
+                    logger.debug(
+                        "validate_cardmarket_url: %d (anti-bot block) for %s — treating as valid",
+                        status, url,
+                    )
+                    return True
+                if status >= 400:
+                    logger.warning(
+                        "validate_cardmarket_url: unexpected status %d for %s",
+                        status, url,
+                    )
+                    return False
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("validate_cardmarket_url: request error for %s — %s", url, exc)
+            return False
+
+    except ImportError:
+        pass  # curl_cffi not installed; fall back to aiohttp below
+
+    import aiohttp  # noqa: PLC0415
 
     timeout = aiohttp.ClientTimeout(total=10)
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (compatible; DealMonitor/1.0; "
-            "+https://github.com/BrammekeTV/deal-monitor)"
-        )
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "nl-NL,nl;q=0.9,en-GB;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
     }
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -620,8 +657,6 @@ async def validate_cardmarket_url(url: str) -> bool:
                     logger.warning("validate_cardmarket_url: 404 for %s", url)
                     return False
                 if resp.status in (403, 405):
-                    # Cardmarket blocks automated HEAD requests with 403 or 405
-                    # (Method Not Allowed) even for valid product pages; treat as URL exists.
                     logger.debug(
                         "validate_cardmarket_url: %d (anti-bot block) for %s — treating as valid",
                         resp.status, url,
@@ -1267,12 +1302,23 @@ class CardmarketScraper:
         ``lookup(query)`` – search for a card and scrape the first result.
     """
 
-    def __init__(self, browser: Browser) -> None:
+    def __init__(
+        self,
+        browser: Browser,
+        *,
+        cookies_file: str | Path | None = None,
+    ) -> None:
         self._browser = browser
         # Persisted storage state (cookies + localStorage) from a successful
         # scrape.  Re-used when creating new contexts so that Cloudflare's
         # cf_clearance cookie survives across requests.
         self._saved_storage_state: dict | None = None
+        # Optional path to a JSON file for persisting cookies across restarts.
+        # When set, cookies are loaded at construction time and saved whenever
+        # a successful scrape yields a new cf_clearance cookie.
+        self._cookies_file: Path | None = Path(cookies_file) if cookies_file else None
+        if self._cookies_file:
+            self._load_cookies_from_disk()
 
     # ------------------------------------------------------------------
     # Primary API: scrape by product URL
@@ -1305,6 +1351,7 @@ class CardmarketScraper:
             # Persist cookies/storage so Cloudflare recognises us on the next request.
             try:
                 self._saved_storage_state = await context.storage_state()
+                self._save_cookies_to_disk()
             except Exception:  # noqa: BLE001
                 pass
         except Exception as exc:  # noqa: BLE001
@@ -1356,6 +1403,7 @@ class CardmarketScraper:
                 prices_dict2 = await self._fetch_product_page(page2, url_no_country)
                 try:
                     self._saved_storage_state = await context2.storage_state()
+                    self._save_cookies_to_disk()
                 except Exception:  # noqa: BLE001
                     pass
             except Exception:  # noqa: BLE001
@@ -1950,6 +1998,7 @@ class CardmarketScraper:
                                         "httpOnly": bool(c.get("httpOnly", False)),
                                     })
                                 self._saved_storage_state = {"cookies": pw_cookies}
+                                self._save_cookies_to_disk()
                             return html
                         logger.warning(
                             "Cardmarket [%s]: empty response body for %s",
@@ -2025,6 +2074,11 @@ class CardmarketScraper:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Upgrade-Insecure-Requests": "1",
+                "DNT": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
             },
         )
         # Restore persisted cookies/storage so Cloudflare recognises the browser
@@ -2037,6 +2091,62 @@ class CardmarketScraper:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Cardmarket: could not restore saved cookies: %s", exc)
         return ctx
+
+    # ------------------------------------------------------------------
+    # Cookie persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_cookies_from_disk(self) -> None:
+        """Load a previously persisted storage state (cookies) from disk.
+
+        Silently ignores any I/O or JSON errors so the bot starts cleanly
+        even when the file is missing or corrupt.
+        """
+        if not self._cookies_file:
+            return
+        try:
+            with self._cookies_file.open("r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            cookies = state.get("cookies", [])
+            if cookies:
+                self._saved_storage_state = state
+                logger.info(
+                    "Cardmarket: loaded %d persisted cookie(s) from %s",
+                    len(cookies), self._cookies_file,
+                )
+        except FileNotFoundError:
+            pass  # First run – no cookies file yet
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Cardmarket: could not load cookies from %s — %s",
+                self._cookies_file, exc,
+            )
+
+    def _save_cookies_to_disk(self) -> None:
+        """Write the current storage state to disk for reuse across restarts.
+
+        Only writes when ``_cookies_file`` is configured and cookies contain a
+        ``cf_clearance`` entry (the Cloudflare session token worth persisting).
+        Silently ignores any I/O errors.
+        """
+        if not self._cookies_file or not self._saved_storage_state:
+            return
+        cookies = self._saved_storage_state.get("cookies", [])
+        if not any(c.get("name") == "cf_clearance" for c in cookies):
+            return
+        try:
+            self._cookies_file.parent.mkdir(parents=True, exist_ok=True)
+            with self._cookies_file.open("w", encoding="utf-8") as fh:
+                json.dump(self._saved_storage_state, fh)
+            logger.debug(
+                "Cardmarket: persisted %d cookie(s) (incl. cf_clearance) to %s",
+                len(cookies), self._cookies_file,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Cardmarket: could not save cookies to %s — %s",
+                self._cookies_file, exc,
+            )
 
 
 # ---------------------------------------------------------------------------

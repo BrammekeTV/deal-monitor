@@ -120,9 +120,20 @@ class MonitorCog(commands.Cog, name="Monitor"):
             headless=settings.headless,
             os="windows",
             locale="nl-NL",
+            # Humanize cursor movements so interactions look like a real user.
+            humanize=True,
+            # Block WebRTC to prevent IP leaks that Cloudflare can detect.
+            block_webrtc=True,
+            # Keep browser cache across pages for a more realistic browsing profile.
+            enable_cache=True,
         )
         self._browser = await self._camoufox.__aenter__()
-        self._cardmarket = CardmarketScraper(self._browser)
+        # Pass a cookies file so cf_clearance cookies survive bot restarts.
+        _cookies_path = Path(settings.catalog_cache_dir).parent / "cf_cookies.json"
+        self._cardmarket = CardmarketScraper(
+            self._browser,
+            cookies_file=_cookies_path,
+        )
 
         # Initialise resolver with DB.
         self._resolver = CardmarketResolver(self.db)
