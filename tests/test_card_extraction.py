@@ -604,6 +604,85 @@ class TestInvertedSetNameFormat:
         assert info["set_name"] == "Ascended Heroes"
         assert info["card_name_matched"] is True
 
+
+class TestIssue160CardNameNotExtracted:
+    """Regression tests for issue #160 – card names were not extracted at all.
+
+    These titles failed to produce any card name (returned None / shown as "—")
+    due to parenthetical content, leading separators, or trailing noise tokens
+    that blocked the Pokémon-name lookup.
+    """
+
+    def test_foreign_name_with_english_in_parens(self):
+        """'Pokemon Scovilain (Scovillain) Shiny sv4a 208/190' → card_name='Scovillain'."""
+        info = extract_card_info("Pokemon Scovilain (Scovillain) Shiny sv4a 208/190")
+        assert info["card_name"] == "Scovillain"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "208/190"
+
+    def test_foreign_name_with_english_vstar_in_parens(self):
+        """'Pokemon Flamoutan (Simisear) Vstar s12a 021/172' → card_name contains 'Simisear'."""
+        info = extract_card_info("Pokemon Flamoutan (Simisear) Vstar s12a 021/172")
+        assert info["card_name"] is not None
+        assert info["card_name_matched"] is True
+        assert "Simisear" in info["card_name"]
+        assert info["collector_number"] == "021/172"
+        assert info["set_code"] == "S12A"
+
+    def test_set_code_in_parens_with_number_zapdos(self):
+        """'Pokémon Zapdos (TWM 065/167) deutsch' → card_name='Zapdos', set_code='TWM'."""
+        info = extract_card_info("Pokémon Zapdos (TWM 065/167) deutsch")
+        assert info["card_name"] == "Zapdos"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "065/167"
+        assert info["set_code"] == "TWM"
+
+    def test_set_code_in_parens_with_number_xerneas(self):
+        """'Pokémon Xerneas (SSP 088/191) deutsch' → card_name='Xerneas', set_code='SSP'."""
+        info = extract_card_info("Pokémon Xerneas (SSP 088/191) deutsch")
+        assert info["card_name"] == "Xerneas"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "088/191"
+        assert info["set_code"] == "SSP"
+
+    def test_trailing_comma_in_name(self):
+        """'Pancham , journey together' → card_name='Pancham'."""
+        info = extract_card_info("Pancham , journey together")
+        assert info["card_name"] == "Pancham"
+        assert info["card_name_matched"] is True
+
+    def test_leading_dash_and_closed_paren_noise(self):
+        """'Pokemon - Lugia (N1)' → card_name='Lugia'."""
+        info = extract_card_info("Pokemon - Lugia (N1)")
+        assert info["card_name"] == "Lugia"
+        assert info["card_name_matched"] is True
+
+    def test_trainer_gallery_suffix_before_bare_number(self):
+        """'Snorlax tg 10' → card_name='Snorlax', collector_number='10'."""
+        info = extract_card_info("Snorlax tg 10")
+        assert info["card_name"] == "Snorlax"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "10"
+
+    def test_promo_code_noise_before_bare_number(self):
+        """'Pokemon Pikachu promo M-P 020' → card_name='Pikachu', collector_number='020'."""
+        info = extract_card_info("Pokemon Pikachu promo M-P 020")
+        assert info["card_name"] == "Pikachu"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "020"
+
+
+class TestInvertedSetNameFormat:
+    """Tests for inverted '[Set Name] [Number] [Card Name]' title format."""
+
+    def test_set_before_number_card_after(self):
+        """'Ascended heroes 40/217 golduck ball&normal' → card=Golduck, set=Ascended Heroes."""
+        info = extract_card_info("Ascended heroes 40/217 golduck ball&normal")
+        assert info["card_name"] == "Golduck"
+        assert info["collector_number"] == "40/217"
+        assert info["set_name"] == "Ascended Heroes"
+        assert info["card_name_matched"] is True
+
     def test_set_before_number_card_after_other_set(self):
         """'Obsidian Flames 125/197 Charizard ex' → card=Charizard ex, set=Obsidian Flames."""
         info = extract_card_info("Obsidian Flames 125/197 Charizard ex")
