@@ -70,6 +70,24 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _proxy_settings(proxy_url: str) -> dict:
+    """Convert a proxy URL string to a Playwright ProxySettings dict.
+
+    Accepts ``******host:port``, ``socks5://host:port``, etc.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+    parsed = urlparse(proxy_url)
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    result: dict = {"server": server}
+    if parsed.username:
+        result["username"] = parsed.username
+    if parsed.password:
+        result["password"] = parsed.password
+    return result
+
+
 class MonitorCog(commands.Cog, name="Monitor"):
     """Background Vinted monitoring with Cardmarket price comparison."""
 
@@ -126,6 +144,7 @@ class MonitorCog(commands.Cog, name="Monitor"):
             block_webrtc=True,
             # Keep browser cache across pages for a more realistic browsing profile.
             enable_cache=True,
+            **({"proxy": _proxy_settings(settings.cardmarket_proxy)} if settings.cardmarket_proxy else {}),
         )
         self._browser = await self._camoufox.__aenter__()
         # Pass a cookies file so cf_clearance cookies survive bot restarts.

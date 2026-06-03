@@ -131,6 +131,14 @@ class Settings:
             str(catalog.get("cache_dir", "data/catalog_cache")),
         )
 
+        # --- Proxy ---
+        # Optional HTTP/SOCKS5 proxy for all Cardmarket requests (Camoufox,
+        # FlareSolverr, Byparr, and curl_cffi validation requests).
+        # Use this to route bot traffic through a residential IP when Cloudflare
+        # has blocked the server's IP address.
+        # Format: ******host:port  or  socks5://host:port
+        self.cardmarket_proxy: str | None = os.getenv("CARDMARKET_PROXY") or None
+
         # --- FlareSolverr ---
         # Can be overridden via FLARESOLVERR_URL env var.
         # Default: localhost for local development; Docker Compose sets this
