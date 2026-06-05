@@ -697,13 +697,6 @@ class MonitorCog(commands.Cog, name="Monitor"):
             resolved = self._resolver.resolve_db_only(fingerprint, listing.title)  # type: ignore[union-attr]
 
         if resolved is None:
-            # ── 4a. Cardmarket search training ────────────────────────────
-            # When training mode is enabled, search Cardmarket directly and
-            # store any correct match found so future lookups skip this step.
-            if settings.cardmarket_search_training and self._cardmarket is not None:
-                trained = await self._try_cardmarket_search_training(listing, fingerprint)
-                if trained:
-                    return
             # Not found in catalog or DB → ask user to identify it.
             await self._send_to_unidentified(listing, fingerprint)
             await self.db.mark_seen(

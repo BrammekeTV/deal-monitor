@@ -26,6 +26,7 @@ from utils.pokemon_data import (
     SET_CODE_TO_SET_NAME,
     POKEMON_NAMES,
     _POKEMON_NAME_MAP,
+    _TRAINER_CARD_NAME_MAP,
 )
 
 if TYPE_CHECKING:
@@ -848,6 +849,14 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
     if game_stripped:
         working = game_stripped
 
+    # --- Early trainer-card check (before prefix/suffix stripping) ---
+    # Trainer cards (Supporters, Stadiums, Tools, Items) have no prefixes or
+    # suffixes, so we check the full text against the trainer name map first.
+    # This prevents possessives like "Boss's" from being stripped as a prefix.
+    trainer_canonical = _TRAINER_CARD_NAME_MAP.get(working.lower())
+    if trainer_canonical is not None:
+        return trainer_canonical, True
+
     # --- Strip trailing card-name suffix (longest first) ---
     found_suffix: str | None = None
     for sfx in CARD_SUFFIXES:
@@ -1304,6 +1313,29 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 inferred = _SUBSET_PREFIX_TO_SET.get(prefix_m.group(0).upper())
                 if inferred:
                     set_code, set_name = inferred
+
+        # Last-resort: when card name is not matched, check if the last word of
+        # before_clean is a known set code that leaked into the name position
+        # (e.g. "Mew VMAX EB11 TG30/TG30" where "EB11" is a French set code
+        # between the card name and the subset number).
+        if not result.get("card_name_matched"):
+            words = re.split(r"\s+", before_clean.strip())
+            if len(words) >= 2 and words[-1].upper() in KNOWN_SET_CODES:
+                trailing_code = words[-1]
+                new_before = " ".join(words[:-1])
+                raw_name3 = _strip_rarity_suffixes(
+                    re.sub(r"^[\s\-–—|:,]+", "", new_before)
+                )
+                card_name3, matched3 = _match_pokemon_name(raw_name3)
+                if not matched3:
+                    card_name3, matched3 = _find_pokemon_in_phrase(raw_name3)
+                if matched3:
+                    result["card_name"] = card_name3
+                    result["card_name_matched"] = True
+                    # Only override set if one wasn't already inferred.
+                    if set_code is None and set_name is None:
+                        set_code = trailing_code
+                        set_name = SET_CODE_TO_SET_NAME.get(trailing_code.upper())
 
         result["set_code"] = set_code
         result["set_name"] = set_name

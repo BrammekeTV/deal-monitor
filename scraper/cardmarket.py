@@ -169,6 +169,23 @@ _SET_CODE_TO_SLUG: dict[str, str] = {
     # ---------------------------------------------------------------------------
     "SSH": "Sword-Shield",
     "SWSH1": "Sword-Shield",           # numeric alias
+    # French Sword & Shield (Épée et Bouclier) aliases
+    "EB1": "Sword-Shield",
+    "EB2": "Rebel-Clash",
+    "EB3": "Darkness-Ablaze",
+    "EB4": "Vivid-Voltage",
+    "EB4PT5": "Shining-Fates",
+    "EB5": "Battle-Styles",
+    "EB6": "Chilling-Reign",
+    "EB7": "Evolving-Skies",
+    "EB7PT5": "Celebrations",
+    "EB8": "Fusion-Strike",
+    "EB9": "Brilliant-Stars",
+    "EB10": "Astral-Radiance",
+    "EB10PT5": "Pokemon-GO",
+    "EB11": "Lost-Origin",
+    "EB12": "Silver-Tempest",
+    "EB12PT5": "Crown-Zenith",
     "RCL": "Rebel-Clash",
     "SWSH2": "Rebel-Clash",            # numeric alias
     "DAA": "Darkness-Ablaze",
