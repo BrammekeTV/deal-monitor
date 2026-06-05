@@ -282,18 +282,19 @@ _SUBSET_NUMBER_RE = re.compile(
 _HASH_NUMBER_RE = re.compile(r"#\s*(\d{1,4})\b")
 
 # Promo-style collector number: e.g. "SVP 214", "SVP214", "SWSHP 088", "XYP 145",
-# "M23 006" (McDonald's 2023)
-# Two alternating sub-patterns:
-#   1. Pure uppercase letter set codes (e.g. SVP, SWSHP): space is optional before
-#      the collector number, enabling "compact" formats like "SVP214".
-#   2. Alphanumeric set codes (e.g. M23): a space is required before the collector
-#      number to avoid consuming the number digits as part of the code (e.g.
-#      "M23 006" → code="M23", number="006"; "SVP214" must NOT match "SVP21"/"4").
+# "M23 006" (McDonald's 2023), "SV4 076" (Scarlet & Violet era set+number)
+# Two alternating sub-patterns tried in this order:
+#   1. Alphanumeric set codes with a required space (e.g. "SV4 076", "M23 006"):
+#      tried first so that "sv4 076" matches as code="SV4"/number="076" rather than
+#      the pure-letter alternative consuming "sv"/"4" and leaving "076" unmatched.
+#   2. Pure uppercase letter set codes with optional space (e.g. "SVP214", "CRZ 019"):
+#      the optional space allows compact formats like "SWSH144".
 # Must be surrounded by word boundaries / non-alphanumeric chars to avoid false positives.
 _PROMO_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9])([A-Z]{2,6}P?)\s*(\d{1,4})(?![0-9A-Za-z/])"
-    r"|"
     r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]{1,5}P?)\s+(\d{1,4})(?![0-9A-Za-z/])"
+    r"|"
+    r"(?<![A-Za-z0-9])([A-Z]{2,6}P?)\s*(\d{1,4})(?![0-9A-Za-z/])",
+    re.IGNORECASE,
 )
 
 # Known rarity/variant codes that appear *between* the card name and number.
@@ -310,6 +311,7 @@ _RARITY_SUFFIX_RE = re.compile(
     r"|Rainbow\s+Rare"
     r"|Ultra\s+Rare"
     r"|Secret\s+Rare"
+    r"|Gold\s+Star"
     r"|Shiny(?:\s+Rare)?"
     r"|Rare\s+Holo"
     r"|Holo\s+Rare"
@@ -1011,10 +1013,16 @@ def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None
     for m in _PROMO_NUMBER_RE.finditer(text):
         # The regex has two alternating sub-patterns; groups 1+2 are for pure-letter
         # codes (optional space), groups 3+4 are for alphanumeric codes (required space).
-        token = m.group(1) or m.group(3)
+        token = (m.group(1) or m.group(3)).upper()
         number = m.group(2) or m.group(4)
         # Skip tokens that are clearly not set codes.
-        if token.upper() in _NOT_PROMO_TOKENS:
+        if token in _NOT_PROMO_TOKENS:
+            continue
+        # Guard against false positives from short all-lowercase tokens that are
+        # common words in non-English titles (e.g. "de", "le", "la", "di").
+        # Such tokens are only accepted when they are a known Pokémon TCG set code.
+        orig_token = m.group(1) or m.group(3)
+        if orig_token.islower() and len(orig_token) < 4 and token not in KNOWN_SET_CODES:
             continue
         # The token must look like a plausible set code:
         # starts with an uppercase letter, followed by uppercase letters or
@@ -1022,10 +1030,44 @@ def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None
         if not re.match(r"^[A-Z][A-Z0-9]{1,5}P?$", token):
             continue
         # Everything before the match (minus surrounding punctuation) is the card name.
-        before = text[: m.start()].strip(" \t()[],-–—")
+        before = text[: m.start()].strip(" \t,-–—")
         card_name = _RARITY_SUFFIX_RE.sub("", before).strip() or None
         return card_name, token, number
     return None, None, None
+
+
+def _find_pokemon_in_phrase(text: str) -> tuple[str | None, bool]:
+    """Scan *text* for a Pokémon name using a sliding word-window search.
+
+    Tries every contiguous run of words (longest first, left-to-right) until
+    a Pokémon name is found.  Before matching, each candidate window is:
+    - Normalised so underscores become spaces (e.g. "Feraligatr_Promo" →
+      "Feraligatr Promo")
+    - Stripped of rarity suffixes (e.g. "Full Art", "Gold Star", "Promo")
+
+    This handles noisy Vinted listing titles such as::
+
+        "- Thievul - Trainer Gallery Rare"  → ("Thievul", True)
+        "Palkia EX Good plasma blast"        → ("Palkia EX", True)
+        "N's Zekrom Full Art – Kaart"        → ("N's Zekrom", True)
+        "Feraligatr_Promo"                   → ("Feraligatr", True)
+        "di Kadabra"                          → ("Kadabra", True)
+    """
+    if not text:
+        return None, False
+    words = text.split()
+    n = len(words)
+    for length in range(n, 0, -1):
+        for start in range(n - length + 1):
+            candidate = " ".join(words[start : start + length])
+            # Normalise underscores to spaces (e.g. "Feraligatr_Promo").
+            candidate = candidate.replace("_", " ")
+            # Strip rarity suffixes that may trail the card name in this window.
+            cleaned = _strip_rarity_suffixes(candidate)
+            name, matched = _match_pokemon_name(cleaned)
+            if matched:
+                return name, matched
+    return None, False
 
 
 def extract_card_info(title: str) -> dict[str, str | None | bool]:
@@ -1271,6 +1313,12 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
     promo_name, promo_set_code, promo_number = _extract_promo_number(text)
     if promo_set_code and promo_number:
         card_name, matched = _match_pokemon_name(promo_name or "")
+        # Fallback: scan the promo name with a sliding word window so that
+        # titles like "Greninja Gold Star SWSH144" (before="Greninja Gold Star")
+        # or "Generations Dedenne Holo" (before="Generations Dedenne") can still
+        # yield the correct Pokémon name when a direct match fails.
+        if not matched and promo_name:
+            card_name, matched = _find_pokemon_in_phrase(promo_name)
         result["card_name"] = card_name
         result["card_name_matched"] = matched
         result["set_code"] = promo_set_code
@@ -1284,7 +1332,7 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         set_name: str | None = None
         for pm in _PROMO_NUMBER_RE.finditer(text):
             pm_token = pm.group(1) or pm.group(3)
-            if pm_token == promo_set_code:
+            if pm_token.upper() == promo_set_code:
                 after_raw = text[pm.end():].strip()
                 # Strip any close-paren/bracket left from "(M23 006)" notation.
                 after_raw = re.sub(r"^[\s)\]]+", "", after_raw).strip()
@@ -1311,12 +1359,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
     bp_year = _YEAR_BREAK_RE.search(raw_name)
     bp_candidates = [m for m in (bp_grade, bp_year) if m is not None]
 
+    # Track whether a grade-certifier break (e.g. "CGC 9") was found with a
+    # Pokémon-containing candidate that still failed to match.  In that case the
+    # sliding-window fallback must be suppressed: the full candidate phrase was
+    # already the card's promotional title and any sub-phrase match (e.g. just
+    # "Pikachu" inside "Stargazer Pikachu & Friends") would be wrong.
+    _grade_bp_candidate_exhausted = False
+
     if bp_candidates:
         break_match = min(bp_candidates, key=lambda m: m.start())
         candidate = raw_name[: break_match.start()].strip()
         remainder = raw_name[break_match.end() :].strip()
 
         if candidate and _verify_pokemon_in_text(candidate):
+            if bp_grade is not None and break_match.start() == bp_grade.start():
+                _grade_bp_candidate_exhausted = True
             # Try to strip a trailing set name from the candidate before the
             # break point.  E.g. "Flareon Legendary Collection 2002" has
             # candidate "Flareon Legendary Collection"; splitting at the known
@@ -1386,6 +1443,23 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                         result["card_name_matched"] = True
                         result["collector_number"] = num_candidate
                         break
+
+    # Final fallback: sliding window scan over all word windows (longest first).
+    # Handles noisy titles where the Pokémon name is embedded in surrounding text,
+    # e.g. "- Thievul - Trainer Gallery Rare", "Palkia EX Good plasma blast",
+    # "Feraligatr_Promo" (underscore normalised), "di Kadabra", "N's Zekrom Full Art".
+    # Suppressed when a grade-certifier break point already tried the full candidate
+    # phrase (e.g. "Stargazer Pikachu & Friends CGC 9") to avoid extracting an
+    # incorrect substring match like "Pikachu" from a complex promotional title.
+    if (
+        not result.get("card_name_matched")
+        and result.get("collector_number") is None
+        and not _grade_bp_candidate_exhausted
+    ):
+        card_name4, matched4 = _find_pokemon_in_phrase(raw_name)
+        if matched4:
+            result["card_name"] = card_name4
+            result["card_name_matched"] = True
 
     return result
 

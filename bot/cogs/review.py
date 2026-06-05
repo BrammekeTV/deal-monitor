@@ -221,6 +221,8 @@ class ReviewCog(commands.Cog, name="Review"):
         review_channel_id = settings.discord_review_channel_id
         unidentified_channel_id = settings.discord_unidentified_channel_id
         log_channel_id = settings.discord_log_channel_id
+        deals_channel_id = settings.discord_channel_id
+        match_channel_id = settings.discord_match_channel_id
 
         if review_channel_id and message.channel.id == review_channel_id:
             await self._handle_review_reply(message)
@@ -228,6 +230,10 @@ class ReviewCog(commands.Cog, name="Review"):
             await self._handle_unidentified_reply(message)
         elif log_channel_id and message.channel.id == log_channel_id:
             await self._handle_correction_reply(message)
+        elif deals_channel_id and message.channel.id == deals_channel_id:
+            await self._handle_deal_channel_reply(message)
+        elif match_channel_id and message.channel.id == match_channel_id:
+            await self._handle_deal_channel_reply(message)
 
     async def _handle_unidentified_reply(self, message: discord.Message) -> None:
         """Handle a reply in the unidentified channel.
@@ -759,6 +765,33 @@ class ReviewCog(commands.Cog, name="Review"):
 
         await self._process_correction_reply(
             error_item=error_item,
+            cardmarket_url=cm_url,
+            submitted_by=message.author,
+            reply_message=message,
+        )
+
+    async def _handle_deal_channel_reply(self, message: discord.Message) -> None:
+        """Handle a reply in the deals or match channel (correction for a faulty match)."""
+        referenced_id = str(message.reference.message_id)  # type: ignore[union-attr]
+
+        # Look up the deal_messages entry for this Discord message.
+        deal_item = await self.db.get_deal_message_by_id(referenced_id)
+        if deal_item is None:
+            return  # Not a reply to a known deal/match message.
+
+        # Extract Cardmarket URL from the reply.
+        cm_url = _extract_cardmarket_url(message.content)
+        if not cm_url:
+            await message.reply(
+                "⚠️ No valid Cardmarket product URL found in your message.\n"
+                "Please reply with the correct URL like: "
+                "`https://www.cardmarket.com/en/Pokemon/Products/Singles/...`",
+                mention_author=False,
+            )
+            return
+
+        await self._process_correction_reply(
+            error_item=deal_item,
             cardmarket_url=cm_url,
             submitted_by=message.author,
             reply_message=message,

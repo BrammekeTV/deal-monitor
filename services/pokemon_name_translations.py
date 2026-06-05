@@ -40,6 +40,9 @@ SET_NAME_TRANSLATIONS: dict[str, str] = {
     "destinees de paldea": "Paldean Fates",
     "mascarade crépusculaire": "Twilight Masquerade",
     "mascarade crepusculaire": "Twilight Masquerade",
+    "générations": "Generations",
+    "generations": "Generations",
+    "zenit regale": "Crown Zenith",
 }
 
 

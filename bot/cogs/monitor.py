@@ -1343,7 +1343,18 @@ class MonitorCog(commands.Cog, name="Monitor"):
         channel = self._get_deals_channel()
         if channel:
             try:
-                await channel.send(embed=embed)
+                msg = await channel.send(embed=embed)
+                await self.db.store_deal_message(
+                    message_id=str(msg.id),
+                    listing_id=listing.listing_id,
+                    listing_title=listing.title,
+                    listing_url=listing.url,
+                    listing_price=listing.price,
+                    listing_currency=getattr(listing, "currency", "EUR"),
+                    listing_seller_name=getattr(listing, "seller_name", None),
+                    cardmarket_url=cm_data.product_url,
+                    channel_type="deals",
+                )
             except discord.HTTPException as exc:
                 logger.error(
                     "MonitorCog: failed to post profit alert for %s: %s",
@@ -1367,7 +1378,18 @@ class MonitorCog(commands.Cog, name="Monitor"):
 
         embed = build_not_profitable_embed(listing, cm_data, comparison, fingerprint=fingerprint)
         try:
-            await channel.send(embed=embed)
+            msg = await channel.send(embed=embed)
+            await self.db.store_deal_message(
+                message_id=str(msg.id),
+                listing_id=listing.listing_id,
+                listing_title=listing.title,
+                listing_url=listing.url,
+                listing_price=listing.price,
+                listing_currency=getattr(listing, "currency", "EUR"),
+                listing_seller_name=getattr(listing, "seller_name", None),
+                cardmarket_url=cm_data.product_url,
+                channel_type="match",
+            )
         except discord.HTTPException as exc:
             logger.error(
                 "MonitorCog: failed to post identified-not-profitable embed for %s: %s",

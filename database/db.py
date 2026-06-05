@@ -204,6 +204,21 @@ CREATE TABLE IF NOT EXISTS filter_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS deal_messages (
+    message_id          TEXT PRIMARY KEY,
+    listing_id          TEXT,
+    listing_title       TEXT,
+    listing_url         TEXT,
+    listing_price       REAL,
+    listing_currency    TEXT DEFAULT 'EUR',
+    listing_seller_name TEXT,
+    cardmarket_url      TEXT,
+    channel_type        TEXT,  -- 'deals' | 'match'
+    created_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_messages_message_id ON deal_messages(message_id);
 """
 
 
@@ -268,6 +283,30 @@ class Database:
             )
             await self._conn.commit()  # type: ignore[union-attr]
             logger.debug("Database: migrated catalog_id_slugs – added match_count column")
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            await self._conn.executescript(  # type: ignore[union-attr]
+                """
+                CREATE TABLE IF NOT EXISTS deal_messages (
+                    message_id          TEXT PRIMARY KEY,
+                    listing_id          TEXT,
+                    listing_title       TEXT,
+                    listing_url         TEXT,
+                    listing_price       REAL,
+                    listing_currency    TEXT DEFAULT 'EUR',
+                    listing_seller_name TEXT,
+                    cardmarket_url      TEXT,
+                    channel_type        TEXT,
+                    created_at          TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_deal_messages_message_id
+                    ON deal_messages(message_id);
+                """
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+            logger.debug("Database: migrated – created deal_messages table")
         except Exception:  # noqa: BLE001
             pass
 
@@ -574,6 +613,69 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Deal messages (deals / match channel Discord message tracking)
+    # ------------------------------------------------------------------
+
+    async def store_deal_message(
+        self,
+        *,
+        message_id: str,
+        listing_id: str | None = None,
+        listing_title: str | None = None,
+        listing_url: str | None = None,
+        listing_price: float | None = None,
+        listing_currency: str | None = None,
+        listing_seller_name: str | None = None,
+        cardmarket_url: str | None = None,
+        channel_type: str = "deals",
+    ) -> None:
+        """Persist a Discord message ID so that user replies can be associated
+        with the original listing and used to correct faulty matches."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            await self._conn.execute(  # type: ignore[union-attr]
+                """
+                INSERT OR REPLACE INTO deal_messages
+                    (message_id, listing_id, listing_title, listing_url,
+                     listing_price, listing_currency, listing_seller_name,
+                     cardmarket_url, channel_type, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    message_id, listing_id, listing_title, listing_url,
+                    listing_price, listing_currency or "EUR", listing_seller_name,
+                    cardmarket_url, channel_type, now,
+                ),
+            )
+            await self._conn.commit()  # type: ignore[union-attr]
+
+    async def get_deal_message_by_id(self, message_id: str) -> dict[str, Any] | None:
+        """Return a deal_messages entry by its Discord message ID.
+
+        The returned dict uses the same key names as error_log rows so that
+        :meth:`ReviewCog._process_correction_reply` can be reused without
+        modification.
+        """
+        async with self._conn.execute(  # type: ignore[union-attr]
+            "SELECT * FROM deal_messages WHERE message_id = ? LIMIT 1",
+            (message_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        # Alias column names to match the error_log dict keys expected by
+        # _process_correction_reply.
+        data.setdefault("listing_id", data.get("listing_id"))
+        data["listing_title"] = data.get("listing_title")
+        data["listing_url"] = data.get("listing_url")
+        data["listing_price"] = data.get("listing_price")
+        data["listing_currency"] = data.get("listing_currency") or "EUR"
+        data["listing_seller_name"] = data.get("listing_seller_name")
+        data["cardmarket_url"] = data.get("cardmarket_url") or ""
+        return data
 
     # ------------------------------------------------------------------
     # Correction log

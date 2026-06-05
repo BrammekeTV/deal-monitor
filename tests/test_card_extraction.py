@@ -690,3 +690,122 @@ class TestInvertedSetNameFormat:
         assert info["collector_number"] == "125/197"
         assert info["set_name"] == "Obsidian Flames"
         assert info["card_name_matched"] is True
+
+
+class TestIssue162CardNameNotExtracted:
+    """Regression tests for issue #162 – 16 Vinted listing titles that failed to
+    extract a card name.
+
+    Root causes fixed:
+    - ``_PROMO_NUMBER_RE`` now case-insensitive and alphanumeric alternative tried
+      first so "sv4 076" → code=SV4/num=076 instead of code=SV/num=4.
+    - Closing paren stripped from promo name by ``.strip()`` is no longer removed.
+    - ``_find_pokemon_in_phrase()`` sliding-window fallback added for noisy titles.
+    - ``_RARITY_SUFFIX_RE`` extended with "Gold Star".
+    - ``SET_NAME_TRANSLATIONS`` extended with "générations"/"zenit regale".
+    """
+
+    def test_leading_dash_thievul_trainer_gallery(self):
+        """'- Thievul - Trainer Gallery' → card_name='Thievul'."""
+        info = extract_card_info("- Thievul - Trainer Gallery")
+        assert info["card_name"] == "Thievul"
+        assert info["card_name_matched"] is True
+
+    def test_palkia_ex_with_trailing_set_noise(self):
+        """'Palkia EX Good plasma blast' → card_name='Palkia EX'."""
+        info = extract_card_info("Palkia EX Good plasma blast")
+        assert info["card_name"] == "Palkia EX"
+        assert info["card_name_matched"] is True
+
+    def test_reshiram_with_italian_language_suffix(self):
+        """'Reshiram 113 italiano' → card_name='Reshiram'."""
+        info = extract_card_info("Reshiram 113 italiano")
+        assert info["card_name"] == "Reshiram"
+        assert info["card_name_matched"] is True
+
+    def test_zeraora_v_trainer_gallery(self):
+        """'Zeraora V Trainer Gallery' → card_name='Zeraora V'."""
+        info = extract_card_info("Zeraora V Trainer Gallery")
+        assert info["card_name"] == "Zeraora V"
+        assert info["card_name_matched"] is True
+
+    def test_zeraora_v_noisy_with_year_break(self):
+        """'Zeraora V JP Collect Aura 9 Mint VSTAR Universe 2022' → card_name='Zeraora V'."""
+        info = extract_card_info("Zeraora V JP Collect Aura 9 Mint VSTAR Universe 2022")
+        assert info["card_name"] == "Zeraora V"
+        assert info["card_name_matched"] is True
+
+    def test_greninja_gold_star_compact_promo(self):
+        """'greninja gold star swsh144' → card_name='Greninja', collector_number='144'."""
+        info = extract_card_info("greninja gold star swsh144")
+        assert info["card_name"] == "Greninja"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "144"
+
+    def test_mega_zygarde_ex_foreign_noise(self):
+        """'Mega Zygarde EX spéciale mep' → card_name='Mega Zygarde EX'."""
+        info = extract_card_info("Mega Zygarde EX spéciale mep")
+        assert info["card_name"] == "Mega Zygarde EX"
+        assert info["card_name_matched"] is True
+
+    def test_feraligatr_underscore_and_dashes(self):
+        """'- JPN - Feraligatr_Promo - Etat GD' → card_name='Feraligatr'."""
+        info = extract_card_info("- JPN - Feraligatr_Promo - Etat GD")
+        assert info["card_name"] == "Feraligatr"
+        assert info["card_name_matched"] is True
+
+    def test_french_name_with_english_in_parens_and_set_code(self):
+        """'Flamoutan (Simisear) crz 019' → card_name='Simisear', set_code='CRZ', number='019'."""
+        info = extract_card_info("Flamoutan (Simisear) crz 019")
+        assert info["card_name"] == "Simisear"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "019"
+        assert info["set_code"] == "CRZ"
+
+    def test_italian_preposition_before_name(self):
+        """'di Kadabra' → card_name='Kadabra'."""
+        info = extract_card_info("di Kadabra")
+        assert info["card_name"] == "Kadabra"
+        assert info["card_name_matched"] is True
+
+    def test_keldeo_with_set_translations(self):
+        """'Keldeo Crz gg07 zenit regale' → card_name='Keldeo' (set translation applied)."""
+        from services.pokemon_name_translations import translate_listing_title
+
+        translated = translate_listing_title("Keldeo Crz gg07 zenit regale")
+        info = extract_card_info(translated)
+        assert info["card_name"] == "Keldeo"
+        assert info["card_name_matched"] is True
+
+    def test_ns_zekrom_lowercase_set_code(self):
+        """\"N's Zekrom scr 151\" → card_name=\"N's Zekrom\", collector_number='151'."""
+        info = extract_card_info("N's Zekrom scr 151")
+        assert info["card_name"] == "N's Zekrom"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "151"
+
+    def test_ns_zekrom_full_art_with_em_dash_noise(self):
+        """\"N's Zekrom Full Art – Pokémon Kaart – Near Mint\" → card_name=\"N's Zekrom\"."""
+        info = extract_card_info("N's Zekrom Full Art – Pokémon Kaart – Near Mint")
+        assert info["card_name"] == "N's Zekrom"
+        assert info["card_name_matched"] is True
+
+    def test_zorua_with_rarity_prefix_and_comma_separated_number(self):
+        """'(commune) zorua, 31, fables nebuleuse' → card_name='Zorua'."""
+        info = extract_card_info("(commune) zorua, 31, fables nebuleuse")
+        assert info["card_name"] == "Zorua"
+        assert info["card_name_matched"] is True
+
+    def test_french_adjective_before_octillery(self):
+        """'doré octillery' → card_name='Octillery'."""
+        info = extract_card_info("doré octillery")
+        assert info["card_name"] == "Octillery"
+        assert info["card_name_matched"] is True
+
+    def test_french_adjective_with_sv4_set_code(self):
+        """'doré octillery sv4 076' → card_name='Octillery', set_code='SV4', number='076'."""
+        info = extract_card_info("doré octillery sv4 076")
+        assert info["card_name"] == "Octillery"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "076"
+        assert info["set_code"] == "SV4"
