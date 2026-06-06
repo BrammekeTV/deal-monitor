@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("DISCORD_BOT_TOKEN", "test-token")
+
 from services.card_identifier import CardFingerprint
 from services.cardmarket_resolver import CardmarketResolver
 
