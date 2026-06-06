@@ -120,6 +120,15 @@ def _derive_set_code_from_url(url: str) -> str | None:
         return None
 
 
+def _effective_min_condition(condition_code: int | None) -> int | None:
+    """Return minCondition for URL normalisation with issue #174 defaults."""
+    if condition_code is None:
+        return 2
+    if 1 <= condition_code <= 6:
+        return condition_code
+    return None
+
+
 def _analyze_correction_pattern(
     generated_url: str,
     corrected_url: str,
@@ -339,11 +348,7 @@ class ReviewCog(commands.Cog, name="Review"):
         fingerprint = identify_card(
             review_item.get("title", ""), review_item.get("description")
         )
-        min_condition: int | None = (
-            fingerprint.condition_code
-            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
-            else None
-        )
+        min_condition = _effective_min_condition(fingerprint.condition_code)
 
         normalised_url = normalize_cardmarket_url(
             cardmarket_url,
@@ -818,11 +823,7 @@ class ReviewCog(commands.Cog, name="Review"):
         # Identify the card first so the normalised Cardmarket URL can be
         # filtered by condition (e.g. minCondition=2 for Near Mint).
         fingerprint = identify_card(listing_title, review_item.get("description"))
-        min_condition: int | None = (
-            fingerprint.condition_code
-            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
-            else None
-        )
+        min_condition = _effective_min_condition(fingerprint.condition_code)
 
         # Always normalise the URL (add sellerCountry=23, correct language, and condition).
         normalised_url = normalize_cardmarket_url(
@@ -1101,11 +1102,7 @@ class ReviewCog(commands.Cog, name="Review"):
         # Identify the card first so the normalised Cardmarket URL can be
         # filtered by condition.
         fingerprint = identify_card(listing_title)
-        min_condition: int | None = (
-            fingerprint.condition_code
-            if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6
-            else None
-        )
+        min_condition = _effective_min_condition(fingerprint.condition_code)
 
         normalised_url = normalize_cardmarket_url(
             cardmarket_url,
