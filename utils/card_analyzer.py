@@ -361,6 +361,23 @@ _SET_CODE_ONLY_RE = re.compile(
     r"^(?:[\s\-–—]+)?([A-Z][A-Z0-9]{0,3}[0-9a-z]?)\s*$"
 )
 
+# Set codes that also commonly appear as rarity tokens. When these are found in
+# "code + remainder" form after a collector number, they are only accepted as
+# true set codes when the remainder contains a known set name.
+_AMBIGUOUS_RARITY_SET_CODES: frozenset[str] = frozenset({
+    "AR",
+    "SR",
+    "HR",
+    "UR",
+    "RR",
+    "PR",
+    "IR",
+    "SAR",
+    "CHR",
+    "CSR",
+    "SSR",
+})
+
 # Rarity/type tokens that must NOT be treated as a promo set code.
 _NOT_PROMO_TOKENS: frozenset[str] = frozenset({
     "VMAX", "VSTAR", "VUNION", "EX", "GX", "TAG", "PROMO",
@@ -889,6 +906,17 @@ def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
             parts.append(found_suffix)
         return " ".join(parts), True
 
+    # Some multilingual titles append a known card prefix at the end
+    # (e.g. "Persian GX Alolan", "Charizard Radiant"). Rotate it to the front
+    # and retry once.
+    words = working.split()
+    if len(words) >= 2:
+        trailing = words[-1]
+        trailing_prefix = next((p for p in CARD_PREFIXES if p.lower() == trailing.lower()), None)
+        if trailing_prefix and not working.lower().startswith(trailing_prefix.lower() + " "):
+            rotated = f"{trailing_prefix} {' '.join(words[:-1])}".strip()
+            return _match_pokemon_name(rotated)
+
     # --- Fallback A: strip noise tokens and retry the canonical lookup ---
     # Handles several patterns seen in real Vinted listings:
     #   Leading separators : "- Lugia (N1)"      → "Lugia"
@@ -1169,7 +1197,9 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         # "JTG" is a set code, not part of the Pokémon name).
         if not result.get("card_name_matched") and set_code is None and set_name is None:
             words = re.split(r"\s+", before_clean.strip())
-            if len(words) >= 2 and words[-1].upper() in KNOWN_SET_CODES:
+            trailing_word = words[-1] if words else ""
+            looks_like_set_code = re.match(r"^[A-Za-z]{2,5}\d[a-z]?$", trailing_word) is not None
+            if len(words) >= 2 and (trailing_word.upper() in KNOWN_SET_CODES or looks_like_set_code):
                 trailing_code = words[-1]
                 new_before = " ".join(words[:-1])
                 raw_name3 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", new_before))
@@ -1177,7 +1207,8 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 if matched3:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
-                    set_code = trailing_code
+                    if trailing_code.upper() in KNOWN_SET_CODES:
+                        set_code = trailing_code
 
         # Secondary set-code fallback: when the set info is still missing, check
         # if before_clean ends with an unclosed parenthetical containing a known
@@ -1225,6 +1256,14 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                         set_code = set_code_cand
                         set_name = set_name_cand or before_as_set
                         break
+
+        # Number-before-name fallback: listings like
+        # "Pokemon ... Card 12/112 Raichu" place the card name after number.
+        if not result.get("card_name_matched") and after_useful:
+            after_card_name, after_card_matched = _find_pokemon_in_phrase(after_useful)
+            if after_card_matched:
+                result["card_name"] = after_card_name
+                result["card_name_matched"] = True
 
         result["set_code"] = set_code
         result["set_name"] = set_name
@@ -1355,6 +1394,21 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["card_name_matched"] = matched
         result["set_code"] = promo_set_code
         result["collector_number"] = promo_number
+
+        # Fallback for titles that place the card name after the promo number,
+        # e.g. "Pokemon Promo MEP 080 Fennekin".
+        if not matched:
+            for pm in _PROMO_NUMBER_RE.finditer(text):
+                pm_token = pm.group(1) or pm.group(3)
+                if pm_token.upper() == promo_set_code:
+                    after_name_raw = text[pm.end():].strip()
+                    after_name_raw = re.sub(r"^[\s)\]]+", "", after_name_raw).strip()
+                    if after_name_raw:
+                        card_name2, matched2 = _find_pokemon_in_phrase(after_name_raw)
+                        if matched2:
+                            result["card_name"] = card_name2
+                            result["card_name_matched"] = True
+                    break
 
         # Try to extract the set name from the text after the promo number.
         # e.g. "Pikachu (M23 006) NM McDonald's Match Battle 2023"
@@ -1539,7 +1593,13 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
     if m:
         candidate = m.group(1)
         if candidate.upper() in KNOWN_SET_CODES:
-            set_name = m.group(2).strip() or None
+            remainder = m.group(2).strip()
+            if candidate.upper() in _AMBIGUOUS_RARITY_SET_CODES:
+                known_remainder = _find_known_set_name(remainder) or _search_known_set_name(remainder)
+                if known_remainder:
+                    return candidate, known_remainder
+                return None, None
+            set_name = remainder or None
             # If no name text follows the code, look it up from the mapping.
             if set_name is None:
                 set_name = SET_CODE_TO_SET_NAME.get(candidate.upper())
