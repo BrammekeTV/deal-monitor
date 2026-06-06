@@ -809,3 +809,14 @@ class TestIssue162CardNameNotExtracted:
         assert info["card_name_matched"] is True
         assert info["collector_number"] == "076"
         assert info["set_code"] == "SV4"
+
+
+class TestIssue172CardInfoNotExtracted:
+    """Regression tests for issue #172."""
+
+    def test_origin_forme_palkia_with_collect_aura_grade(self):
+        """'Origin forme palkia V 027/172 collect aura 9,5' should extract card name."""
+        info = extract_card_info("Origin forme palkia V 027/172 collect aura 9,5")
+        assert info["card_name"] == "Origin forme Palkia V"
+        assert info["card_name_matched"] is True
+        assert info["collector_number"] == "027/172"

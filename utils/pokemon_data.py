@@ -244,6 +244,7 @@ CARD_SUFFIXES: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 CARD_PREFIXES: tuple[str, ...] = (
+    "Origin Forme",
     # Multi-word possessive prefixes (longest first)
     "Tree of Beginning's",
     "Rescue Team DX's",
