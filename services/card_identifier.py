@@ -94,6 +94,7 @@ _LANGUAGE_MAP: dict[str, str] = {
     "english": "English",
     "japanese": "Japanese",
     "deutsch": "German",
+    "deutch": "German",
     "german": "German",
     "french": "French",
     "français": "French",
@@ -110,6 +111,7 @@ _LANGUAGE_MAP: dict[str, str] = {
     "nederlands": "Dutch",
     # ISO/abbreviation codes – two-letter, matched as standalone tokens only
     "en": "English",
+    "jp": "Japanese",
     "ja": "Japanese",
     "de": "German",
     "fr": "French",
@@ -391,9 +393,17 @@ def identify_card(title: str, description: str | None = None) -> CardFingerprint
         fp.is_promo = True
 
     # --- Language ---
-    lm = _LANGUAGE_RE.search(translated_title)
-    if lm:
-        fp.language = _LANGUAGE_MAP.get(lm.group(0).lower())
+    for lm in _LANGUAGE_RE.finditer(translated_title):
+        token = lm.group(0)
+        token_lower = token.lower()
+        # Two/three-letter language codes are only considered when explicitly
+        # uppercased by the seller, so common lowercase words like "de" (FR/IT
+        # preposition) are not misclassified as German.
+        if len(token_lower) in (2, 3) and token_lower in _LANGUAGE_MAP and not token.isupper():
+            continue
+        fp.language = _LANGUAGE_MAP.get(token_lower)
+        if fp.language:
+            break
 
     # --- Grading ---
     gm = _GRADE_RE.search(translated_title)

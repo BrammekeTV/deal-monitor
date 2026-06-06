@@ -29,6 +29,13 @@ POKEMON_NAME_TRANSLATIONS: dict[str, str] = {
     "edizione 1a": "1st Edition",
     "prima edizione": "1st Edition",
     "prima stampa": "1st Edition",
+    # Common multilingual aliases seen in issue #172 listings
+    "d’alola": "Alolan",
+    "d'alola": "Alolan",
+    "dalola": "Alolan",
+    "radiante": "Radiant",
+    "méga": "Mega",
+    "gx": "GX",
 }
 
 SET_NAME_TRANSLATIONS: dict[str, str] = {
@@ -43,6 +50,7 @@ SET_NAME_TRANSLATIONS: dict[str, str] = {
     "générations": "Generations",
     "generations": "Generations",
     "zenit regale": "Crown Zenith",
+    "astri lucenti": "Brilliant Stars",
 }
 
 

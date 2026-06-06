@@ -1992,6 +1992,10 @@ class CardmarketScraper:
             "maxTimeout": 60000,
         }
 
+        # Add a small randomized pause between successive solver requests to
+        # reduce repetitive request timing patterns toward Cardmarket.
+        await asyncio.sleep(random.uniform(0.7, 1.9))
+
         from config.settings import settings as _settings  # noqa: PLC0415
         from utils.proxy_pool import proxy_pool as _proxy_pool  # noqa: PLC0415
 

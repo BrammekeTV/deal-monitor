@@ -226,7 +226,10 @@ class CardmarketResolver:
             return None
 
         confidence = best_score / 100.0
-        cm_url = normalize_cardmarket_url(best_mapping["cardmarket_url"])
+        cm_url = normalize_cardmarket_url(
+            best_mapping["cardmarket_url"],
+            min_condition=self._effective_min_condition(fingerprint),
+        )
         logger.info(
             "CardmarketResolver: DB match (score=%.1f) for '%s' → %s",
             best_score, raw_title[:60], cm_url,
@@ -238,6 +241,19 @@ class CardmarketResolver:
             mapping_id=best_mapping.get("id"),
             product_name=best_mapping.get("cardmarket_product_name"),
         )
+
+    @staticmethod
+    def _effective_min_condition(fingerprint: CardFingerprint) -> int | None:
+        """Return the Cardmarket minCondition value to apply to resolved URLs.
+
+        When the listing has no detected condition, default to Near Mint (2).
+        Explicit Poor (7) keeps no filter so all listings remain visible.
+        """
+        if fingerprint.condition_code is None:
+            return 2
+        if 1 <= fingerprint.condition_code <= 6:
+            return fingerprint.condition_code
+        return None
 
     def _score_mapping(
         self,
@@ -353,10 +369,8 @@ class CardmarketResolver:
             if lc and lc not in ("1", "11"):
                 lang_code = lc
 
-        # Determine minCondition filter (omit for Poor=7 or unknown).
-        min_condition: int | None = None
-        if fingerprint.condition_code is not None and 1 <= fingerprint.condition_code <= 6:
-            min_condition = fingerprint.condition_code
+        # Determine minCondition filter (default to Near Mint when unknown).
+        min_condition = self._effective_min_condition(fingerprint)
 
         # Helper: look up a learned prefix for a given set_code.
         def _get_prefix(sc: str) -> str | None:

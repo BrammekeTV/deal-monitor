@@ -194,3 +194,40 @@ class TestNormalizeCardmarketUrlCondition:
         url = self._norm(min_condition=2)
         assert "sellerCountry=23" in url
         assert "language=1" in url
+
+
+class TestIssue172Regressions:
+    """Regression tests for issue #172 comment examples."""
+
+    def test_alolan_form_notation_is_parsed(self) -> None:
+        fp = identify_card("Persian Gx d’alola 071/064")
+        assert fp.card_name == "Alolan Persian GX"
+        assert fp.collector_number == "071/064"
+
+    def test_lowercase_de_preposition_is_not_language(self) -> None:
+        fp = identify_card("Arven's Mabosstiff Dogrino ex de Pepper sv9a 081 Pokemon JP")
+        assert fp.language == "Japanese"
+        assert fp.set_code == "SV9A"
+        assert fp.collector_number == "081"
+
+    def test_promo_number_before_name_still_extracts_card_name(self) -> None:
+        fp = identify_card("Pokemon Promo MEP 080 Fennekin")
+        assert fp.card_name == "Fennekin"
+        assert fp.set_code == "MEP"
+        assert fp.collector_number == "080"
+
+    def test_number_before_name_is_supported(self) -> None:
+        fp = identify_card("Pokémon Pokemon Karte Card 12/112 Raichu")
+        assert fp.card_name == "Raichu"
+        assert fp.collector_number == "12/112"
+
+    def test_radiante_translation_maps_to_radiant_prefix(self) -> None:
+        fp = identify_card("Pokémon Charizard Radiante 020/159 Holo Español")
+        assert fp.card_name == "Radiant Charizard"
+        assert fp.language == "Spanish"
+
+    def test_ambiguous_ar_token_not_used_as_set_code(self) -> None:
+        fp = identify_card("Chatot sv5k 081/071 AR - Pokemon Sammelkarte")
+        assert fp.card_name == "Chatot"
+        assert fp.set_code != "AR"
+        assert fp.collector_number == "081/071"
