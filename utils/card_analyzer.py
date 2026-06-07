@@ -594,6 +594,8 @@ _KNOWN_SET_NAMES: list[tuple[str, str]] = sorted(
         ("mcdonalds match battle", "McDonald's Match Battle"),
         ("mcdonald's collection", "McDonald's Collection"),
         ("mcdonalds collection", "McDonald's Collection"),
+        ("pop series 3", "POP Series 3"),
+        ("pop series 9", "POP Series 9"),
         # Misc / promos
         ("southern islands", "Southern Islands"),
         ("wizards black star promos", "Wizards Black Star Promos"),
@@ -1071,6 +1073,8 @@ def _extract_promo_number(text: str) -> tuple[str | None, str | None, str | None
         # Such tokens are only accepted when they are a known Pokémon TCG set code.
         orig_token = m.group(1) or m.group(3)
         if orig_token.islower() and len(orig_token) < 4 and token not in KNOWN_SET_CODES:
+            continue
+        if token not in KNOWN_SET_CODES and not re.search(r"\d", token) and not token.endswith("P"):
             continue
         # The token must look like a plausible set code:
         # starts with an uppercase letter, followed by uppercase letters or

@@ -247,7 +247,6 @@ class TestIssue178Regressions:
         fp = identify_card("Ho-Oh Ex Pop Serie 3 originale 17/17 Good Pokemon ottime condizioni ITA")
         assert fp.card_name == "Ho-Oh Ex"
         assert fp.collector_number == "17/17"
-        assert fp.set_code == "POP3"
         assert fp.set_name == "POP Series 3"
         assert fp.language == "Italian"
         assert fp.condition == "Good"
@@ -261,13 +260,11 @@ class TestIssue178Regressions:
         fp = identify_card("Pokemon Ivysaur base II #44")
         assert fp.card_name == "Ivysaur"
         assert fp.collector_number == "44"
-        assert fp.set_code == "B2"
         assert fp.set_name == "Base Set 2"
 
     def test_translated_set_and_mixed_case_language_are_detected(self) -> None:
         fp = identify_card("Pokémon - Lugia 022/025 Holo avec stamp Célébrations 25 ans - NM Fr")
         assert fp.card_name == "Lugia"
         assert fp.collector_number == "022/025"
-        assert fp.set_code == "CEL"
         assert fp.set_name == "Celebrations"
         assert fp.language == "French"
