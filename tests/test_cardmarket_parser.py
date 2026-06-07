@@ -993,6 +993,10 @@ class TestGenerateVariantUrls:
     def test_empty_url_returns_empty(self) -> None:
         assert generate_variant_urls("") == []
 
+    def test_result_is_limited_to_five_variants(self) -> None:
+        result = generate_variant_urls(self._url("Salazzle-ASC224"))
+        assert len(result) == 5
+
 
 # ---------------------------------------------------------------------------
 # _extract_id_product_from_html

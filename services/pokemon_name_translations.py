@@ -35,7 +35,10 @@ POKEMON_NAME_TRANSLATIONS: dict[str, str] = {
     "dalola": "Alolan",
     "radiante": "Radiant",
     "méga": "Mega",
+    "méga-": "Mega ",
     "gx": "GX",
+    "shyni": "Shiny",
+    "inglese": "English",
 }
 
 SET_NAME_TRANSLATIONS: dict[str, str] = {
@@ -47,10 +50,18 @@ SET_NAME_TRANSLATIONS: dict[str, str] = {
     "destinees de paldea": "Paldean Fates",
     "mascarade crépusculaire": "Twilight Masquerade",
     "mascarade crepusculaire": "Twilight Masquerade",
+    "célébrations 25 ans": "Celebrations",
+    "celebrations 25 ans": "Celebrations",
     "générations": "Generations",
     "generations": "Generations",
     "zenit regale": "Crown Zenith",
     "astri lucenti": "Brilliant Stars",
+    "base ii": "Base Set 2",
+    "mistery of the fossils": "Fossil",
+    "mystery of the fossils": "Fossil",
+    "pop serie 3": "POP Series 3",
+    "pop series 3": "POP Series 3",
+    "pop 9": "POP Series 9",
 }
 
 

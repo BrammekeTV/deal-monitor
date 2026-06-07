@@ -231,3 +231,40 @@ class TestIssue172Regressions:
         assert fp.card_name == "Chatot"
         assert fp.set_code != "AR"
         assert fp.collector_number == "081/071"
+
+
+class TestIssue178Regressions:
+    """Regression tests for issue #178 comment examples."""
+
+    def test_unclosed_set_code_after_bare_number_is_parsed(self) -> None:
+        fp = identify_card("Pokémon Card – Furret 168 (JTG")
+        assert fp.card_name == "Furret"
+        assert fp.collector_number == "168"
+        assert fp.set_code == "JTG"
+        assert fp.set_name == "Journey Together"
+
+    def test_pop_series_alias_before_number_is_detected(self) -> None:
+        fp = identify_card("Ho-Oh Ex Pop Serie 3 originale 17/17 Good Pokemon ottime condizioni ITA")
+        assert fp.card_name == "Ho-Oh Ex"
+        assert fp.collector_number == "17/17"
+        assert fp.set_name == "POP Series 3"
+        assert fp.language == "Italian"
+        assert fp.condition == "Good"
+
+    def test_shiny_typo_is_treated_as_rarity_noise(self) -> None:
+        fp = identify_card("Carte pokémon Pikachu shyni 131/091")
+        assert fp.card_name == "Pikachu"
+        assert fp.collector_number == "131/091"
+
+    def test_base_ii_alias_with_hash_number_maps_to_base_set_2(self) -> None:
+        fp = identify_card("Pokemon Ivysaur base II #44")
+        assert fp.card_name == "Ivysaur"
+        assert fp.collector_number == "44"
+        assert fp.set_name == "Base Set 2"
+
+    def test_translated_set_and_mixed_case_language_are_detected(self) -> None:
+        fp = identify_card("Pokémon - Lugia 022/025 Holo avec stamp Célébrations 25 ans - NM Fr")
+        assert fp.card_name == "Lugia"
+        assert fp.collector_number == "022/025"
+        assert fp.set_name == "Celebrations"
+        assert fp.language == "French"

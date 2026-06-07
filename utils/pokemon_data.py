@@ -370,6 +370,8 @@ SET_CODE_TO_SET_NAME: dict[str, str] = {
     # Misc / special sets
     "SI": "Southern Islands",
     "SVE": "SV Energies",
+    "POP3": "POP Series 3",
+    "POP9": "POP Series 9",
     # Mega Evolution Era
     "MEG": "Mega Evolution",
     "PFL": "Phantasmal Flames",
@@ -563,7 +565,7 @@ KNOWN_SET_CODES: frozenset[str] = frozenset(
         "WP", "NP", "DPPR", "HGSS", "BWP", "BW", "XYP", "XYPR", "SMP", "SM",
         "SWSHP", "SWSH", "SVP", "MEP",
         # Misc / special sets
-        "SI", "RM", "SVE",
+        "SI", "RM", "SVE", "POP3", "POP9",
         # Mega Evolution Era
         "MEG", "PFL", "ASC", "POR", "CRI", "PBL",
         # Scarlet & Violet Era
