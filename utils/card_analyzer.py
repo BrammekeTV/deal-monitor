@@ -261,10 +261,13 @@ _WEIGHT_PATTERNS: list[re.Pattern[str]] = [
 # Language + game prefix patterns to strip before extracting card info.
 # Covers common French/Dutch/German/English/Spanish/Italian prefixes.
 _LANG_PREFIX_RE = re.compile(
-    r"^(?:carte\s+|kaart\s+|karte\s+|carta\s+)?"
+    r"^[^A-Za-z0-9]*"
+    r"(?:(?:carte|kaart|karte|carta)\s+)?"
     r"pok[eé]mon\s+(?:card\s+|kaart\s+|karte\s+|carte\s+|carta\s+)?",
     re.IGNORECASE,
 )
+
+_HP_STAT_RE = re.compile(r"\b\d{1,3}\s*(?:hp|pv)\b", re.IGNORECASE)
 
 # Collector number: e.g. "218/172", "006/197", "044/185"
 _COLLECTOR_NUMBER_RE = re.compile(r"\b(\d{1,4})/(\d{2,4})\b")
@@ -836,6 +839,14 @@ def _strip_after_number_noise(text: str) -> str:
     return stripped
 
 
+def _clean_name_candidate(text: str) -> str:
+    """Strip common non-name noise before Pokémon-name matching."""
+    cleaned = _strip_rarity_suffixes(text)
+    cleaned = _HP_STAT_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t-–—|:,")
+    return cleaned
+
+
 def _match_pokemon_name(text: str) -> tuple[str | None, bool]:
     """Try to parse *text* as ``[prefix] [pokemon_name] [suffix]``.
 
@@ -1159,8 +1170,10 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean).rstrip(" \t-–—|:,")
 
         # Card name = text before number, minus any trailing rarity code.
-        raw_name = _strip_rarity_suffixes(before_clean)
+        raw_name = _clean_name_candidate(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
+        if not matched:
+            card_name, matched = _find_pokemon_in_phrase(raw_name)
         result["card_name"] = card_name
         result["card_name_matched"] = matched
 
@@ -1182,11 +1195,13 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         # When no set info could be determined from the after/before fragments,
         # scan the before text for an embedded known set name (e.g.
         # "Stoutland ir white flare 156/086").
-        if set_code is None and set_name is None and not after_useful and not set_from_before:
+        if set_code is None and set_name is None:
             name_part, set_frag = _split_before_at_known_set(before_clean)
             if set_frag:
-                raw_name2 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", name_part))
+                raw_name2 = _clean_name_candidate(re.sub(r"^[\s\-–—|:,]+", "", name_part))
                 card_name2, matched2 = _match_pokemon_name(raw_name2)
+                if not matched2:
+                    card_name2, matched2 = _find_pokemon_in_phrase(raw_name2)
                 result["card_name"] = card_name2
                 result["card_name_matched"] = matched2
                 set_code, set_name = _parse_set_info(set_frag)
@@ -1202,8 +1217,10 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
             if len(words) >= 2 and (trailing_word.upper() in KNOWN_SET_CODES or looks_like_set_code):
                 trailing_code = words[-1]
                 new_before = " ".join(words[:-1])
-                raw_name3 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", new_before))
+                raw_name3 = _clean_name_candidate(re.sub(r"^[\s\-–—|:,]+", "", new_before))
                 card_name3, matched3 = _match_pokemon_name(raw_name3)
+                if not matched3:
+                    card_name3, matched3 = _find_pokemon_in_phrase(raw_name3)
                 if matched3:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
@@ -1280,8 +1297,10 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         before_clean, set_from_before = _split_set_from_before(before)
         before_clean = re.sub(r"^[\s\-–—|:,]+", "", before_clean).rstrip(" \t-–—|:,")
 
-        raw_name = _strip_rarity_suffixes(before_clean)
+        raw_name = _clean_name_candidate(before_clean)
         card_name, matched = _match_pokemon_name(raw_name)
+        if not matched:
+            card_name, matched = _find_pokemon_in_phrase(raw_name)
         result["card_name"] = card_name
         result["card_name_matched"] = matched
 
@@ -1298,8 +1317,10 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         if set_code is None and set_name is None and not after_useful and not set_from_before:
             name_part, set_frag = _split_before_at_known_set(before_clean)
             if set_frag:
-                raw_name2 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", name_part))
+                raw_name2 = _clean_name_candidate(re.sub(r"^[\s\-–—|:,]+", "", name_part))
                 card_name2, matched2 = _match_pokemon_name(raw_name2)
+                if not matched2:
+                    card_name2, matched2 = _find_pokemon_in_phrase(raw_name2)
                 result["card_name"] = card_name2
                 result["card_name_matched"] = matched2
                 set_code, set_name = _parse_set_info(set_frag)
@@ -1310,8 +1331,10 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
             if len(words) >= 2 and words[-1].upper() in KNOWN_SET_CODES:
                 trailing_code = words[-1]
                 new_before = " ".join(words[:-1])
-                raw_name3 = _strip_rarity_suffixes(re.sub(r"^[\s\-–—|:,]+", "", new_before))
+                raw_name3 = _clean_name_candidate(re.sub(r"^[\s\-–—|:,]+", "", new_before))
                 card_name3, matched3 = _match_pokemon_name(raw_name3)
+                if not matched3:
+                    card_name3, matched3 = _find_pokemon_in_phrase(raw_name3)
                 if matched3:
                     result["card_name"] = card_name3
                     result["card_name_matched"] = True
@@ -1434,8 +1457,40 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         result["set_name"] = set_name
         return result
 
+    # ── 3.5. Bare collector number with trailing set info ────────────────────
+    for bare_match in re.finditer(r"\b(\d{1,4})\b", text):
+        bare_num = bare_match.group(1)
+        if re.match(r"^(?:19|20)\d{2}$", bare_num):
+            continue
+        before = text[: bare_match.start()].strip()
+        after = text[bare_match.end() :].strip()
+        if not before or not after:
+            continue
+        before_clean = re.sub(r"^[\s\-–—|:,]+", "", before).rstrip(" \t-–—|:,")
+        after_clean = _strip_after_number_noise(re.sub(r"^[\s([{\-–—|:,]+", "", after))
+        set_code, set_name = _parse_set_info(after_clean)
+        if set_code is None and set_name is None:
+            unclosed_m = re.search(r"\(([A-Za-z][A-Za-z0-9]{1,6})\s*$", after)
+            if unclosed_m and unclosed_m.group(1).upper() in KNOWN_SET_CODES:
+                set_code = unclosed_m.group(1).upper()
+                set_name = SET_CODE_TO_SET_NAME.get(set_code)
+        if set_code is None and set_name is None:
+            continue
+        raw_name = _clean_name_candidate(before_clean)
+        card_name, matched = _match_pokemon_name(raw_name)
+        if not matched:
+            card_name, matched = _find_pokemon_in_phrase(raw_name)
+        if not matched:
+            continue
+        result["card_name"] = card_name
+        result["card_name_matched"] = True
+        result["collector_number"] = bare_num
+        result["set_code"] = set_code
+        result["set_name"] = set_name
+        return result
+
     # ── 4. No collector number – best-effort card name + set info ────────
-    raw_name = _strip_rarity_suffixes(text)
+    raw_name = _clean_name_candidate(text)
 
     # Try to split the title at the first "break point" — a grade certifier
     # (e.g. "CGC 9") or a standalone calendar year (e.g. "2012") — so that

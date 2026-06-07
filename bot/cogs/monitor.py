@@ -715,7 +715,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
             url_ok = await validate_cardmarket_url(resolved.url)
             if not url_ok:
                 # Try V1/V2 variant URLs before giving up.
-                for variant_url in generate_variant_urls(resolved.url):
+                for idx, variant_url in enumerate(generate_variant_urls(resolved.url)):
+                    if idx:
+                        await asyncio.sleep(random.uniform(0.4, 1.1))
                     if await validate_cardmarket_url(variant_url):
                         logger.info(
                             "MonitorCog: primary URL invalid, using variant: %s",
@@ -760,7 +762,9 @@ class MonitorCog(commands.Cog, name="Monitor"):
             # When the page loaded but had no pricing data, try V1-V10 variant
             # URLs before giving up (e.g. Fennekin-MEP080 → Fennekin-V1-MEP080).
             if "no pricing data" in exc.message.lower():
-                for variant_url in generate_variant_urls(resolved.url):
+                for idx, variant_url in enumerate(generate_variant_urls(resolved.url)):
+                    if idx:
+                        await asyncio.sleep(random.uniform(0.4, 1.1))
                     try:
                         cm_data = await self._cardmarket.scrape_url(variant_url)  # type: ignore[union-attr]
                         logger.info(
@@ -1910,4 +1914,3 @@ class MonitorCog(commands.Cog, name="Monitor"):
             inline=False,
         )
         return embed
-

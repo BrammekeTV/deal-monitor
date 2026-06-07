@@ -2240,7 +2240,7 @@ _SLUG_VERSION_RE = re.compile(
 _SLUG_NUM_SUFFIX_RE = re.compile(r'^[A-Z]{0,6}\d{2,4}$')
 
 # Number of numbered variants (V1…V_N) to probe beside the base slug.
-_VARIANT_COUNT = 10
+_VARIANT_COUNT = 5
 
 
 def generate_variant_urls(url: str) -> list[str]:
@@ -2301,6 +2301,7 @@ def generate_variant_urls(url: str) -> list[str]:
         new_path = f"{parent_path}/{slug}"
         result.append(urlunparse(parsed._replace(path=new_path)))
 
+    random.shuffle(result)
     return result
 
 
