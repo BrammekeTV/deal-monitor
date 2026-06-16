@@ -173,8 +173,13 @@ def build_not_profitable_embed(
     comparison: "ComparisonResult",
     *,
     fingerprint: "CardFingerprint | None" = None,
+    bid_price: float | None = None,
 ) -> discord.Embed:
-    """Build an embed shown when Vinted price >= Cardmarket From price."""
+    """Build an embed shown when Vinted price >= Cardmarket From price.
+
+    When *bid_price* is provided and would be profitable, an additional field
+    is added suggesting the buyer bid at that price.
+    """
     embed = discord.Embed(
         title=f"📉 Not Profitable: {listing.title[:200]}",
         url=listing.url,
@@ -225,6 +230,23 @@ def build_not_profitable_embed(
             inline=False,
         )
 
+    # ── 80 % bid suggestion ────────────────────────────────────────────────
+    if bid_price is not None:
+        from services.price_comparison import calculate_vinted_total_cost, VINTED_SHIPPING_MAX
+        bid_total_max = calculate_vinted_total_cost(bid_price, VINTED_SHIPPING_MAX)
+        if comparison.cardmarket_from_price > 0 and bid_total_max < comparison.cardmarket_from_price:
+            saving = round(comparison.cardmarket_from_price - bid_total_max, 2)
+            embed.add_field(
+                name="💡 Bid suggestion",
+                value=(
+                    f"Bidding at **€{bid_price:.2f}** (80% of asking price) "
+                    f"would be **profitable** — total cost €{bid_total_max:.2f} vs "
+                    f"Cardmarket €{comparison.cardmarket_from_price:.2f} "
+                    f"(saving **€{saving:.2f}**)."
+                ),
+                inline=False,
+            )
+
     # ── Extracted card info ───────────────────────────────────────────────
     if fingerprint:
         fp_lines = []
@@ -257,6 +279,47 @@ def build_not_profitable_embed(
         inline=False,
     )
 
+    if listing.thumbnail:
+        embed.set_thumbnail(url=listing.thumbnail)
+    embed.set_footer(text=f"Vinted ID: {listing.listing_id}")
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# Bulk lot alert embed
+# ---------------------------------------------------------------------------
+
+def build_bulk_alert_embed(
+    listing: "Listing",
+    card_count: int,
+    price_per_card: float,
+) -> discord.Embed:
+    """Build an embed for a bulk card lot that meets the price-per-card threshold."""
+    embed = discord.Embed(
+        title=f"📦 Bulk Lot Deal: {listing.title[:200]}",
+        url=listing.url,
+        colour=_COLOUR_PROFIT,
+        timestamp=datetime.now(timezone.utc),
+        description=(
+            f"Bulk lot at **€{price_per_card:.4f} per card** "
+            f"(≤ €0.01 threshold)."
+        ),
+    )
+    embed.add_field(
+        name="💰 Pricing",
+        value=(
+            f"**Listing Price:** €{listing.price:.2f}\n"
+            f"**Estimated Cards:** {card_count}\n"
+            f"**Price per Card:** €{price_per_card:.4f}"
+        ),
+        inline=True,
+    )
+    if listing.seller_name:
+        embed.add_field(
+            name="👤 Seller",
+            value=listing.seller_name,
+            inline=True,
+        )
     if listing.thumbnail:
         embed.set_thumbnail(url=listing.thumbnail)
     embed.set_footer(text=f"Vinted ID: {listing.listing_id}")

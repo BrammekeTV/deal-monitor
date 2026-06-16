@@ -1111,6 +1111,29 @@ class Database:
     # Review queue maintenance
     # ------------------------------------------------------------------
 
+    async def get_catalog_mapping_stats(self) -> dict[str, int]:
+        """Return summary counts for the catalog_id_slugs table.
+
+        Returns a dict with keys:
+        - ``mapped_products``  – rows where ``id_product IS NOT NULL``
+        - ``mapped_expansions`` – rows where ``id_expansion IS NOT NULL``
+        """
+        async with self._conn.execute(  # type: ignore[union-attr]
+            """
+            SELECT
+                COUNT(id_product)   AS mapped_products,
+                COUNT(id_expansion) AS mapped_expansions
+            FROM catalog_id_slugs
+            """
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            return {
+                "mapped_products": row["mapped_products"],
+                "mapped_expansions": row["mapped_expansions"],
+            }
+        return {"mapped_products": 0, "mapped_expansions": 0}
+
     async def expire_old_review_items(self, days: int) -> int:
         """Mark pending review queue items older than *days* days as 'expired'.
 

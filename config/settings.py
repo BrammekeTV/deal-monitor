@@ -96,6 +96,10 @@ class Settings:
 
         # --- Search terms ---
         self.search_terms: list[str] = raw.get("search_terms", ["Pokemon"])
+        # Terms used exclusively for bulk-lot searches (e.g. "pokemon bulk lot").
+        # Listings found via these terms skip the Cardmarket price-lookup pipeline
+        # and are evaluated purely on price-per-card (threshold: €0.01).
+        self.bulk_search_terms: list[str] = raw.get("bulk_search_terms", [])
 
         # --- Deal detection ---
         d = raw.get("deal", {})

@@ -342,6 +342,20 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     term, exc, exc_info=True,
                 )
 
+        for term in settings.bulk_search_terms:
+            if self._paused:
+                logger.info("MonitorCog: paused mid-cycle – aborting remaining bulk search terms")
+                return
+            try:
+                await self._process_bulk_search_term(term)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MonitorCog: error processing bulk term '%s': %s",
+                    term, exc, exc_info=True,
+                )
+
     async def _process_search_term(self, term: str) -> None:
         """Search Vinted for *term* and process each listing found."""
         logger.info("MonitorCog: searching Vinted for '%s'", term)
@@ -361,9 +375,91 @@ class MonitorCog(commands.Cog, name="Monitor"):
                     listing.listing_id, exc, exc_info=True,
                 )
 
+    async def _process_bulk_search_term(self, term: str) -> None:
+        """Search Vinted for *term* and process each listing as a bulk lot candidate."""
+        logger.info("MonitorCog: bulk-searching Vinted for '%s'", term)
+        async for listing in self._vinted.search(term, settings.results_per_term):  # type: ignore[union-attr]
+            if self._paused:
+                logger.info(
+                    "MonitorCog: paused – stopping bulk listing processing for term '%s'", term
+                )
+                return
+            try:
+                await self._process_bulk_listing(listing)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MonitorCog: error processing bulk listing '%s': %s",
+                    listing.listing_id, exc, exc_info=True,
+                )
+
     # ------------------------------------------------------------------
     # Listing processing pipeline
     # ------------------------------------------------------------------
+
+    async def _process_bulk_listing(self, listing: "Listing") -> None:
+        """Bulk-lot pipeline: detect card count and alert if price/card ≤ €0.01."""
+        from utils.card_analyzer import CardAnalyzer
+        from utils.embed_builder import build_bulk_alert_embed
+
+        self._listings_checked += 1
+
+        if await self.db.is_seen(listing.listing_id):
+            logger.debug("MonitorCog: skipping already-seen bulk listing %s", listing.listing_id)
+            return
+
+        logger.info(
+            "MonitorCog: processing bulk listing '%s' (€%.2f)",
+            listing.title[:60], listing.price,
+        )
+
+        analyzer = CardAnalyzer()
+        analyzer.analyze(listing)
+
+        # Mark seen regardless of outcome to avoid re-processing.
+        await self.db.mark_seen(
+            listing_id=listing.listing_id,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price,
+            currency=getattr(listing, "currency", "EUR"),
+            seller_name=getattr(listing, "seller_name", None),
+            fingerprint=None,
+        )
+
+        if listing.estimated_card_count is None:
+            logger.info(
+                "MonitorCog: bulk listing '%s' – card count unknown, discarding",
+                listing.title[:60],
+            )
+            return
+
+        price_per_card = listing.price_per_card
+        if price_per_card is None or price_per_card > 0.01:
+            logger.info(
+                "MonitorCog: bulk listing '%s' – €%.4f/card exceeds threshold, discarding",
+                listing.title[:60],
+                price_per_card or 0.0,
+            )
+            return
+
+        channel = self._get_match_channel()
+        if channel is None:
+            return
+
+        embed = build_bulk_alert_embed(listing, listing.estimated_card_count, price_per_card)
+        try:
+            await channel.send(embed=embed)
+            logger.info(
+                "MonitorCog: bulk deal alert sent for listing '%s' (€%.4f/card)",
+                listing.title[:60], price_per_card,
+            )
+        except discord.HTTPException as exc:
+            logger.error(
+                "MonitorCog: failed to post bulk alert for %s: %s",
+                listing.listing_id, exc,
+            )
 
     async def _process_listing(self, listing: "Listing") -> None:
         """Full pipeline for a single Vinted listing."""
@@ -1367,13 +1463,26 @@ class MonitorCog(commands.Cog, name="Monitor"):
         fingerprint=None,
     ) -> None:
         """Post a non-profitable identified listing embed to the match channel."""
+        from services.price_comparison import calculate_vinted_total_cost, VINTED_SHIPPING_MAX
         from utils.embed_builder import build_not_profitable_embed
 
         channel = self._get_match_channel()
         if channel is None:
             return
 
-        embed = build_not_profitable_embed(listing, cm_data, comparison, fingerprint=fingerprint)
+        # Compute whether bidding at 80% of the asking price would be profitable.
+        bid_price = round(listing.price * 0.80, 2)
+        bid_total_max = calculate_vinted_total_cost(bid_price, VINTED_SHIPPING_MAX)
+        cm_from = comparison.cardmarket_from_price or 0.0
+        bid_would_be_profitable = cm_from > 0 and bid_total_max < cm_from
+
+        embed = build_not_profitable_embed(
+            listing,
+            cm_data,
+            comparison,
+            fingerprint=fingerprint,
+            bid_price=bid_price if bid_would_be_profitable else None,
+        )
         try:
             msg = await channel.send(embed=embed)
             await self.db.store_deal_message(
