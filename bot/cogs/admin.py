@@ -275,7 +275,8 @@ class AdminCog(commands.Cog, name="Admin"):
             title=f"⚠️ Low-confidence expansion ID mappings ({len(conflict_rows)} rows)",
             description=(
                 "These slugs are claimed by more than one expansion ID.\n"
-                "React with 🗑️ to automatically purge the lowest-match-count row for each slug."
+                "**Reply to this message with `confirm`** to automatically purge "
+                "the lowest-match-count row for each slug."
             ),
             colour=discord.Colour.orange(),
         )
@@ -286,45 +287,38 @@ class AdminCog(commands.Cog, name="Admin"):
         )
 
         msg = await interaction.followup.send(embed=embed, wait=True)
-        # wait=True makes followup.send return the sent Message so we can track its ID.
         if msg is not None:
-            try:
-                await msg.add_reaction("🗑️")
-                self._pending_purge_messages[msg.id] = True
-            except discord.HTTPException:
-                pass
+            self._pending_purge_messages[msg.id] = True
 
     # ------------------------------------------------------------------
-    # Reaction listener – 🗑️ on low-confidence message triggers purge
+    # Message listener – "confirm" reply on low-confidence message triggers purge
     # ------------------------------------------------------------------
 
     @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        """Purge lowest-match-count expansion rows when admin reacts with 🗑️."""
-        if str(payload.emoji) != "🗑️":
+    async def on_message(self, message: discord.Message) -> None:
+        """Purge lowest-match-count expansion rows when admin replies with 'confirm'."""
+        if message.author.bot:
             return
-        if payload.message_id not in self._pending_purge_messages:
+        if message.reference is None:
             return
-        if payload.user_id == self.bot.user.id:  # type: ignore[union-attr]
+        referenced_id = message.reference.message_id
+        if referenced_id not in self._pending_purge_messages:
             return
-
-        # Verify the reacting user has administrator permissions.
-        guild = self.bot.get_guild(payload.guild_id)  # type: ignore[arg-type]
-        if guild is None:
-            return
-        member = guild.get_member(payload.user_id)
-        if member is None or not member.guild_permissions.administrator:
+        if message.content.strip().lower() != "confirm":
             return
 
-        del self._pending_purge_messages[payload.message_id]
+        # Verify the replying user has administrator permissions.
+        if not isinstance(message.author, discord.Member):
+            return
+        if not message.author.guild_permissions.administrator:
+            return
+
+        del self._pending_purge_messages[referenced_id]
 
         deleted = await self.db.purge_lowest_count_expansion_rows()
-        channel = self.bot.get_channel(payload.channel_id)
-        if channel is None:
-            return
 
         if not deleted:
-            await channel.send("ℹ️ No rows were purged (no conflicting slug mappings found).")  # type: ignore[union-attr]
+            await message.reply("ℹ️ No rows were purged (no conflicting slug mappings found).", mention_author=False)
             return
 
         summary_lines = [
@@ -336,7 +330,7 @@ class AdminCog(commands.Cog, name="Admin"):
             description="\n".join(summary_lines[:25]),
             colour=discord.Colour.red(),
         )
-        await channel.send(embed=embed)  # type: ignore[union-attr]
+        await message.reply(embed=embed, mention_author=False)
 
     # ------------------------------------------------------------------
     # /delete_mapping  — remove a mapping by ID

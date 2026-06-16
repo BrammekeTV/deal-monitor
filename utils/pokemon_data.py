@@ -528,6 +528,11 @@ SET_CODE_TO_SET_NAME: dict[str, str] = {
     "N2": "Neo Discovery",
     "N3": "Neo Revelation",
     "N4": "Neo Destiny",
+    # Neo Era – seller-used abbreviations (not official CM codes)
+    "NGE": "Neo Genesis",
+    "NDI": "Neo Discovery",
+    "NRE": "Neo Revelation",
+    "NDE": "Neo Destiny",
     "LC": "Legendary Collection",
     "EX": "Expedition Base Set",
     "AQ": "Aquapolis",
@@ -602,6 +607,8 @@ KNOWN_SET_CODES: frozenset[str] = frozenset(
         "DS", "LM", "HP", "CG", "DF", "PK",
         # Neo Era
         "N1", "N2", "N3", "N4", "LC", "EX", "AQ", "SK",
+        # Neo Era – seller-used abbreviations (not official CM codes, but common on Vinted)
+        "NGE", "NDI", "NRE", "NDE",
         # Base Set Era
         "BS", "JU", "FO", "B2", "TR", "G1", "G2",
         # Japanese sets (normalised to uppercase)

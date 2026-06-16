@@ -1206,8 +1206,14 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
                 card_name2, matched2 = _match_pokemon_name(raw_name2)
                 if not matched2:
                     card_name2, matched2 = _find_pokemon_in_phrase(raw_name2)
-                result["card_name"] = card_name2
-                result["card_name_matched"] = matched2
+                # Only overwrite the card name when a Pokémon was actually found
+                # in name_part.  When the set name appears in the *middle* of
+                # before_clean (e.g. "…Neo Discovery Serie Houndour") the
+                # card name is after the set and name_part won't contain it;
+                # in that case keep whatever was already matched.
+                if matched2:
+                    result["card_name"] = card_name2
+                    result["card_name_matched"] = matched2
                 set_code, set_name = _parse_set_info(set_frag)
 
         # Last-resort fallback: when the card name still did not match and there
@@ -1606,6 +1612,40 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
             result["card_name"] = card_name4
             result["card_name_matched"] = True
 
+    # Post-sliding-window enrichment: when the sliding window found a card name
+    # but no set or collector number, try to extract both from the raw text.
+    # This handles titles like "Pokemon Card Game- Paradox Rift- Vanillish 190 English"
+    # where the set name appears before the card name and the number comes after.
+    if (
+        result.get("card_name_matched")
+        and result.get("set_name") is None
+        and result.get("set_code") is None
+        and result.get("collector_number") is None
+    ):
+        # Search for a known set name anywhere in the full text.
+        found_set = _search_known_set_name(raw_name)
+        if found_set:
+            result["set_name"] = found_set
+
+        # Look for a bare number in the text after stripping language/condition
+        # noise.  Only pick it up when it immediately follows the card name (or
+        # appears after the set name) so we don't grab years or other numbers.
+        if result.get("collector_number") is None:
+            # Strip trailing language-name tokens (e.g. "English", "Dutch") and
+            # any following text so that a trailing bare number is exposed.
+            _TRAILING_LANG_RE = re.compile(
+                r"\s+(?:english|french|german|dutch|spanish|italian|portuguese"
+                r"|korean|japanese|russian|jp|ja|en|fr|de|nl|es|it|ko|ru|pt)"
+                r"\b.*$",
+                re.IGNORECASE,
+            )
+            noise_stripped = _TRAILING_LANG_RE.sub("", raw_name)
+            bare_tail_sw = re.search(r"\s+(\d{1,4})\s*$", noise_stripped)
+            if bare_tail_sw:
+                bare_num_sw = bare_tail_sw.group(1)
+                if not re.match(r"^(?:19|20)\d{2}$", bare_num_sw):
+                    result["collector_number"] = bare_num_sw
+
     return result
 
 
@@ -1661,6 +1701,11 @@ def _parse_set_info(text: str) -> tuple[str | None, str | None]:
             set_name = remainder or None
             # If no name text follows the code, look it up from the mapping.
             if set_name is None:
+                set_name = SET_CODE_TO_SET_NAME.get(candidate.upper())
+            # If the remainder is a bare number (e.g. "NDI 39" where 39 is a
+            # stray collector number, not a set name), discard it and look up
+            # the set name from the mapping instead.
+            elif re.fullmatch(r"\d+", set_name):
                 set_name = SET_CODE_TO_SET_NAME.get(candidate.upper())
             return candidate, set_name
         # If the leading token is a condition abbreviation (e.g. "NM"), strip it

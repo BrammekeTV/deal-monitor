@@ -820,3 +820,54 @@ class TestIssue172CardInfoNotExtracted:
         assert info["card_name"] == "Origin forme Palkia V"
         assert info["card_name_matched"] is True
         assert info["collector_number"] == "027/172"
+
+class TestIssue181CardExtractionBugs:
+    """Regression tests for issue #181 – three card extraction bugs."""
+
+    def test_ndi_set_code_espeon(self):
+        """'Carta Pokemon - Espeon - NDI 1' → seller abbreviation NDI recognised as Neo Discovery."""
+        info = extract_card_info("Carta Pokemon - Espeon - NDI 1")
+        assert info["card_name"] == "Espeon"
+        assert info["card_name_matched"] is True
+        assert info["set_code"] == "NDI"
+        assert info["set_name"] == "Neo Discovery"
+        assert info["collector_number"] == "1"
+
+    def test_houndour_card_name_not_overwritten(self):
+        """Card name must not be overwritten to None when _split_before_at_known_set
+        finds the set name in the middle of before_clean but no Pokémon before it."""
+        info = extract_card_info("Pokemon Kaart Neo Discovery Serie Houndour 39/75 NDI 39")
+        assert info["card_name"] == "Houndour"
+        assert info["card_name_matched"] is True
+        assert info["set_code"] == "NDI"
+        assert info["set_name"] == "Neo Discovery"
+        assert info["collector_number"] == "39/75"
+
+    def test_set_before_card_name_paradox_rift_vanillish(self):
+        """'Pokemon Card Game- Paradox Rift- Vanillish 190 English' → set before card name."""
+        info = extract_card_info("Pokemon Card Game- Paradox Rift- Vanillish 190 English")
+        assert info["card_name"] == "Vanillish"
+        assert info["card_name_matched"] is True
+        assert info["set_name"] == "Paradox Rift"
+        assert info["collector_number"] == "190"
+
+    def test_nge_set_code_recognised(self):
+        """Seller abbreviation NGE is recognised as Neo Genesis."""
+        from utils.card_analyzer import _parse_set_info
+        code, name = _parse_set_info("NGE")
+        assert code == "NGE"
+        assert name == "Neo Genesis"
+
+    def test_nre_set_code_recognised(self):
+        """Seller abbreviation NRE is recognised as Neo Revelation."""
+        from utils.card_analyzer import _parse_set_info
+        code, name = _parse_set_info("NRE")
+        assert code == "NRE"
+        assert name == "Neo Revelation"
+
+    def test_nde_set_code_recognised(self):
+        """Seller abbreviation NDE is recognised as Neo Destiny."""
+        from utils.card_analyzer import _parse_set_info
+        code, name = _parse_set_info("NDE")
+        assert code == "NDE"
+        assert name == "Neo Destiny"
