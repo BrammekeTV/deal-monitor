@@ -630,6 +630,16 @@ _LANG_FULL_NAME_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex to strip a *trailing* language-name token (and anything after it) so
+# that a bare collector number just before the language word is exposed.
+# E.g. "Vanillish 190 English" → "Vanillish 190"
+_TRAILING_LANG_SUFFIX_RE = re.compile(
+    r"\s+(?:english|french|german|dutch|spanish|italian|portuguese"
+    r"|korean|japanese|russian|jp|ja|en|fr|de|nl|es|it|ko|ru|pt)"
+    r"\b.*$",
+    re.IGNORECASE,
+)
+
 # Regex to strip a leading condition word (translated/foreign "condition").
 _CONDITION_WORD_PREFIX_RE = re.compile(
     r"^(état|etat|zustand|condición|conditie|condition|staat)\b",
@@ -1633,13 +1643,7 @@ def extract_card_info(title: str) -> dict[str, str | None | bool]:
         if result.get("collector_number") is None:
             # Strip trailing language-name tokens (e.g. "English", "Dutch") and
             # any following text so that a trailing bare number is exposed.
-            _TRAILING_LANG_RE = re.compile(
-                r"\s+(?:english|french|german|dutch|spanish|italian|portuguese"
-                r"|korean|japanese|russian|jp|ja|en|fr|de|nl|es|it|ko|ru|pt)"
-                r"\b.*$",
-                re.IGNORECASE,
-            )
-            noise_stripped = _TRAILING_LANG_RE.sub("", raw_name)
+            noise_stripped = _TRAILING_LANG_SUFFIX_RE.sub("", raw_name)
             bare_tail_sw = re.search(r"\s+(\d{1,4})\s*$", noise_stripped)
             if bare_tail_sw:
                 bare_num_sw = bare_tail_sw.group(1)

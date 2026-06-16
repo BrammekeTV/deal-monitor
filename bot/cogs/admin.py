@@ -240,6 +240,47 @@ class AdminCog(commands.Cog, name="Admin"):
             )
 
     # ------------------------------------------------------------------
+    # /catalog_mapping_stats  — show mapping coverage statistics
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="catalog_mapping_stats",
+        description="[Admin] Show how many catalog products/expansions have learned ID mappings",
+    )
+    @_ADMIN_ONLY
+    async def catalog_mapping_stats(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=False)
+        stats = await self.db.get_catalog_mapping_stats()
+        mapped_products = stats["mapped_products"]
+        mapped_expansions = stats["mapped_expansions"]
+
+        monitor = self.bot.cogs.get("Monitor")
+        catalog = getattr(monitor, "catalog", None) if monitor else None
+        total_products = catalog.product_count if catalog else None
+        total_expansions = catalog.expansion_count if catalog else None
+
+        def _pct(n: int, total: int | None) -> str:
+            if total is None or total == 0:
+                return f"{n} (catalog unavailable)"
+            return f"{n} / {total} ({n / total * 100:.1f}%)"
+
+        embed = discord.Embed(
+            title="📊 Catalog ID mapping coverage",
+            colour=discord.Colour.blurple(),
+        )
+        embed.add_field(
+            name="Products mapped",
+            value=_pct(mapped_products, total_products),
+            inline=False,
+        )
+        embed.add_field(
+            name="Expansions mapped",
+            value=_pct(mapped_expansions, total_expansions),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed)
+
+    # ------------------------------------------------------------------
     # /catalog_low_confidence  — show low-confidence expansion ID mappings
     # ------------------------------------------------------------------
 

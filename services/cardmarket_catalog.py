@@ -217,6 +217,15 @@ class CardmarketCatalog:
         """Number of products currently in memory."""
         return len(self._products)
 
+    @property
+    def expansion_count(self) -> int:
+        """Number of unique expansion IDs present in the loaded catalog."""
+        return len({
+            p.get("idExpansion")
+            for p in self._products
+            if p.get("idExpansion") is not None
+        })
+
     async def load(self, *, force: bool = False) -> None:
         """Load catalog from disk cache or download from S3.
 
